@@ -19,7 +19,7 @@ export function SiteHeader({
     <header className="border-b border-line">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 md:px-6">
         <a href={logoHref} className="flex items-center gap-3">
-          <Image src="/weaver-logo.png" alt="Weaver" width={34} height={34} />
+          <Image src="/weaver-mark.png" alt="Weaver" width={34} height={34} />
           <span className="text-lg font-bold tracking-[0.3em]">WEAVER</span>
         </a>
         <nav className="hidden items-center gap-8 font-tech text-lg tracking-[0.15em] text-fog md:flex">

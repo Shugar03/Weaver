@@ -31,3 +31,29 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #2a2a2a #000000;
 }
+
+/* Marquee del catálogo: un solo loop por página, pausa en hover. */
+@keyframes weaver-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.weaver-marquee-track {
+  animation: weaver-marquee 45s linear infinite;
+}
+
+.weaver-marquee:hover .weaver-marquee-track {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .weaver-marquee-track {
+    animation: none;
+    flex-wrap: wrap;
+    width: auto;
+  }
+}

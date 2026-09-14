@@ -1,0 +1,7 @@
+{
+  "name": "@weaver/api-keys",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "node --test tests/*.test.ts", "lint": "tsc --noEmit -p tsconfig.json" }
+}

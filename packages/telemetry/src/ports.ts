@@ -1,6 +1,6 @@
 // Module Telemetry — único que sabe de percentiles. El resto solo hace record().
 // In-memory = desde el boot (se declara en UI); tabla Postgres viene después (ADR-0002).
-export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number };
+export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number; keyId?: string };
 
 export interface Telemetry {
   record(s: Sample): void;

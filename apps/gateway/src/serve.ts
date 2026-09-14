@@ -7,6 +7,7 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./index.ts";
 import { FailoverForgeExec, FakeForgeExec, OllamaMLXAdapter, SwitchableExec } from "@weaver/forge-exec";
+import { InMemoryApiKeys } from "@weaver/api-keys";
 import { InMemoryTelemetry } from "@weaver/telemetry";
 import type { ForgeView } from "@weaver/scheduler";
 
@@ -40,6 +41,8 @@ function forges(): ForgeView[] {
   return [OLLAMA_VIEW, SIM_VIEW];
 }
 
+const apiKeys = new InMemoryApiKeys();
+
 const app = createApp({
   forges,
   exec: new FailoverForgeExec([primary, standby]),
@@ -47,7 +50,12 @@ const app = createApp({
   // S9a: historial en memoria = desde el boot (se declara en la UI /forge).
   telemetry: new InMemoryTelemetry(),
   node: { version: "0.1.0", startedAt: Date.now() },
+  apiKeys,
 });
+
+// S10a: key de operador impresa UNA vez (entorno local). No commitear, no logear en prod.
+const operator = await apiKeys.issue("operator");
+console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
 
 const port = Number(process.env.PORT ?? 3001);
 serve({ fetch: app.fetch, port }, (info) => {

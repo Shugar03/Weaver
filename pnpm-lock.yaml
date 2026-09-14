@@ -23,6 +23,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.0.0
         version: 1.19.17(hono@4.13.7)
+      '@weaver/api-keys':
+        specifier: workspace:*
+        version: link:../../packages/api-keys
       '@weaver/forge-exec':
         specifier: workspace:*
         version: link:../../packages/forge-exec
@@ -66,6 +69,8 @@ importers:
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
+
+  packages/api-keys: {}
 
   packages/benchmarks: {}
 

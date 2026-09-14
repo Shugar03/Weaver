@@ -8,7 +8,7 @@ const tech = VT323({ weight: "400", subsets: ["latin"], variable: "--font-tech" 
 export const metadata: Metadata = {
   title: "WEAVER — Open Compute",
   description: "A more open internet for intelligence. Decentralized compute for the next generation of AI.",
-  icons: "/weaver-logo.png",
+  icons: "/weaver-mark.png",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

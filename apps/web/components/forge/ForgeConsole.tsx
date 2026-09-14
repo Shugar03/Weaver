@@ -131,7 +131,7 @@ export function ForgeConsole({
       {/* SIDEBAR */}
       <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-panel lg:flex">
         <a href="/" className="flex items-center gap-2.5 p-4">
-          <Image src="/weaver-logo.png" alt="Weaver" width={26} height={26} />
+          <Image src="/weaver-mark.png" alt="Weaver" width={26} height={26} />
           <span className="text-base font-bold tracking-[0.3em]">WEAVER</span>
         </a>
         <nav className="space-y-0.5 px-3 font-tech text-lg">

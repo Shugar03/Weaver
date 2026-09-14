@@ -218,7 +218,7 @@ export function ChatApp({ base }: { base: string }) {
         <aside className="hidden w-64 shrink-0 flex-col border-r border-line bg-panel lg:flex">
           <div className="flex items-center justify-between p-4">
             <a href="/" className="flex items-center gap-2.5">
-              <Image src="/weaver-logo.png" alt="Weaver" width={26} height={26} />
+              <Image src="/weaver-mark.png" alt="Weaver" width={26} height={26} />
               <span className="text-base font-bold tracking-[0.3em]">WEAVER</span>
             </a>
             <button onClick={() => setCollapsed(true)} title="Colapsar" className="border border-line px-2 py-1 font-tech text-fog hover:text-white">
@@ -317,7 +317,7 @@ export function ChatApp({ base }: { base: string }) {
             ) : (
               <div key={i} className="mt-5">
                 <div className="flex items-center gap-2 font-tech text-sm tracking-[0.2em] text-fog">
-                  <Image src="/weaver-logo.png" alt="" width={18} height={18} />
+                  <Image src="/weaver-mark.png" alt="" width={18} height={18} />
                   {"//"} WEAVER
                 </div>
                 <div className="mt-1 max-w-[95%] text-[15px] leading-relaxed text-white/90">

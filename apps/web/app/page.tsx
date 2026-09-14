@@ -1,9 +1,9 @@
 import Image from "next/image";
 import { SiteHeader } from "../components/SiteHeader";
+import { HeroBackground } from "../components/landing/HeroBackground";
 import { Opportunity } from "../components/landing/Opportunity";
 import { Pillars } from "../components/landing/Pillars";
 import { Trusted } from "../components/landing/Trusted";
-import { WaveCanvas } from "../components/landing/WaveCanvas";
 import { getForges } from "../lib/weaver";
 import { readDeployment } from "../lib/site";
 
@@ -25,64 +25,55 @@ export default async function Landing() {
         cta={{ label: "GET EARLY ACCESS →", href: "/dashboard" }}
       />
       <main className="mx-auto max-w-7xl px-4 md:px-6">
-        {/* HERO */}
-        <section className="grid grid-cols-1 gap-10 pt-10 lg:grid-cols-2">
-          <div>
-            <div className="font-tech text-lg tracking-[0.2em] text-fog">
-              <span className="text-lima">{"//"}</span> WEAVER
+        {/* HERO: arco + texto + logo integrados */}
+        <section className="relative mt-8 flex min-h-[88svh] flex-col overflow-hidden border border-line">
+          <HeroBackground />
+          <div className="pointer-events-none relative z-10 grid flex-1 grid-cols-1 content-center gap-10 p-6 pb-24 md:p-10 md:pb-28 lg:grid-cols-2">
+            <div>
+              <div className="font-tech text-lg tracking-[0.2em] text-fog">
+                <span className="text-lima">{"//"}</span> WEAVER
+              </div>
+              <h1 className="mt-4 text-6xl leading-[1.02] font-bold tracking-tight md:text-7xl">
+                A more open internet for intelligence<span className="text-lima">.</span>
+              </h1>
+              <p className="mt-5 max-w-[52ch] text-sm leading-relaxed text-fog">
+                Weaver is a decentralized compute network for the next generation of AI. Global GPUs. Open
+                access. Higher intelligence.
+              </p>
+              <div className="mt-7 flex flex-wrap items-center gap-6">
+                <a
+                  href="/dashboard"
+                  className="pointer-events-auto bg-lima px-7 py-3.5 text-base font-bold tracking-wide text-black transition-transform active:translate-y-[1px]"
+                >
+                  RUN LIVE DEMO →
+                </a>
+                <a href="#opportunity" className="pointer-events-auto font-tech text-xl tracking-[0.15em] hover:text-lima">
+                  READ THE MANIFESTO
+                </a>
+              </div>
             </div>
-            <h1 className="mt-4 text-5xl leading-[1.02] font-bold tracking-tight md:text-6xl">
-              A more open internet for intelligence<span className="text-lima">.</span>
-            </h1>
-            <p className="mt-5 max-w-[52ch] text-sm leading-relaxed text-fog">
-              Weaver is a decentralized compute network for the next generation of AI. Global GPUs. Open
-              access. Higher intelligence.
-            </p>
-            <div className="mt-7 flex flex-wrap items-center gap-6">
-              <a
-                href="/dashboard"
-                className="bg-lima px-7 py-3.5 text-base font-bold tracking-wide text-black transition-transform active:translate-y-[1px]"
-              >
-                RUN LIVE DEMO →
-              </a>
-              <a href="#opportunity" className="font-tech text-xl tracking-[0.15em] hover:text-lima">
-                READ THE MANIFESTO
-              </a>
-            </div>
-          </div>
-          <div className="relative hidden border border-line bg-panel p-8 lg:block">
-            <span className="absolute top-2 left-2 font-tech text-lima">┌</span>
-            <span className="absolute top-2 right-2 font-tech text-lima">┐</span>
-            <span className="absolute bottom-2 left-2 font-tech text-lima">└</span>
-            <span className="absolute right-2 bottom-2 font-tech text-lima">┘</span>
-            <div className="flex h-full items-center justify-center">
-              <Image
-                src="/weaver-logo.png"
-                alt="Weaver — araña W"
-                width={380}
-                height={380}
-                priority
-                className="mix-blend-screen"
-              />
-            </div>
-            <div className="absolute top-8 right-6 text-right font-tech text-sm leading-relaxed text-fog">
-              COMPUTE
-              <br />
-              BELONGS
-              <br />
-              TO
-              <br />
-              EVERYONE
-              <br />
-              <span className="text-lima">{"//"}</span>
+            <div className="relative hidden lg:block">
+              <div className="flex h-full items-center justify-center">
+                <div className="relative aspect-square w-full max-w-[380px]">
+                  <Image src="/weaver-mark.png" alt="Weaver — araña W" fill sizes="380px" className="object-contain mix-blend-screen" priority />
+                </div>
+              </div>
+              <div className="absolute top-2 right-2 text-right font-tech text-sm leading-relaxed text-fog">
+                COMPUTE
+                <br />
+                BELONGS
+                <br />
+                TO
+                <br />
+                EVERYONE
+                <br />
+                <span className="text-lima">{"//"}</span>
+              </div>
             </div>
           </div>
-        </section>
-
-        {/* WAVE */}
-        <section className="relative mt-8 border border-line">
-          <WaveCanvas className="block h-[380px] w-full md:h-[440px]" />
-          <div className="absolute bottom-5 left-5 border-l border-lima pl-3 font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
+          <span className="absolute top-3 left-4 z-10 font-tech text-lima">+</span>
+          <span className="absolute top-3 right-4 z-10 font-tech text-lima">+</span>
+          <div className="absolute bottom-5 left-5 z-10 border-l border-lima pl-3 font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
             [ 001 ]<br />
             DISTRIBUTED
             <br />
@@ -90,7 +81,7 @@ export default async function Landing() {
             <br />
             BORDERLESS
           </div>
-          <div className="absolute right-5 bottom-5 text-right font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
+          <div className="absolute right-5 bottom-5 z-10 text-right font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
             -34.6037°
             <br />
             -58.3816°
@@ -100,8 +91,6 @@ export default async function Landing() {
             <br />
             NETWORK
           </div>
-          <span className="absolute top-3 left-4 font-tech text-lima">+</span>
-          <span className="absolute top-3 right-4 font-tech text-lima">+</span>
         </section>
 
         {/* PILLARS */}

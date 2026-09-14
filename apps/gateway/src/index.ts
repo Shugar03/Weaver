@@ -6,6 +6,7 @@ import { EtrScheduler } from "@weaver/scheduler";
 import type { ForgeView } from "@weaver/scheduler";
 import type { ForgeExec } from "@weaver/forge-exec";
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
+import type { ApiKeys } from "@weaver/api-keys";
 import type { Telemetry } from "@weaver/telemetry";
 
 export type Paywall = { verifier: PaymentVerifier; payTo: string };
@@ -18,15 +19,33 @@ type Deps = {
   chaos?: Chaos;
   telemetry?: Telemetry;
   node?: NodeInfo;
+  apiKeys?: ApiKeys;
 };
 
 export function createApp(deps: Deps) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: { keyId?: string } }>();
   const scheduler = new EtrScheduler();
 
   // S7: CORS primero que todo (incluido paywall): el dashboard vive en otro origen.
   // Abierto por ser red local de demo; producción lo acota (declarado, no olvidado).
   app.use("/*", cors());
+
+  // S10a: API keys estilo provider. Válida abre e identifica (metering);
+  // trucha → 401; ausente → sigue al paywall. Sin apiKeys en Deps, todo pasa.
+  if (deps.apiKeys) {
+    const keys = deps.apiKeys;
+    app.use("/v1/*", async (c, next) => {
+      const auth = c.req.header("authorization");
+      if (!auth?.startsWith("Bearer ")) {
+        await next();
+        return;
+      }
+      const info = await keys.verify(auth.slice("Bearer ".length));
+      if (!info) return c.json({ error: "API key inválida", code: "invalid_key" }, 401);
+      c.set("keyId", info.id);
+      await next();
+    });
+  }
 
   // S4: paywall x402 opt-in. Sin paywall en Deps, todo abierto (dev/S2).
   if (deps.paywall) {
@@ -34,6 +53,10 @@ export function createApp(deps: Deps) {
     app.use("/v1/*", async (c, next) => {
       const header = c.req.header("x-payment");
       const requirements: PaymentRequirements = { scheme: "exact", network: "stellar:testnet", price: "$0.01", payTo };
+      if (c.get("keyId")) {
+        await next(); // key válida: cliente identificado (allowlist dev), el cobro va por otro canal
+        return;
+      }
       const ok = header ? await verifier.verify(header, requirements) : false;
       if (!ok) return c.json({ x402Version: 2, error: "pago requerido", accepts: [requirements] }, 402);
       await next();
@@ -47,6 +70,23 @@ export function createApp(deps: Deps) {
     const ids = [...new Set(deps.forges().map((f) => f.model))];
     return c.json({ object: "list", data: ids.map((id) => ({ id, object: "model", owned_by: "weaver" })) });
   });
+
+  // S10a: administración de keys. Solo existe si hay apiKeys (operador local).
+  if (deps.apiKeys) {
+    const keys = deps.apiKeys;
+    app.post("/v1/admin/keys", async (c) => {
+      const body = await c.req.json<{ owner: string }>();
+      if (!body.owner) return c.json({ error: "falta owner" }, 400);
+      const { id, secret } = await keys.issue(body.owner);
+      return c.json({ id, secret }, 201);
+    });
+    app.get("/v1/admin/keys", async (c) => c.json(await keys.list()));
+    app.post("/v1/admin/keys/:id/revoke", async (c) => {
+      const ok = await keys.revoke(c.req.param("id"));
+      if (!ok) return c.json({ error: "key inexistente" }, 404);
+      return c.json({ revoked: true });
+    });
+  }
 
   // S7: kill switch del dashboard. Solo existe si el composition root da chaos.
   if (deps.chaos) {
@@ -96,6 +136,7 @@ export function createApp(deps: Deps) {
         ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
         ok,
         ts: Date.now(),
+        keyId: c.get("keyId"),
       });
     const stream = new ReadableStream({
       async start(controller) {
