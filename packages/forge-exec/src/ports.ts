@@ -9,10 +9,15 @@ export interface ForgeExec {
   execute(req: ExecRequest): AsyncIterable<StreamChunk>;
 }
 
-// Adapter fake para tests y gateway sin GPU (S2). Reemplaza sin tocar callers (LSP).
+// Adapter fake para tests y standby simulado (badge SIM en UI, jamás se hace pasar por real).
 export class FakeForgeExec implements ForgeExec {
-  readonly forgeId = "fake-forge";
-  readonly model = "qwen3.5:4b";
+  readonly forgeId: string;
+  readonly model: string;
+
+  constructor(opts: { forgeId?: string; model?: string } = {}) {
+    this.forgeId = opts.forgeId ?? "fake-forge";
+    this.model = opts.model ?? "qwen3:4b";
+  }
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     yield { token: `echo:${req.prompt.slice(0, 24)}`, done: false };
     yield { token: "", done: true };

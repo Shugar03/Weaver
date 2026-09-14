@@ -1,10 +1,11 @@
 // Module Telemetry — único que sabe de percentiles. El resto solo hace record().
-// Tabla futura: performance_samples(forge_id, model, ttft_ms, tps, ok, at).
-export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean };
+// In-memory = desde el boot (se declara en UI); tabla Postgres viene después (ADR-0002).
+export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number };
 
 export interface Telemetry {
   record(s: Sample): void;
   p50(model: string): number;
+  recent(n: number): Sample[];
 }
 
 export class InMemoryTelemetry implements Telemetry {
@@ -16,5 +17,8 @@ export class InMemoryTelemetry implements Telemetry {
     const xs = this.samples.filter((s) => s.model === model && s.ok).map((s) => s.ttftMs).sort((a, b) => a - b);
     if (xs.length === 0) return 0;
     return xs[Math.floor((xs.length - 1) / 2)];
+  }
+  recent(n: number): Sample[] {
+    return this.samples.slice(-Math.max(1, n)).reverse();
   }
 }

@@ -2,7 +2,10 @@
   "name": "weaver",
   "private": true,
   "packageManager": "pnpm@9.0.0",
-  "engines": { "node": ">=20.9.0", "pnpm": ">=9" },
+  "engines": {
+    "node": ">=20.9.0",
+    "pnpm": ">=9"
+  },
   "scripts": {
     "test": "turbo run test",
     "lint": "turbo run lint",
@@ -10,6 +13,7 @@
     "dev": "turbo run dev --parallel"
   },
   "devDependencies": {
+    "playwright": "^1.63.0",
     "turbo": "^2.0.0",
     "typescript": "^5.5.0"
   }

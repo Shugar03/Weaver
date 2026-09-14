@@ -3,12 +3,14 @@
 // siguiente y se mide el reroute (SLA <500ms). Si muere DESPUÉS, se propaga: reintentar
 // duplicaría tokens ya enviados, así que el gateway emite evento error y el cliente
 // reintenta con Idempotency-Key. Failover silencioso mid-stream = truncar respuestas.
+// lastForgeId: quién sirvió de verdad (para telemetry honesta del gateway).
 import type { ExecRequest, ForgeExec, StreamChunk } from "./ports.ts";
 
 export class FailoverForgeExec implements ForgeExec {
   readonly forgeId = "failover";
   readonly model: string;
   lastFailoverMs = 0;
+  lastForgeId: string | null = null;
   private readonly execs: ForgeExec[];
 
   constructor(execs: ForgeExec[]) {
@@ -24,6 +26,7 @@ export class FailoverForgeExec implements ForgeExec {
       let yielded = 0;
       try {
         for await (const chunk of exec.execute(req)) {
+          if (yielded === 0) this.lastForgeId = exec.forgeId;
           yielded++;
           yield chunk;
         }

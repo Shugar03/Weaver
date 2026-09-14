@@ -12,6 +12,7 @@ export type ForgeView = {
   loadTimeMs: number; // 0 si HOT
   price: number; // USD por job, para S2 (scoring con precio)
   reliability: number; // 0..1
+  sim?: boolean; // true = capacidad simulada (badge SIM en UI, nunca se hace pasar por real)
 };
 
 export type Decision = { forgeId: string; etrMs: number; reason: string };

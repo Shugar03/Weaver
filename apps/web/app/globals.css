@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #000000;
+  --color-panel: #050505;
+  --color-line: #1e1e1e;
+  --color-fog: #8a8a8a;
+  --color-lima: #d0ff00;
+  --color-danger: #ff3b3b;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-tech: "VT323", ui-monospace, monospace;
+}
+
+html {
+  background: var(--color-void);
+}
+
+body {
+  background: var(--color-void);
+  color: #ffffff;
+  font-family: var(--font-display);
+}
+
+::selection {
+  background: var(--color-lima);
+  color: #000000;
+}
+
+/* caret + scrollbar de terminal, nada más */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a #000000;
+}

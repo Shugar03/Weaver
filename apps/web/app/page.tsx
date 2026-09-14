@@ -1,0 +1,135 @@
+import Image from "next/image";
+import { SiteHeader } from "../components/SiteHeader";
+import { Opportunity } from "../components/landing/Opportunity";
+import { Pillars } from "../components/landing/Pillars";
+import { Trusted } from "../components/landing/Trusted";
+import { WaveCanvas } from "../components/landing/WaveCanvas";
+import { getForges } from "../lib/weaver";
+import { readDeployment } from "../lib/site";
+
+const GATEWAY = process.env.WEAVER_GATEWAY ?? "http://localhost:3001";
+
+export default async function Landing() {
+  const [forges, deployment] = await Promise.all([getForges(GATEWAY), readDeployment()]);
+  const hot = forges?.filter((f) => f.hot).length ?? 0;
+
+  return (
+    <>
+      <SiteHeader
+        logoHref="/"
+        links={[
+          { label: "PRODUCT", href: "#pillars" },
+          { label: "TECHNOLOGY", href: "/dashboard" },
+          { label: "DOCS", href: "https://github.com/Shugar03/Weaver" },
+        ]}
+        cta={{ label: "GET EARLY ACCESS →", href: "/dashboard" }}
+      />
+      <main className="mx-auto max-w-7xl px-4 md:px-6">
+        {/* HERO */}
+        <section className="grid grid-cols-1 gap-10 pt-10 lg:grid-cols-2">
+          <div>
+            <div className="font-tech text-lg tracking-[0.2em] text-fog">
+              <span className="text-lima">{"//"}</span> WEAVER
+            </div>
+            <h1 className="mt-4 text-5xl leading-[1.02] font-bold tracking-tight md:text-6xl">
+              A more open internet for intelligence<span className="text-lima">.</span>
+            </h1>
+            <p className="mt-5 max-w-[52ch] text-sm leading-relaxed text-fog">
+              Weaver is a decentralized compute network for the next generation of AI. Global GPUs. Open
+              access. Higher intelligence.
+            </p>
+            <div className="mt-7 flex flex-wrap items-center gap-6">
+              <a
+                href="/dashboard"
+                className="bg-lima px-7 py-3.5 text-base font-bold tracking-wide text-black transition-transform active:translate-y-[1px]"
+              >
+                RUN LIVE DEMO →
+              </a>
+              <a href="#opportunity" className="font-tech text-xl tracking-[0.15em] hover:text-lima">
+                READ THE MANIFESTO
+              </a>
+            </div>
+          </div>
+          <div className="relative hidden border border-line bg-panel p-8 lg:block">
+            <span className="absolute top-2 left-2 font-tech text-lima">┌</span>
+            <span className="absolute top-2 right-2 font-tech text-lima">┐</span>
+            <span className="absolute bottom-2 left-2 font-tech text-lima">└</span>
+            <span className="absolute right-2 bottom-2 font-tech text-lima">┘</span>
+            <div className="flex h-full items-center justify-center">
+              <Image
+                src="/weaver-logo.png"
+                alt="Weaver — araña W"
+                width={380}
+                height={380}
+                priority
+                className="mix-blend-screen"
+              />
+            </div>
+            <div className="absolute top-8 right-6 text-right font-tech text-sm leading-relaxed text-fog">
+              COMPUTE
+              <br />
+              BELONGS
+              <br />
+              TO
+              <br />
+              EVERYONE
+              <br />
+              <span className="text-lima">{"//"}</span>
+            </div>
+          </div>
+        </section>
+
+        {/* WAVE */}
+        <section className="relative mt-8 border border-line">
+          <WaveCanvas className="block h-[380px] w-full md:h-[440px]" />
+          <div className="absolute bottom-5 left-5 border-l border-lima pl-3 font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
+            [ 001 ]<br />
+            DISTRIBUTED
+            <br />
+            SCALABLE
+            <br />
+            BORDERLESS
+          </div>
+          <div className="absolute right-5 bottom-5 text-right font-tech text-sm leading-relaxed tracking-[0.15em] text-fog">
+            -34.6037°
+            <br />
+            -58.3816°
+            <br />
+            <span className="text-lima">{"//"}</span>
+            <br />A GLOBAL
+            <br />
+            NETWORK
+          </div>
+          <span className="absolute top-3 left-4 font-tech text-lima">+</span>
+          <span className="absolute top-3 right-4 font-tech text-lima">+</span>
+        </section>
+
+        {/* PILLARS */}
+        <section id="pillars" className="scroll-mt-20 pt-10">
+          <Pillars />
+        </section>
+
+        {/* OPPORTUNITY */}
+        <section id="opportunity" className="scroll-mt-20 pt-14">
+          <Opportunity deployment={deployment} forgeCount={forges?.length ?? null} hotCount={hot} />
+        </section>
+
+        {/* TRUSTED */}
+        <section className="pt-14">
+          <Trusted />
+        </section>
+      </main>
+      <footer className="mt-14 border-t border-line">
+        <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-6 font-tech text-base tracking-[0.15em] text-fog md:flex-row md:items-center md:justify-between md:px-6">
+          <span className="font-bold tracking-[0.3em] text-white">WEAVER</span>
+          <span>OPEN COMPUTE. HIGHER INTELLIGENCE.</span>
+          <span>EST. 2024</span>
+        </div>
+        <div className="flex justify-between px-4 font-tech text-lima md:px-6">
+          <span>+</span>
+          <span>+</span>
+        </div>
+      </footer>
+    </>
+  );
+}
