@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.next/
+turbo/
+*.local
+*.local.mjs
+.env*.local
+.ollama/
+models/
+target/
+.DS_Store
+.tgrep/
+test_snapshots/
+packages/benchmarks/results/

@@ -1,0 +1,17 @@
+{
+  "network": "testnet",
+  "contract_id": "CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3",
+  "admin": "GDQGSN4K3MEBNTYEOGFHAUPJAH6FMGSJC6W6K37RY43KMW44G3CP4SMA",
+  "token_usdc_sac": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "wasm_hash": "f76e9e7032416c3de2bf383853f18978d987cb779b989d7eb4f30727025003e7",
+  "worker": "GDWZGZBSGDM2522KDT4MZZ6MGDDBTIX2CPFLXZMWMCWOHAPARTUZJX6T",
+  "txs": {
+    "upload_wasm": "70f61c49c61364ba74fd7cc046902e837d93aa18ec74a552b3a4691d5e8ccfa9",
+    "deploy_contract": "27812722a571decbfb5e10e1457bcbcc2426ff70d1da600acf8a3a3843477355",
+    "init": "5e8b6628b5f5ad3274c4856d738b11642e35212e7d4d5726755db9aadd2875a5",
+    "fund_job_1": "177a7185e3349c0adef305ec856ba6d17d6868171c66388c8d3382b5eb727655",
+    "release_job_1": "d6e75fcdb967b56a4dd6cd2218f1e6a12efc636287212ed48bbf1d6b2ff86b3b"
+  },
+  "versions": { "sdk": "22.0.11", "cli": "28.0.0" },
+  "note": "Secrets viven en ~/.config/stellar, jamás en el repo. Loop vivo job 1: fund $0.01 client→escrow, release escrow→worker, balance worker 100000 verificado."
+}

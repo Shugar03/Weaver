@@ -1,0 +1,7 @@
+{
+  "name": "@weaver/benchmarks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "bench": "node src/bin.ts", "test": "node --test tests/*.test.ts", "lint": "tsc --noEmit -p tsconfig.json" }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "weaver-escrow"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "22"
+
+[dev-dependencies]
+soroban-sdk = { version = "22", features = ["testutils"] }
+
+# Exigido por stellar-cli build: sin overflow silencioso en release.
+[profile.release]
+overflow-checks = true
