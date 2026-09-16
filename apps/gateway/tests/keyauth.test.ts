@@ -41,24 +41,26 @@ describe("S10a keyauth", () => {
 });
 
 describe("S10a admin keys", () => {
-  it("issue → {id, secret}; list sin secretos; revoke", async () => {
+  it("issue → {id, secret}; list sin secretos; revoke (como operador)", async () => {
     const keys = new InMemoryApiKeys();
+    const op = await keys.issue("operator");
+    const auth = { authorization: `Bearer ${op.secret}` };
     const app = createApp({ forges, apiKeys: keys });
     const created = await app.request("/v1/admin/keys", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...auth },
       body: JSON.stringify({ owner: "jurado" }),
     });
     assert.equal(created.status, 201);
     const { id, secret } = (await created.json()) as { id: string; secret: string };
     assert.ok(secret.startsWith("wvr_"));
 
-    const listed = await app.request("/v1/admin/keys");
+    const listed = await app.request("/v1/admin/keys", { headers: auth });
     assert.equal(listed.status, 200);
     const items = (await listed.json()) as { id: string }[];
     assert.ok(items.some((k) => k.id === id));
 
-    const revoked = await app.request(`/v1/admin/keys/${id}/revoke`, { method: "POST" });
+    const revoked = await app.request(`/v1/admin/keys/${id}/revoke`, { method: "POST", headers: auth });
     assert.equal(revoked.status, 200);
 
     const gated = await app.request("/v1/jobs", {

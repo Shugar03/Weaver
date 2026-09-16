@@ -1,4 +1,6 @@
-// pnpm demo-shot — valida el loop demo en browser real:
+// LEGACY — superado por scripts/demo-capture.mjs (apunta a /dashboard,
+// puerto :3001 del código, operator key por env). Se conserva como referencia.
+// Lo que hacía: valida el loop demo en browser real:
 // RUN → stream → DONE → KILL → RUN (failover al sim) → REVIVIR.
 // Uso: node scripts/demo.mjs [url]  (gateway :3101 + ollama arriba, web en :3000)
 import { chromium } from "playwright";

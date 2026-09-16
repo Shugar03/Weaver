@@ -1,6 +1,6 @@
 // apps/gateway — Hono, OpenAI-compatible SSE. S2/S3/S4 viven acá.
 // Recibe dependencias, no las crea (testeabilidad). Idempotency-Key para fallback.
-import { Hono } from "hono";
+import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
 import { EtrScheduler } from "@weaver/scheduler";
 import type { ForgeView } from "@weaver/scheduler";
@@ -23,8 +23,21 @@ type Deps = {
 };
 
 export function createApp(deps: Deps) {
-  const app = new Hono<{ Variables: { keyId?: string } }>();
+  const app = new Hono<{ Variables: { keyId?: string; keyOwner?: string } }>();
   const scheduler = new EtrScheduler();
+
+  // S11: admin solo operador. Sin apiKeys (dev local), pasa todo (opt-in como el resto).
+  const requireOperator = async (c: Context, next: Next) => {
+    if (!deps.apiKeys) {
+      await next();
+      return;
+    }
+    if (c.get("keyOwner") !== "operator") {
+      if (!c.get("keyId")) return c.json({ error: "falta autenticación", code: "unauthorized" }, 401);
+      return c.json({ error: "requiere operador", code: "forbidden" }, 403);
+    }
+    await next();
+  };
 
   // S7: CORS primero que todo (incluido paywall): el dashboard vive en otro origen.
   // Abierto por ser red local de demo; producción lo acota (declarado, no olvidado).
@@ -43,6 +56,7 @@ export function createApp(deps: Deps) {
       const info = await keys.verify(auth.slice("Bearer ".length));
       if (!info) return c.json({ error: "API key inválida", code: "invalid_key" }, 401);
       c.set("keyId", info.id);
+      c.set("keyOwner", info.owner);
       await next();
     });
   }
@@ -74,14 +88,14 @@ export function createApp(deps: Deps) {
   // S10a: administración de keys. Solo existe si hay apiKeys (operador local).
   if (deps.apiKeys) {
     const keys = deps.apiKeys;
-    app.post("/v1/admin/keys", async (c) => {
+    app.post("/v1/admin/keys", requireOperator, async (c) => {
       const body = await c.req.json<{ owner: string }>();
       if (!body.owner) return c.json({ error: "falta owner" }, 400);
       const { id, secret } = await keys.issue(body.owner);
       return c.json({ id, secret }, 201);
     });
-    app.get("/v1/admin/keys", async (c) => c.json(await keys.list()));
-    app.post("/v1/admin/keys/:id/revoke", async (c) => {
+    app.get("/v1/admin/keys", requireOperator, async (c) => c.json(await keys.list()));
+    app.post("/v1/admin/keys/:id/revoke", requireOperator, async (c) => {
       const ok = await keys.revoke(c.req.param("id"));
       if (!ok) return c.json({ error: "key inexistente" }, 404);
       return c.json({ revoked: true });
@@ -91,7 +105,7 @@ export function createApp(deps: Deps) {
   // S7: kill switch del dashboard. Solo existe si el composition root da chaos.
   if (deps.chaos) {
     const chaos = deps.chaos;
-    app.post("/v1/admin/kill", async (c) => {
+    app.post("/v1/admin/kill", requireOperator, async (c) => {
       const body = await c.req.json<{ dead: boolean }>();
       const dead = body.dead === true;
       chaos.setDead(dead);
@@ -121,7 +135,12 @@ export function createApp(deps: Deps) {
   app.post("/v1/chat/completions", async (c) => {
     if (!deps.exec) return c.json({ error: "sin forge de ejecución" }, 503);
     const body = await c.req.json<{ model: string; messages: { role: string; content: string }[] }>();
-    const prompt = body.messages.map((m) => m.content).join("\n");
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const prompt = messages.map((m) => m.content).join("\n");
+    // S11: caps anti-DoS (un request gigante ahoga Ollama). 413 con código, jamás 500 ni OOM.
+    if (messages.length > 20 || prompt.length > 8000) {
+      return c.json({ error: "prompt demasiado grande", code: "prompt_too_large" }, 413);
+    }
     const exec = deps.exec;
     const id = `chatcmpl-${crypto.randomUUID()}`;
     // S9a: telemetría de la ejecución real (quién sirvió + TTFT + ok).

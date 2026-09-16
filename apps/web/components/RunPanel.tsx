@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { runChat, setKill, type RunStatus } from "../lib/weaver";
+import { runChat, saveOperatorKey, setKill, type RunStatus } from "../lib/weaver";
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   idle: "listo",
@@ -62,12 +62,27 @@ export function RunPanel({ base, lastTx }: { base: string; lastTx: { label: stri
   }
 
   async function onKillToggle() {
-    try {
+    // La operator key vive en TU browser (localStorage), jamás en el repo.
+    const attempt = async () => {
       await setKill(base, !dead);
       setDead(!dead);
+    };
+    try {
+      await attempt();
     } catch {
-      setStatus("error");
-      setStatusDetail("gateway caído — levantá :3001");
+      const key = window.prompt("Operator key (la imprime el gateway al arrancar):");
+      if (!key) {
+        setStatus("error");
+        setStatusDetail("kill requiere operator key");
+        return;
+      }
+      saveOperatorKey(key.trim());
+      try {
+        await attempt();
+      } catch {
+        setStatus("error");
+        setStatusDetail("operator key inválida o gateway caído");
+      }
     }
   }
 

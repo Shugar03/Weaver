@@ -1,4 +1,4 @@
-// Module Telemetry — único que sabe de percentiles. El resto solo hace record().
+export const MAX_SAMPLES = 500; // S11: tope anti-DoS lento. Lo viejo se evicta.
 // In-memory = desde el boot (se declara en UI); tabla Postgres viene después (ADR-0002).
 export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number; keyId?: string };
 
@@ -12,6 +12,9 @@ export class InMemoryTelemetry implements Telemetry {
   private samples: Sample[] = [];
   record(s: Sample): void {
     this.samples.push(s);
+    if (this.samples.length > MAX_SAMPLES) {
+      this.samples.splice(0, this.samples.length - MAX_SAMPLES);
+    }
   }
   p50(model: string): number {
     const xs = this.samples.filter((s) => s.model === model && s.ok).map((s) => s.ttftMs).sort((a, b) => a - b);

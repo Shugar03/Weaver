@@ -42,10 +42,30 @@ export async function postJobs(base: string, model: string): Promise<JobsDecisio
   return (await r.json()) as JobsDecision;
 }
 
+export function operatorKey(): string | null {
+  try {
+    return localStorage.getItem("weaver:operator-key");
+  } catch {
+    return null;
+  }
+}
+
+export function saveOperatorKey(key: string): void {
+  try {
+    localStorage.setItem("weaver:operator-key", key);
+  } catch {
+    /* sin storage: se pide cada vez */
+  }
+}
+
 export async function setKill(base: string, dead: boolean): Promise<void> {
+  const key = operatorKey();
   const r = await fetch(`${base}/v1/admin/kill`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(key ? { authorization: `Bearer ${key}` } : {}),
+    },
     body: JSON.stringify({ dead }),
   });
   if (!r.ok) throw new Error(`kill: http ${r.status}`);

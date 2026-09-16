@@ -196,6 +196,25 @@ export function ChatApp({ base }: { base: string }) {
     setStatusDetail("");
   }
 
+  // ZDR también es poder borrar lo tuyo: vive solo en tu browser, se borra acá.
+  function deleteChat(id: string) {
+    setChats((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(next));
+      } catch {
+        /* nada */
+      }
+      return next;
+    });
+    if (id === activeId) {
+      setActiveId(`c-${Date.now()}`);
+      setMessages([]);
+      setStatus("idle");
+      setStatusDetail("");
+    }
+  }
+
   async function copy(text: string, i: number) {
     try {
       await navigator.clipboard.writeText(text);
@@ -251,15 +270,23 @@ export function ChatApp({ base }: { base: string }) {
             <div className="px-1 font-tech text-sm tracking-[0.2em] text-fog">Recent</div>
             <div className="mt-1 space-y-0.5">
               {chats.slice(0, 5).map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => openChat(c)}
-                  className={`block w-full truncate px-2 py-1.5 text-left font-tech text-lg hover:bg-line/60 ${
-                    c.id === activeId ? "text-lima" : "text-fog"
-                  }`}
-                >
-                  {c.title}
-                </button>
+                <div key={c.id} className="group flex items-center">
+                  <button
+                    onClick={() => openChat(c)}
+                    className={`block min-w-0 flex-1 truncate px-2 py-1.5 text-left font-tech text-lg hover:bg-line/60 ${
+                      c.id === activeId ? "text-lima" : "text-fog"
+                    }`}
+                  >
+                    {c.title}
+                  </button>
+                  <button
+                    onClick={() => deleteChat(c.id)}
+                    title="Borrar (solo existe en tu browser)"
+                    className="shrink-0 px-2 font-tech text-lg text-fog hover:text-danger md:hidden md:group-hover:block"
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
               {chats.length === 0 && <div className="px-2 py-1.5 font-tech text-lg text-fog">Sin chats todavía.</div>}
             </div>

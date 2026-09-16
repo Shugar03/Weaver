@@ -58,6 +58,7 @@ const operator = await apiKeys.issue("operator");
 console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
 
 const port = Number(process.env.PORT ?? 3001);
-serve({ fetch: app.fetch, port }, (info) => {
+// S11: loopback only. En esta LAN nadie más toca admin ni paga de más.
+serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
   console.log(`weaver-gateway en http://localhost:${info.port}`);
 });

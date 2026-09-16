@@ -34,7 +34,9 @@ export default async function Landing() {
                 <span className="text-lima">{"//"}</span> WEAVER
               </div>
               <h1 className="mt-4 text-6xl leading-[1.02] font-bold tracking-tight md:text-7xl">
-                A more open internet for intelligence<span className="text-lima">.</span>
+                THE NEW DATACENTER
+                <br />
+                HAS NO WALLS<span className="text-lima">.</span>
               </h1>
               <p className="mt-5 max-w-[52ch] text-sm leading-relaxed text-fog">
                 Weaver is a decentralized compute network for the next generation of AI. Global GPUs. Open
@@ -101,6 +103,40 @@ export default async function Landing() {
         {/* OPPORTUNITY */}
         <section id="opportunity" className="scroll-mt-20 pt-14">
           <Opportunity deployment={deployment} forgeCount={forges?.length ?? null} hotCount={hot} />
+        </section>
+
+        {/* PRIVACY */}
+        <section className="pt-14">
+          <div className="border border-lima/60 bg-panel p-6 md:p-10">
+            <div className="font-tech text-lg tracking-[0.2em] text-fog">
+              <span className="text-lima">{"//"}</span> PRIVACY
+            </div>
+            <h2 className="mt-4 max-w-[18ch] text-4xl leading-[1.02] font-bold tracking-tight md:text-6xl">
+              WE CAN&apos;T SELL WHAT WE DON&apos;T KEEP<span className="text-lima">.</span>
+            </h2>
+            <p className="mt-4 max-w-[60ch] text-sm leading-relaxed text-fog">
+              No disk in the middle. Your prompts live in RAM and die with the request.
+              The chain only ever sees money.
+            </p>
+            <div className="mt-8 grid grid-cols-1 gap-px bg-line md:grid-cols-3">
+              {[
+                ["PROMPTS", "die with the request"],
+                ["CHATS", "yours, deletable, on your device"],
+                ["LEDGER", "amounts + addresses, public forever"],
+              ].map(([k, v]) => (
+                <div key={k} className="bg-panel p-5">
+                  <div className="font-tech text-lg tracking-[0.2em] text-lima">{k}</div>
+                  <div className="mt-1 font-tech text-xl leading-snug">{v}</div>
+                </div>
+              ))}
+            </div>
+            <a
+              href="/security"
+              className="mt-6 inline-block border-b border-lima pb-1 font-tech text-xl tracking-[0.15em] text-white hover:text-lima"
+            >
+              READ THE SECURITY MODEL →
+            </a>
+          </div>
         </section>
 
         {/* TRUSTED */}
