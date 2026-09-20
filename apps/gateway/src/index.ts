@@ -158,6 +158,14 @@ export function createApp(deps: Deps) {
     return c.json((await deps.telemetry?.recent(limit)) ?? []);
   });
 
+  // S17a: metering por key (o nodo). spent = ok × $0.01 (JOB_PRICE_USDC).
+  app.get("/v1/usage", async (c) => {
+    const keyId = c.req.query("keyId") || undefined;
+    return c.json(
+      (await deps.telemetry?.usage(keyId)) ?? { jobs: 0, ok: 0, okRate: 0, spentUSDC: 0 },
+    );
+  });
+
   const nodeVersion = deps.node?.version ?? "0.1.0-dev";
   const nodeStartedAt = deps.node?.startedAt ?? Date.now();
   app.get("/v1/status", (c) => c.json({ version: nodeVersion, uptimeMs: Date.now() - nodeStartedAt }));

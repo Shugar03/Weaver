@@ -1,8 +1,9 @@
 // Module Telemetry — Postgres (ADR-0002). Misma Interface, queries con índice model+ts.
 // p50 se calcula en SQL (percentile_cont); recent pagina por id DESC.
 import { and, desc, eq, sql } from "drizzle-orm";
+import { JOB_PRICE_USDC } from "@weaver/settlement";
 import { type Db, performanceSamples } from "@weaver/db";
-import type { Sample, Telemetry } from "./ports.ts";
+import type { Sample, Telemetry, Usage } from "./ports.ts";
 
 export class PostgresTelemetry implements Telemetry {
   private readonly db: Db;
@@ -43,5 +44,24 @@ export class PostgresTelemetry implements Telemetry {
       ts: r.ts,
       ...(r.keyId ? { keyId: r.keyId } : {}),
     }));
+  }
+
+  async usage(keyId?: string): Promise<Usage> {
+    const where = keyId ? eq(performanceSamples.keyId, keyId) : undefined;
+    const rows = await this.db
+      .select({
+        jobs: sql<number>`count(*)::int`,
+        ok: sql<number>`count(*) filter (where ok)::int`,
+      })
+      .from(performanceSamples)
+      .where(where);
+    const jobs = rows[0]?.jobs ?? 0;
+    const ok = rows[0]?.ok ?? 0;
+    return {
+      jobs,
+      ok,
+      okRate: jobs === 0 ? 0 : ok / jobs,
+      spentUSDC: Math.round(ok * JOB_PRICE_USDC * 100) / 100,
+    };
   }
 }
