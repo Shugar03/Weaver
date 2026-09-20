@@ -20,6 +20,9 @@ export const performanceSamples = pgTable(
     ok: boolean("ok").notNull(),
     ts: bigint("ts", { mode: "number" }).notNull(),
     keyId: text("key_id"),
+    fundTx: text("fund_tx"),
+    releaseTx: text("release_tx"),
+    settleStatus: text("settle_status"),
   },
   (t) => [index("samples_model_ts_idx").on(t.model, t.ts)],
 );

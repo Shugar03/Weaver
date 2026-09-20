@@ -19,6 +19,9 @@ export class PostgresTelemetry implements Telemetry {
       ok: s.ok,
       ts: s.ts,
       keyId: s.keyId ?? null,
+      fundTx: s.settle?.fundTx ?? null,
+      releaseTx: s.settle?.releaseTx ?? null,
+      settleStatus: s.settle?.status ?? null,
     });
   }
 
@@ -43,6 +46,15 @@ export class PostgresTelemetry implements Telemetry {
       ok: r.ok,
       ts: r.ts,
       ...(r.keyId ? { keyId: r.keyId } : {}),
+      ...(r.settleStatus
+        ? {
+            settle: {
+              status: r.settleStatus as "pending" | "settled" | "failed",
+              ...(r.fundTx ? { fundTx: r.fundTx } : {}),
+              ...(r.releaseTx ? { releaseTx: r.releaseTx } : {}),
+            },
+          }
+        : {}),
     }));
   }
 

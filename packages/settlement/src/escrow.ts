@@ -81,6 +81,11 @@ export class RpcSubmitter implements ChainSubmitter {
       .addOperation(op)
       .setTimeout(30)
       .build();
+    // La simulación da el returnValue (jobId del fund) ANTES de firmar.
+    const sim = await this.server.simulateTransaction(built);
+    if (rpc.Api.isSimulationError(sim)) {
+      throw new Error(`simulate ${fn}: ${JSON.stringify(sim.error)}`);
+    }
     const prepared = await this.server.prepareTransaction(built);
     prepared.sign(this.keypair);
     const sent = await this.server.sendTransaction(prepared);
@@ -92,10 +97,7 @@ export class RpcSubmitter implements ChainSubmitter {
     for (;;) {
       const got = await this.server.getTransaction(hash);
       if (got.status === "SUCCESS") {
-        const meta = got.resultMetaXdr as unknown as {
-          v3?: () => { sorobanMeta?: () => { returnValue?: () => xdr.ScVal } };
-        };
-        const retval = meta.v3?.()?.sorobanMeta?.()?.returnValue?.();
+        const retval = sim.result?.retval;
         return retval ? { txHash: hash, retval } : { txHash: hash };
       }
       if (got.status === "FAILED" || Date.now() > deadline) {

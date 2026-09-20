@@ -1,7 +1,15 @@
 export const MAX_SAMPLES = 500; // S11: tope anti-DoS lento. Lo viejo se evicta.
 import { JOB_PRICE_USDC } from "@weaver/settlement";
 // In-memory = desde el boot (se declara en UI); tabla Postgres viene después (ADR-0002).
-export type Sample = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number; keyId?: string };
+export type Sample = {
+  forgeId: string;
+  model: string;
+  ttftMs: number;
+  ok: boolean;
+  ts: number;
+  keyId?: string;
+  settle?: { fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
+};
 
 // S17a — metering: lo consumido por key (o todo el nodo sin key).
 export type Usage = { jobs: number; ok: number; okRate: number; spentUSDC: number };

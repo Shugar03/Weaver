@@ -6,6 +6,7 @@ import { EtrScheduler } from "@weaver/scheduler";
 import type { ForgeView } from "@weaver/scheduler";
 import type { ForgeExec } from "@weaver/forge-exec";
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
+import type { SettleReceipt } from "@weaver/settlement";
 import type { ApiKeys } from "@weaver/api-keys";
 import type { Telemetry } from "@weaver/telemetry";
 
@@ -20,6 +21,7 @@ type Deps = {
   telemetry?: Telemetry;
   node?: NodeInfo;
   apiKeys?: ApiKeys;
+  settlement?: { settleJob(): Promise<SettleReceipt> }; // S17b: ausente = sin liquidación (dev)
   rateLimit?: { rpm: number }; // S15a: ausente = abierto (dev)
   corsOrigins?: string[]; // S15a: ausente = abierto (dev); presente = allowlist
 };
@@ -195,17 +197,32 @@ export function createApp(deps: Deps) {
     const servedForge = () =>
       (exec as unknown as { lastForgeId?: string | null }).lastForgeId ?? exec.forgeId;
     const telRecord = (ok: boolean) => {
-      // Fire-and-forget a propósito: telemetría caída jamás voltea un request.
-      deps.telemetry
-        ?.record({
-          forgeId: servedForge(),
-          model: body.model,
-          ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
-          ok,
-          ts: Date.now(),
-          keyId: c.get("keyId"),
-        })
-        .catch(() => {});
+      const base = {
+        forgeId: servedForge(),
+        model: body.model,
+        ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
+        ok,
+        ts: Date.now(),
+        keyId: c.get("keyId"),
+      };
+      // S17b: lo fallido no se paga (solo se registra). Lo OK liquida en background:
+      // fire-and-forget a propósito — settle lento o caído jamás frena ni voltea requests.
+      if (!ok || !deps.settlement) {
+        deps.telemetry?.record(base).catch(() => {});
+        return;
+      }
+      const settlement = deps.settlement;
+      void (async () => {
+        try {
+          const r = await settlement.settleJob();
+          await deps.telemetry?.record({
+            ...base,
+            settle: { fundTx: r.fundTx, releaseTx: r.releaseTx, status: "settled" },
+          });
+        } catch {
+          await deps.telemetry?.record({ ...base, settle: { status: "failed" } }).catch(() => {});
+        }
+      })();
     };
     const stream = new ReadableStream({
       async start(controller) {

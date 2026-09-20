@@ -13,7 +13,7 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./index.ts";
 import { FailoverForgeExec, FakeForgeExec, OllamaMLXAdapter, SwitchableExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
-import { FacilitatorVerifier } from "@weaver/settlement";
+import { EscrowSettlement, FacilitatorVerifier, RpcSubmitter } from "@weaver/settlement";
 import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
 import type { ForgeView } from "@weaver/scheduler";
@@ -64,7 +64,7 @@ const app = createApp({
   exec: new FailoverForgeExec([primary, standby]),
   chaos: { setDead: (dead: boolean) => primary.setDead(dead) },
   // S9a: historial en memoria = desde el boot (se declara en la UI /forge).
-  // S16a: con DATABASE_URL, Postgres (Supabase); sin ella, in-memory (dev).
+  // S16a: con DATABASE_URL, Postgres; sin ella, in-memory (dev).
   telemetry: process.env.DATABASE_URL
     ? new PostgresTelemetry(dbFromUrl(process.env.DATABASE_URL))
     : new InMemoryTelemetry(),
@@ -74,6 +74,23 @@ const app = createApp({
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
   ...(payTo ? { paywall: { verifier: new FacilitatorVerifier(), payTo } } : {}),
+  // S17b: liquidación programática opt-in. Sin SETTLEMENT_SECRET no hay settle
+  // (dev/demo intactos). La secret jamás se loguea; WORKER_ADDRESS cobra.
+  ...(process.env.SETTLEMENT_SECRET
+    ? {
+        settlement: new EscrowSettlement(
+          new RpcSubmitter("https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET),
+          {
+            contractId: "CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3",
+            operator: "GDQGSN4K3MEBNTYEOGFHAUPJAH6FMGSJC6W6K37RY43KMW44G3CP4SMA",
+            worker:
+              process.env.WORKER_ADDRESS ??
+              "GDWZGZBSGDM2522KDT4MZZ6MGDDBTIX2CPFLXZMWMCWOHAPARTUZJX6T",
+            payout: 100000, // $0.01 USDC
+          },
+        ),
+      }
+    : {}),
 });
 
 // S10a: operador fijo por env (público) o efímero impreso (dev local).
@@ -93,6 +110,6 @@ const hostname = process.env.HOST ?? "127.0.0.1";
 serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`weaver-gateway en http://${info.address}:${info.port}`);
   console.log(
-    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"}`,
+    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"} settle=${process.env.SETTLEMENT_SECRET ? "ON" : "OFF"} db=${process.env.DATABASE_URL ? "pg" : "mem"}`,
   );
 });
