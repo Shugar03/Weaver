@@ -1,6 +1,13 @@
-# ADR 0002 — Postgres cloud (Supabase) + Redis cloud, nada local pesado
+# ADR 0002 — Postgres en VPS propio (antes: Supabase cloud) + Redis cloud, nada local pesado
 
-Fecha: 2026-09-14 · Estado: aceptado
+Fecha: 2026-09-14 · Estado: modificado 2026-09-20
+
+## Enmienda 20/09
+
+Supabase descartado (decisión del equipo: un vendor menos, cero cuentas nuevas).
+Postgres corre en el mismo VPS del gateway (`DATABASE_URL` interna, migration por
+`psql`). El código no cambió: `packages/db` es Postgres pelado, vendor-agnóstico.
+Redis/Upstash sigue igual (queue/rate post-hackathon).
 
 ## Contexto
 

@@ -1,4 +1,5 @@
--- S16a — migración inicial (aplicar en Supabase dashboard → SQL editor).
+-- S16a — migración inicial. Aplicar con psql en el VPS:
+--   psql "$DATABASE_URL" -f packages/db/migrations/0001_init.sql
 -- Solo tablas vivas del gateway. jobs/forges/instances/settlements post-hackathon.
 create table if not exists api_keys (
   id text primary key,
