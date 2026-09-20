@@ -1,4 +1,0 @@
-
-> @weaver/scheduler@0.1.0 build /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/scheduler
-> tsc --noEmit -p tsconfig.json
-

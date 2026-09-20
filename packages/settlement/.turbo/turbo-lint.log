@@ -1,4 +1,0 @@
-
-> @weaver/settlement@0.1.0 lint /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/settlement
-> tsc --noEmit -p tsconfig.json
-

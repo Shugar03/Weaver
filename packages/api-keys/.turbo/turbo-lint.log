@@ -1,4 +1,0 @@
-
-> @weaver/api-keys@0.1.0 lint /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/api-keys
-> tsc --noEmit -p tsconfig.json
-

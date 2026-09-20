@@ -1,4 +1,0 @@
-
-> @weaver/web@0.1.0 lint /Users/sebastianpazvillarreal/orca/projects/Weaver/apps/web
-> tsc --noEmit -p tsconfig.json
-

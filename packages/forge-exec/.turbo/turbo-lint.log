@@ -1,4 +1,0 @@
-
-> @weaver/forge-exec@0.1.0 lint /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/forge-exec
-> tsc --noEmit -p tsconfig.json
-

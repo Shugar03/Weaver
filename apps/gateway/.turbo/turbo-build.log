@@ -1,4 +1,0 @@
-
-> @weaver/gateway@0.1.0 build /Users/sebastianpazvillarreal/orca/projects/Weaver/apps/gateway
-> tsc --noEmit -p tsconfig.json
-
