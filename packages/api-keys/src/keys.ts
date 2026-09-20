@@ -15,6 +15,7 @@ function sha(secret: string): Buffer {
 
 export interface ApiKeys {
   issue(owner: string): Promise<KeyInfo & { secret: string }>;
+  seed(owner: string, secret: string): Promise<KeyInfo>; // S15a: secreto conocido (OPERATOR_KEY fija)
   verify(secret: string): Promise<KeyInfo | null>;
   revoke(id: string): Promise<boolean>;
   list(): Promise<KeyPublic[]>;
@@ -29,6 +30,12 @@ export class InMemoryApiKeys implements ApiKeys {
     const secret = `wvr_${randomBytes(24).toString("base64url")}`;
     this.keys.set(id, { id, owner, hash: sha(secret).toString("hex"), createdAt: Date.now(), revoked: false });
     return { id, owner, secret };
+  }
+
+  async seed(owner: string, secret: string): Promise<KeyInfo> {
+    const id = `key_${Date.now().toString(36)}_${(this.counter++).toString(36)}`;
+    this.keys.set(id, { id, owner, hash: sha(secret).toString("hex"), createdAt: Date.now(), revoked: false });
+    return { id, owner };
   }
 
   async verify(secret: string): Promise<KeyInfo | null> {

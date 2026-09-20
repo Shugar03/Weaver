@@ -1,13 +1,19 @@
-// Composition root local: forges reales + standby simulado + kill switch.
+// Composition root: forges reales + standby simulado + kill switch.
 // - ollama-local: Forge real (Ollama en la Air), HOT mientras vive.
 // - forge-sim-01: capacidad SIMULADA (badge SIM en UI) para demo de routing/failover.
 // - KILL apaga el primario: el scheduler lo ve COLD caro y el failover salta al sim.
-// Sin paywall (bench/dev/demo).
+// Env (todo opcional, defaults = dev local idéntico a siempre):
+//   PORT, HOST (default 127.0.0.1 — público exige 0.0.0.0 explícito),
+//   CORS_ORIGIN (coma-separado; ausente = abierto),
+//   OPERATOR_KEY (fija el admin entre reinicios; ausente = efímera impresa),
+//   PAYWALL_PAY_TO (presente = paywall x402 ON; ausente = off),
+//   RATE_LIMIT_RPM (default 120; 0 = off).
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { serve } from "@hono/node-server";
 import { createApp } from "./index.ts";
 import { FailoverForgeExec, FakeForgeExec, OllamaMLXAdapter, SwitchableExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys } from "@weaver/api-keys";
+import { FacilitatorVerifier } from "@weaver/settlement";
 import { InMemoryTelemetry } from "@weaver/telemetry";
 import type { ForgeView } from "@weaver/scheduler";
 
@@ -43,6 +49,13 @@ function forges(): ForgeView[] {
 
 const apiKeys = new InMemoryApiKeys();
 
+const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const payTo = process.env.PAYWALL_PAY_TO;
+const rpm = Number(process.env.RATE_LIMIT_RPM ?? 120);
+
 const app = createApp({
   forges,
   exec: new FailoverForgeExec([primary, standby]),
@@ -51,14 +64,29 @@ const app = createApp({
   telemetry: new InMemoryTelemetry(),
   node: { version: "0.1.0", startedAt: Date.now() },
   apiKeys,
+  ...(corsOrigins.length ? { corsOrigins } : {}),
+  ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
+  // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
+  ...(payTo ? { paywall: { verifier: new FacilitatorVerifier(), payTo } } : {}),
 });
 
-// S10a: key de operador impresa UNA vez (entorno local). No commitear, no logear en prod.
-const operator = await apiKeys.issue("operator");
-console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
+// S10a: operador fijo por env (público) o efímero impreso (dev local).
+// El secreto jamás se loguea cuando viene de env.
+const envOperator = process.env.OPERATOR_KEY;
+if (envOperator) {
+  await apiKeys.seed("operator", envOperator);
+  console.log("weaver operador: fijo por OPERATOR_KEY (no se muestra)");
+} else {
+  const operator = await apiKeys.issue("operator");
+  console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
+}
 
 const port = Number(process.env.PORT ?? 3001);
-// S11: loopback only. En esta LAN nadie más toca admin ni paga de más.
-serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
-  console.log(`weaver-gateway en http://localhost:${info.port}`);
+const hostname = process.env.HOST ?? "127.0.0.1";
+// S15a: público exige HOST=0.0.0.0 explícito; el default sigue siendo loopback (S11).
+serve({ fetch: app.fetch, port, hostname }, (info) => {
+  console.log(`weaver-gateway en http://${info.address}:${info.port}`);
+  console.log(
+    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"}`,
+  );
 });

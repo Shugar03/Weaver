@@ -40,4 +40,11 @@ describe("S10a api-keys", () => {
     assert.ok(!("hash" in (list[0] as Record<string, unknown>)));
     assert.ok(!("secret" in (list[0] as Record<string, unknown>)));
   });
+
+  it("seed importa un secreto conocido (OPERATOR_KEY fija entre reinicios)", async () => {
+    const k = new InMemoryApiKeys();
+    const info = await k.seed("operator", "wvr_operador_fija_de_env");
+    assert.equal(info.owner, "operator");
+    assert.deepEqual(await k.verify("wvr_operador_fija_de_env"), { id: info.id, owner: "operator" });
+  });
 });

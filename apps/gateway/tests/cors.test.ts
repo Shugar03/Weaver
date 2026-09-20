@@ -29,3 +29,17 @@ describe("S7 CORS dashboard", () => {
     assert.equal(res.headers.get("access-control-allow-origin"), "*");
   });
 });
+
+describe("S15a CORS acotado", () => {
+  const origins = ["https://weaver.vercel.app"];
+  it("origen listado → ACAO con ese origen", async () => {
+    const app = createApp({ forges: () => [], corsOrigins: origins });
+    const res = await app.request("/v1/forges", { headers: { origin: origins[0] } });
+    assert.equal(res.headers.get("access-control-allow-origin"), origins[0]);
+  });
+  it("origen ajeno → sin ACAO", async () => {
+    const app = createApp({ forges: () => [], corsOrigins: origins });
+    const res = await app.request("/v1/forges", { headers: { origin: "https://evil.com" } });
+    assert.equal(res.headers.get("access-control-allow-origin"), null);
+  });
+});

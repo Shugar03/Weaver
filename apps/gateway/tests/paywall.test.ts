@@ -49,4 +49,21 @@ describe("S4 paywall x402", () => {
     const res = await app.request("/v1/jobs", { method: "POST", headers: json, body: jobsBody });
     assert.equal(res.status, 200);
   });
+
+  it("S15a: descubrimiento abierto con paywall (GETs no se cobran)", async () => {
+    const app = createApp({ forges, paywall });
+    assert.equal((await app.request("/v1/forges")).status, 200);
+    assert.equal((await app.request("/v1/models")).status, 200);
+    assert.equal((await app.request("/v1/status")).status, 200);
+  });
+
+  it("S15a: POST /v1/chat/completions también cobra", async () => {
+    const app = createApp({ forges, paywall });
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ model: "qwen3.5:4b", messages: [] }),
+    });
+    assert.equal(res.status, 402);
+  });
 });

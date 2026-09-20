@@ -20,6 +20,8 @@ type Deps = {
   telemetry?: Telemetry;
   node?: NodeInfo;
   apiKeys?: ApiKeys;
+  rateLimit?: { rpm: number }; // S15a: ausente = abierto (dev)
+  corsOrigins?: string[]; // S15a: ausente = abierto (dev); presente = allowlist
 };
 
 export function createApp(deps: Deps) {
@@ -41,7 +43,8 @@ export function createApp(deps: Deps) {
 
   // S7: CORS primero que todo (incluido paywall): el dashboard vive en otro origen.
   // Abierto por ser red local de demo; producción lo acota (declarado, no olvidado).
-  app.use("/*", cors());
+  // S15a: con corsOrigins solo esos orígenes reciben ACAO.
+  app.use("/*", cors(deps.corsOrigins?.length ? { origin: deps.corsOrigins } : undefined));
 
   // S10a: API keys estilo provider. Válida abre e identifica (metering);
   // trucha → 401; ausente → sigue al paywall. Sin apiKeys en Deps, todo pasa.
@@ -61,16 +64,49 @@ export function createApp(deps: Deps) {
     });
   }
 
+  // S15a: rate limit por caller (keyId o IP), barato y antes que paywall/exec.
+  // Ráfaga corta sí, abuso → 429 con código, jamás 500 ni caída.
+  if (deps.rateLimit) {
+    const { rpm } = deps.rateLimit;
+    const buckets = new Map<string, { window: number; count: number }>();
+    app.use("/v1/*", async (c, next) => {
+      const caller =
+        c.get("keyId") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anon";
+      const window = Math.floor(Date.now() / 60000);
+      if (buckets.size > 5000) {
+        for (const [k, v] of buckets) if (v.window < window) buckets.delete(k);
+      }
+      const b = buckets.get(caller);
+      if (b && b.window === window) {
+        b.count++;
+        if (b.count > rpm)
+          return c.json({ error: "demasiados requests", code: "rate_limited" }, 429);
+      } else {
+        buckets.set(caller, { window, count: 1 });
+      }
+      await next();
+    });
+  }
+
   // S4: paywall x402 opt-in. Sin paywall en Deps, todo abierto (dev/S2).
+  // S15a: se paga el cómputo (POST jobs/chat), no el descubrimiento (GETs abiertos
+  // para dashboard y agentes aunque el paywall esté ON).
   if (deps.paywall) {
     const { verifier, payTo } = deps.paywall;
     app.use("/v1/*", async (c, next) => {
-      const header = c.req.header("x-payment");
+      const paidRoute =
+        c.req.method === "POST" &&
+        (c.req.path === "/v1/jobs" || c.req.path === "/v1/chat/completions");
+      if (!paidRoute) {
+        await next();
+        return;
+      }
       const requirements: PaymentRequirements = { scheme: "exact", network: "stellar:testnet", price: "$0.01", payTo };
       if (c.get("keyId")) {
         await next(); // key válida: cliente identificado (allowlist dev), el cobro va por otro canal
         return;
       }
+      const header = c.req.header("x-payment");
       const ok = header ? await verifier.verify(header, requirements) : false;
       if (!ok) return c.json({ x402Version: 2, error: "pago requerido", accepts: [requirements] }, 402);
       await next();
