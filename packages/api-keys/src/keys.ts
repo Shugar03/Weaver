@@ -28,7 +28,7 @@ export class InMemoryApiKeys implements ApiKeys {
     const id = `key_${Date.now().toString(36)}_${(this.counter++).toString(36)}`;
     const secret = `wvr_${randomBytes(24).toString("base64url")}`;
     this.keys.set(id, { id, owner, hash: sha(secret).toString("hex"), createdAt: Date.now(), revoked: false });
-    return { id, secret };
+    return { id, owner, secret };
   }
 
   async verify(secret: string): Promise<KeyInfo | null> {

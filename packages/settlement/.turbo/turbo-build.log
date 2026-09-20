@@ -1,0 +1,4 @@
+
+> @weaver/settlement@0.1.0 build /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/settlement
+> tsc --noEmit -p tsconfig.json
+

@@ -1,0 +1,12 @@
+
+> @weaver/web@0.1.0 test /Users/sebastianpazvillarreal/orca/projects/Weaver/apps/web
+> node --test tests/*.test.ts
+
+ℹ tests 0
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2.29475

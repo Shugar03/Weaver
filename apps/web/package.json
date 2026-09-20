@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "test": "node --test tests/*.test.ts",
-    "lint": "eslint ."
+    "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

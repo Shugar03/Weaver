@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true, // S13: imports con .ts (Node strip-only los exige en runtime); builds son noEmit.
     "declaration": true,
     "sourceMap": true
   }

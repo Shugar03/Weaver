@@ -1,0 +1,4 @@
+
+> @weaver/telemetry@0.1.0 build /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/telemetry
+> tsc --noEmit -p tsconfig.json
+

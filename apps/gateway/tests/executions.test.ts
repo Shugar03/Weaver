@@ -6,7 +6,7 @@ import { FakeForgeExec } from "@weaver/forge-exec";
 import { InMemoryTelemetry } from "@weaver/telemetry";
 import type { Sample } from "@weaver/telemetry";
 
-async function runChat(app: { request: (input: string, init?: RequestInit) => Promise<Response> }) {
+async function runChat(app: { request: (input: string, init?: RequestInit) => Response | Promise<Response> }) {
   const res = await app.request("/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },

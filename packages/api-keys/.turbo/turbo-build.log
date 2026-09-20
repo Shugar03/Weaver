@@ -1,0 +1,4 @@
+
+> @weaver/api-keys@0.1.0 build /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/api-keys
+> tsc --noEmit -p tsconfig.json
+

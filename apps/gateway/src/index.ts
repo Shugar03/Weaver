@@ -96,7 +96,9 @@ export function createApp(deps: Deps) {
     });
     app.get("/v1/admin/keys", requireOperator, async (c) => c.json(await keys.list()));
     app.post("/v1/admin/keys/:id/revoke", requireOperator, async (c) => {
-      const ok = await keys.revoke(c.req.param("id"));
+      const id = c.req.param("id");
+      if (!id) return c.json({ error: "key inexistente" }, 404);
+      const ok = await keys.revoke(id);
       if (!ok) return c.json({ error: "key inexistente" }, 404);
       return c.json({ revoked: true });
     });

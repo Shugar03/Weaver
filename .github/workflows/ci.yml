@@ -1,0 +1,39 @@
+# .github/workflows/ci.yml — S13: red de seguridad del repo público.
+# Cada push/PR a main corre lo mismo que verificamos en la Air antes de commitear.
+# Sin deploy en este slice: solo gate. Si esto está rojo, nada más avanza.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      # lint último: el build genera next-env.d.ts + .next/types que el tsc de la web necesita.
+      - run: pnpm lint
+
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/weaver-escrow
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test
+      - run: cargo clippy -- -D warnings
+      - run: cargo fmt --check

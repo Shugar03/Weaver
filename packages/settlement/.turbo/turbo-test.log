@@ -1,0 +1,22 @@
+
+> @weaver/settlement@0.1.0 test /Users/sebastianpazvillarreal/orca/projects/Weaver/packages/settlement
+> node --test tests/*.test.ts
+
+▶ S4 FakeVerifier
+  ✔ acepta proof válido y rechaza trucho (0.240292ms)
+✔ S4 FakeVerifier (0.584333ms)
+▶ S4 FacilitatorVerifier
+  ✔ POST a /verify y mapea isValid:true → true (17.335917ms)
+  ✔ isValid:false o HTTP 500 → false, jamás throw (2.985709ms)
+✔ S4 FacilitatorVerifier (20.492917ms)
+▶ S4 quote
+  ✔ cotiza $0.01 en stellar:testnet (0.308ms)
+✔ S4 quote (0.432041ms)
+ℹ tests 4
+ℹ suites 3
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 201.82175

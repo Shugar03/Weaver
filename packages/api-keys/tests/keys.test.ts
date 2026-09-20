@@ -7,7 +7,9 @@ import { InMemoryApiKeys } from "../src/keys.ts";
 describe("S10a api-keys", () => {
   it("issue → secreto wvr_ usable una sola vez visible", async () => {
     const k = new InMemoryApiKeys();
-    const { id, secret } = await k.issue("jurado-demo");
+    const issued = await k.issue("jurado-demo");
+    const { id, secret } = issued;
+    assert.equal(issued.owner, "jurado-demo"); // el tipo promete KeyInfo: tiene que venir
     assert.ok(secret.startsWith("wvr_"));
     assert.deepEqual(await k.verify(secret), { id, owner: "jurado-demo" });
   });

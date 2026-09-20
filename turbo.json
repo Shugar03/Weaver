@@ -1,7 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
-    "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
+  "tasks": {
+    "build": { "dependsOn": ["^build"], "outputs": [] }, // S13: builds son typecheck (strip-only, sin dist).
     "test": { "dependsOn": ["build"] },
     "lint": {},
     "dev": { "cache": false, "persistent": true }
