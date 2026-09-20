@@ -7,7 +7,14 @@ import type { Deployment } from "../../lib/site";
 // Consola del proveedor (supply). Todo número es vivo o declarado:
 // gateway (/v1/status, /v1/executions), Ollama /api/ps directo, o deployment commiteado.
 // Lo que no medimos (temp, power, geo, 30d) NO se muestra. Punto.
-type Exec = { forgeId: string; model: string; ttftMs: number; ok: boolean; ts: number };
+type Exec = {
+  forgeId: string;
+  model: string;
+  ttftMs: number;
+  ok: boolean;
+  ts: number;
+  settle?: { fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
+};
 type Status = { version: string; uptimeMs: number } | null;
 type PsModel = { name?: string; size?: number; size_vram?: number; expires_at?: string };
 
@@ -113,7 +120,9 @@ export function ForgeConsole({
   const p50 = ttfts.length > 0 ? [...ttfts].sort((a, b) => a - b)[Math.floor((ttfts.length - 1) / 2)] : null;
   const last = execs?.[0] ?? null;
   const loaded = ps?.[0];
-  const releaseTx = deployment?.txs.release_job_1;
+  const settled = (execs ?? []).filter((e) => e.settle?.status === "settled");
+  const earnedUSDC = (settled.length * 0.01).toFixed(2);
+  const releaseTx = settled[0]?.settle?.releaseTx ?? deployment?.txs.release_job_1;
   void now;
 
   async function copyId() {
@@ -280,6 +289,26 @@ export function ForgeConsole({
                   <div><span className="text-fog">TTFT </span>{last.ttftMs} ms</div>
                   <div><span className="text-fog">WHEN </span>{ago(last.ts)}</div>
                 </div>
+                <div className="mt-2 font-tech text-lg">
+                  <span className="text-fog">SETTLE </span>
+                  {!last.settle && <span className="text-fog">sin liquidación (dev)</span>}
+                  {last.settle?.status === "failed" && <span className="text-danger">■ failed — ver gateway</span>}
+                  {last.settle?.status === "settled" && (
+                    <span className="text-lima">
+                      ● settled
+                      {last.settle.fundTx && (
+                        <a href={`${EXPLORER_TX}${last.settle.fundTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                          fund {short(last.settle.fundTx)} ↗
+                        </a>
+                      )}
+                      {last.settle.releaseTx && (
+                        <a href={`${EXPLORER_TX}${last.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                          release {short(last.settle.releaseTx)} ↗
+                        </a>
+                      )}
+                    </span>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="mt-3 border border-line p-4 font-tech text-lg text-fog">
@@ -293,6 +322,12 @@ export function ForgeConsole({
                   <span>{e.model} <span className="text-fog">· {ago(e.ts)}</span></span>
                   <span className={e.ok ? "text-lima" : "text-danger"}>
                     {e.ok ? `Completed · ${e.ttftMs} ms` : "Failed"}
+                    {e.settle?.status === "settled" && e.settle.releaseTx && (
+                      <a href={`${EXPLORER_TX}${e.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-2 text-fog hover:text-lima">
+                        ${short(e.settle.releaseTx)} ↗
+                      </a>
+                    )}
+                    {e.settle?.status === "failed" && <span className="ml-2 text-danger">settle failed</span>}
                   </span>
                 </li>
               ))}
@@ -303,21 +338,21 @@ export function ForgeConsole({
           {/* EARNINGS */}
           <div id="earnings" className="scroll-mt-20 border border-line bg-panel p-5 xl:col-span-2">
             <div className="font-tech text-lg tracking-[0.2em] text-fog">EARNINGS · <span className="text-lima">TESTNET</span></div>
-            <div className="mt-2 font-tech text-6xl">$0.01</div>
-            <div className="font-tech text-base text-fog">Total · 1 payout · USDC de juguete</div>
-            {releaseTx && deployment ? (
+            <div className="mt-2 font-tech text-6xl">${earnedUSDC}</div>
+            <div className="font-tech text-base text-fog">Total · {settled.length} payout{settled.length === 1 ? "" : "s"} · USDC de juguete</div>
+            {releaseTx ? (
               <a
                 href={`${EXPLORER_TX}${releaseTx}`}
                 target="_blank"
                 rel="noreferrer"
                 className="mt-4 flex items-center justify-between border border-line px-4 py-3 hover:border-lima"
               >
-                <span className="font-tech text-xl">Release #1</span>
+                <span className="font-tech text-xl">Release{settled.length > 0 ? " · último" : " #1"}</span>
                 <span className="font-tech text-lg text-lima">{short(releaseTx)} ↗</span>
               </a>
             ) : null}
             <div className="mt-4 font-tech text-base leading-snug text-fog">
-              Sin gráficos de 30 días: con 1 payout, una barra solitaria mentiría más que esta cifra pelada.
+              Vivo cuando el gateway liquida; si no, el payout del deploy commiteado.
               Mainnet y retiros vienen después del hackathon.
             </div>
             {deployment?.worker && (
