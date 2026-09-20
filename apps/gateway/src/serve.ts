@@ -12,9 +12,10 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./index.ts";
 import { FailoverForgeExec, FakeForgeExec, OllamaMLXAdapter, SwitchableExec } from "@weaver/forge-exec";
-import { InMemoryApiKeys } from "@weaver/api-keys";
+import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
 import { FacilitatorVerifier } from "@weaver/settlement";
-import { InMemoryTelemetry } from "@weaver/telemetry";
+import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
+import { dbFromUrl } from "@weaver/db";
 import type { ForgeView } from "@weaver/scheduler";
 
 const primary = new SwitchableExec(new OllamaMLXAdapter({ model: "qwen3:4b" }));
@@ -47,7 +48,9 @@ function forges(): ForgeView[] {
   return [OLLAMA_VIEW, SIM_VIEW];
 }
 
-const apiKeys = new InMemoryApiKeys();
+const apiKeys = process.env.DATABASE_URL
+  ? new PostgresApiKeys(dbFromUrl(process.env.DATABASE_URL))
+  : new InMemoryApiKeys();
 
 const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .split(",")
@@ -61,7 +64,10 @@ const app = createApp({
   exec: new FailoverForgeExec([primary, standby]),
   chaos: { setDead: (dead: boolean) => primary.setDead(dead) },
   // S9a: historial en memoria = desde el boot (se declara en la UI /forge).
-  telemetry: new InMemoryTelemetry(),
+  // S16a: con DATABASE_URL, Postgres (Supabase); sin ella, in-memory (dev).
+  telemetry: process.env.DATABASE_URL
+    ? new PostgresTelemetry(dbFromUrl(process.env.DATABASE_URL))
+    : new InMemoryTelemetry(),
   node: { version: "0.1.0", startedAt: Date.now() },
   apiKeys,
   ...(corsOrigins.length ? { corsOrigins } : {}),

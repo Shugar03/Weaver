@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { InMemoryTelemetry } from "../src/ports.ts";
 
 describe("S11 cap telemetry", () => {
-  it("más de 500 samples → solo viven los últimos 500", () => {
+  it("más de 500 samples → solo viven los últimos 500", async () => {
     const t = new InMemoryTelemetry();
-    for (let i = 0; i < 503; i++) t.record({ forgeId: "a", model: "m", ttftMs: i, ok: true, ts: i });
-    assert.equal(t.recent(1000).length, 500);
-    assert.equal(t.recent(1)[0].ttftMs, 502);
+    for (let i = 0; i < 503; i++) await t.record({ forgeId: "a", model: "m", ttftMs: i, ok: true, ts: i });
+    assert.equal((await t.recent(1000)).length, 500);
+    assert.equal((await t.recent(1))[0].ttftMs, 502);
   });
 });

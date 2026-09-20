@@ -152,10 +152,10 @@ export function createApp(deps: Deps) {
   }
 
   // S9a: historial de ejecuciones (in-memory, desde el boot) + estado del nodo.
-  app.get("/v1/executions", (c) => {
+  app.get("/v1/executions", async (c) => {
     const raw = c.req.query("limit") ?? "20";
     const limit = Math.min(50, Math.max(1, Number.parseInt(raw, 10) || 20));
-    return c.json(deps.telemetry?.recent(limit) ?? []);
+    return c.json((await deps.telemetry?.recent(limit)) ?? []);
   });
 
   const nodeVersion = deps.node?.version ?? "0.1.0-dev";
@@ -186,15 +186,19 @@ export function createApp(deps: Deps) {
     let firstAt = -1;
     const servedForge = () =>
       (exec as unknown as { lastForgeId?: string | null }).lastForgeId ?? exec.forgeId;
-    const telRecord = (ok: boolean) =>
-      deps.telemetry?.record({
-        forgeId: servedForge(),
-        model: body.model,
-        ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
-        ok,
-        ts: Date.now(),
-        keyId: c.get("keyId"),
-      });
+    const telRecord = (ok: boolean) => {
+      // Fire-and-forget a propósito: telemetría caída jamás voltea un request.
+      deps.telemetry
+        ?.record({
+          forgeId: servedForge(),
+          model: body.model,
+          ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
+          ok,
+          ts: Date.now(),
+          keyId: c.get("keyId"),
+        })
+        .catch(() => {});
+    };
     const stream = new ReadableStream({
       async start(controller) {
         const enc = new TextEncoder();
