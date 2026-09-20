@@ -68,7 +68,7 @@ Demo video script (3 min, ES + EN subs, failover + Stellar): [`docs/demo-guion.m
 ## Quickstart (MacBook Air M5, 16 GB)
 
 ```bash
-nvm use # Node 20.9+
+nvm use # Node 24+ (.nvmrc — type-stripping needs >=22.18)
 corepack enable && pnpm install
 ollama serve # other terminal, MLX backend
 ollama pull qwen3:4b
