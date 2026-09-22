@@ -16,16 +16,17 @@ const chat = (messages: { role: string; content: string }[]) => ({
 });
 
 describe("S11 límites de input", () => {
-  it("prompt >8000 chars → 413 prompt_too_large", async () => {
+  // Caps dimensionados para el agente: 60k chars ≈ num_ctx de 16k tokens.
+  it("prompt >60000 chars → 413 prompt_too_large", async () => {
     const app = createApp({ forges, exec: new FakeForgeExec() });
-    const res = await app.request("/v1/chat/completions", chat([{ role: "user", content: "x".repeat(8001) }]));
+    const res = await app.request("/v1/chat/completions", chat([{ role: "user", content: "x".repeat(60_001) }]));
     assert.equal(res.status, 413);
     assert.equal(((await res.json()) as { code: string }).code, "prompt_too_large");
   });
 
-  it("21 mensajes → 413", async () => {
+  it("61 mensajes → 413", async () => {
     const app = createApp({ forges, exec: new FakeForgeExec() });
-    const msgs = Array.from({ length: 21 }, (_, i) => ({ role: "user", content: `m${i}` }));
+    const msgs = Array.from({ length: 61 }, (_, i) => ({ role: "user", content: `m${i}` }));
     const res = await app.request("/v1/chat/completions", chat(msgs));
     assert.equal(res.status, 413);
   });

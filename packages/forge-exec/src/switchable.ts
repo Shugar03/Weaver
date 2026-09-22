@@ -32,6 +32,11 @@ export class SwitchableExec implements ForgeExec {
     return (await this.inner.probe?.()) ?? true;
   }
 
+  async resident(): Promise<boolean> {
+    if (this.dead) return false;
+    return (await this.inner.resident?.()) ?? true;
+  }
+
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     if (this.dead) throw new Error("forge muerto (chaos)");
     yield* this.inner.execute(req);

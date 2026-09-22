@@ -33,6 +33,7 @@ export class FailoverForgeExec implements ForgeExec {
         if (yielded === 0) throw new Error(`failover: ${exec.forgeId} vacío`);
         return;
       } catch (err) {
+        req.onFail?.(exec.forgeId); // S27: el breaker ve cada intento fallido
         if (yielded > 0) throw err; // mid-stream: explícito, jamás reintento silencioso
         this.lastFailoverMs = performance.now() - t0;
         lastErr = err;

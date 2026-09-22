@@ -3,20 +3,30 @@
 // S2 agregará score = w1*ETR + w2*price - w3*reliability (Strategy).
 import type { Decision, ForgeView, Job, Scheduler } from "./types.js";
 
-export function etrMs(forge: ForgeView, _job: Job): number {
+export function etrMs(forge: ForgeView, job: Job): number {
   // S20: HOT + medición real → el p50 medido ES el ETR (reemplaza el estimado).
   // Forge frío/muerto: el medido es stale — estimado + load_time.
-  if (forge.hot && forge.measuredTtftMs !== undefined) {
-    return forge.measuredTtftMs + forge.queueMs;
-  }
-  return forge.rttMs + forge.queueMs + (forge.hot ? 0 : forge.loadTimeMs);
+  const base =
+    forge.hot && forge.measuredTtftMs !== undefined
+      ? forge.measuredTtftMs + forge.queueMs
+      : forge.rttMs + forge.queueMs + (forge.hot ? 0 : forge.loadTimeMs);
+  // S28: time-to-result, no time-to-first-token. Con tok/s medido y un job que
+  // declara su tamaño, el decode esperado pesa en la elección de forge.
+  // Job sin estOutTokens (ping, default) → ETR = llegada del primer token.
+  const gen =
+    job.estOutTokens !== undefined && forge.tokPerSec !== undefined && forge.tokPerSec > 0
+      ? (job.estOutTokens / forge.tokPerSec) * 1000
+      : 0;
+  return base + gen;
 }
 
 export class EtrScheduler implements Scheduler {
   select(job: Job, forges: ForgeView[]): Decision {
     if (forges.length === 0) throw new Error("scheduler: sin forges candidatos");
-    const sameModel = forges.filter((f) => f.model === job.model);
-    const pool = sameModel.length > 0 ? sameModel : forges;
+    // S27: sin candidatos del modelo → error explícito. El fallback anterior a
+    // "todos los forges" elegía uno que no puede servir el modelo — silencioso.
+    const pool = forges.filter((f) => f.model === job.model);
+    if (pool.length === 0) throw new Error(`scheduler: sin forges para ${job.model}`);
     let best = pool[0];
     let bestEtr = etrMs(best, job);
     for (const f of pool.slice(1)) {

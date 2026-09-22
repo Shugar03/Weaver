@@ -115,3 +115,52 @@ describe("S19 onForge", () => {
     assert.equal(await collect(f), "ok-secondary");
   });
 });
+
+describe("S27 onFail — el breaker ve cada intento fallido", () => {
+  it("fallo pre-token → onFail(forge) y salta al siguiente", async () => {
+    const failed: string[] = [];
+    const served: string[] = [];
+    const f = new FailoverForgeExec([new DeadExec(), new OkExec()]);
+    let out = "";
+    for await (const c of f.execute({
+      jobId: "j",
+      model: "m",
+      prompt: "h",
+      onFail: (id) => failed.push(id),
+      onForge: (id) => served.push(id),
+    })) {
+      out += c.token;
+    }
+    assert.equal(out, "ok-secondary");
+    assert.deepEqual(failed, ["dead"]);
+    assert.deepEqual(served, ["ok"]);
+  });
+
+  it("muerte mid-stream → onFail del forge que moría + error propaga", async () => {
+    const failed: string[] = [];
+    const f = new FailoverForgeExec([new FlakyExec(), new OkExec()]);
+    await assert.rejects(async () => {
+      for await (const _ of f.execute({
+        jobId: "j",
+        model: "m",
+        prompt: "h",
+        onFail: (id) => failed.push(id),
+      })) void _;
+    }, /mitad/);
+    assert.deepEqual(failed, ["flaky"]);
+  });
+
+  it("todos fallan → onFail por cada intento", async () => {
+    const failed: string[] = [];
+    const f = new FailoverForgeExec([new DeadExec(), new DeadExec()]);
+    await assert.rejects(async () => {
+      for await (const _ of f.execute({
+        jobId: "j",
+        model: "m",
+        prompt: "h",
+        onFail: (id) => failed.push(id),
+      })) void _;
+    });
+    assert.deepEqual(failed, ["dead", "dead"]);
+  });
+});

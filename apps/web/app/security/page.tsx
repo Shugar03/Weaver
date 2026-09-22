@@ -32,10 +32,10 @@ export default function Security() {
         logoHref="/"
         links={[
           { label: "CHAT", href: "/chat" },
-          { label: "CONSOLE", href: "/dashboard" },
+          { label: "CONSOLE", href: "/network" },
           { label: "DEVELOPERS", href: "/developers" },
         ]}
-        cta={{ label: "RUN LIVE DEMO →", href: "/dashboard" }}
+        cta={{ label: "RUN LIVE DEMO →", href: "/network" }}
       />
       <main className="mx-auto max-w-5xl px-4 pb-16 md:px-6">
         <section className="pt-10">

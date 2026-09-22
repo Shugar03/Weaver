@@ -3,10 +3,13 @@
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { EXPLORER, short, type Deployment } from "../../lib/site";
+import { forgeRow } from "../../lib/fleet";
+import type { ForgeView } from "../../lib/weaver";
 
-// Consola del proveedor (supply). Todo número es vivo o declarado:
-// gateway (/v1/status, /v1/executions), Ollama /api/ps directo, o deployment commiteado.
-// Lo que no medimos (temp, power, geo, 30d) NO se muestra. Punto.
+// Consola de UN forge de la fleet (S26). Todo número es vivo o declarado:
+// /v1/forges (vista del forge), /v1/executions?forgeId= (sus jobs),
+// Ollama /api/ps (residencia real del modelo). Lo que no medimos — temp,
+// power, geo — NO se muestra. Punto.
 type Exec = {
   forgeId: string;
   model: string;
@@ -16,7 +19,7 @@ type Exec = {
   settle?: { fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
 };
 type Status = { version: string; uptimeMs: number } | null;
-type PsModel = { name?: string; size?: number; size_vram?: number; expires_at?: string };
+type PsModel = { name?: string; model?: string; size?: number; size_vram?: number; expires_at?: string };
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -60,15 +63,20 @@ export function ForgeConsole({
   base,
   ollama,
   deployment,
+  forgeId,
+  initialForge,
 }: {
   base: string;
   ollama: string;
   deployment: Deployment | null;
+  forgeId: string;
+  initialForge: ForgeView | null;
 }) {
   const [status, setStatus] = useState<Status>(null);
   const [bootAt, setBootAt] = useState<number | null>(null);
   const [execs, setExecs] = useState<Exec[] | null>(null);
   const [ps, setPs] = useState<PsModel[] | null>(null);
+  const [forge, setForge] = useState<ForgeView | null>(initialForge);
   const [now, setNow] = useState(Date.now());
   const [copied, setCopied] = useState(false);
 
@@ -76,9 +84,12 @@ export function ForgeConsole({
     let alive = true;
     const poll = async () => {
       try {
-        const [s, e] = await Promise.all([
+        const [s, e, f] = await Promise.all([
           fetch(`${base}/v1/status`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
-          fetch(`${base}/v1/executions?limit=12`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
+          fetch(`${base}/v1/executions?forgeId=${encodeURIComponent(forgeId)}&limit=12`, { cache: "no-store" }).then((r) =>
+            r.ok ? r.json() : null,
+          ),
+          fetch(`${base}/v1/forges`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
         ]);
         if (alive) {
           if (s) {
@@ -87,6 +98,10 @@ export function ForgeConsole({
             if (st) setBootAt(Date.now() - st.uptimeMs);
           }
           if (e) setExecs(e as Exec[]);
+          if (f) {
+            const mine = (f as ForgeView[]).find((x) => x.forgeId === forgeId);
+            if (mine) setForge(mine);
+          }
         }
       } catch {
         /* gateway caído: se mantiene lo último */
@@ -95,7 +110,7 @@ export function ForgeConsole({
         const p = await fetch(`${ollama}/api/ps`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null));
         if (alive && p) setPs((p.models ?? []) as PsModel[]);
       } catch {
-        /* ollama caído */
+        /* ollama caído o no aplica a este forge */
       }
     };
     poll();
@@ -106,20 +121,25 @@ export function ForgeConsole({
       clearInterval(id);
       clearInterval(tick);
     };
-  }, [base, ollama]);
+  }, [base, ollama, forgeId]);
 
   const online = status !== null;
   const ttfts = (execs ?? []).filter((e) => e.ok).map((e) => e.ttftMs);
   const p50 = ttfts.length > 0 ? [...ttfts].sort((a, b) => a - b)[Math.floor((ttfts.length - 1) / 2)] : null;
   const last = execs?.[0] ?? null;
-  const loaded = ps?.[0];
+  // Residencia del modelo DE ESTE forge (no ps[0]): la fleet puede tener
+  // varios modelos residentes en el mismo engine.
+  const loaded = ps?.find((m) => (m.model ?? m.name) === forge?.model);
   const settled = (execs ?? []).filter((e) => e.settle?.status === "settled");
   const earnedUSDC = (settled.length * 0.01).toFixed(2);
   const releaseTx = settled[0]?.settle?.releaseTx ?? deployment?.txs.release_job_1;
+  const row = forge ? forgeRow(forge, execs ?? []) : null;
+  const isImage = forge?.capability === "image";
+  const metricLabel = isImage ? "P50 MS/IMG" : "P50 TTFT";
 
   async function copyId() {
     try {
-      await navigator.clipboard.writeText("ollama-local");
+      await navigator.clipboard.writeText(forgeId);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     } catch {
@@ -136,28 +156,22 @@ export function ForgeConsole({
           <span className="text-base font-bold tracking-[0.3em]">WEAVER</span>
         </a>
         <nav className="space-y-0.5 px-3 font-tech text-lg">
-          <a href="/dashboard" className="block px-3 py-2 text-fog hover:text-white">
-            Dashboard
+          <a href="/network" className="block px-3 py-2 text-fog hover:text-white">
+            Network
           </a>
-          <div className="border border-line bg-void px-3 py-2 text-lima">▣ My Forge</div>
+          <a href="/forge" className="block px-3 py-2 text-fog hover:text-white">
+            ◂ Forges
+          </a>
+          <div className="border border-line bg-void px-3 py-2 text-lima">▣ {forgeId}</div>
           <a href="#jobs" className="block px-3 py-2 text-fog hover:text-white">
             Jobs
           </a>
           <a href="#earnings" className="block px-3 py-2 text-fog hover:text-white">
             Earnings
           </a>
-          <a href="/dashboard" className="block px-3 py-2 text-fog hover:text-white">
-            Network
-          </a>
           <a href="/chat" className="block px-3 py-2 text-fog hover:text-white">
             Chat
           </a>
-          <div className="px-3 py-2 text-fog/60">
-            Hardware <span className="border border-line px-1 text-sm">SOON</span>
-          </div>
-          <div className="px-3 py-2 text-fog/60">
-            Settings <span className="border border-line px-1 text-sm">SOON</span>
-          </div>
         </nav>
         <div className="mt-auto space-y-3 p-3">
           <div className="border border-line p-4">
@@ -186,7 +200,9 @@ export function ForgeConsole({
       <div className="min-w-0 flex-1 px-4 py-6 md:px-8">
         <div className="flex items-center justify-between font-tech text-base tracking-[0.15em] text-fog">
           <span>
-            Forge <span className="text-fog/50">/</span> <span className="text-white">ollama-local</span>
+            <a href="/forge" className="hover:text-lima">Forge</a>
+            <span className="text-fog/50"> / </span>
+            <span className="text-white">{forgeId}</span>
           </span>
           <span className="hidden items-center gap-4 md:flex">
             <span>LOCAL NODE</span>
@@ -196,10 +212,20 @@ export function ForgeConsole({
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-4">
-          <h1 className="text-4xl font-bold tracking-tight md:text-5xl">ollama-local</h1>
+          <h1 className="text-4xl font-bold tracking-tight md:text-5xl">{forgeId}</h1>
           <span className={`border px-2.5 py-1 font-tech text-base tracking-[0.15em] ${online ? "border-lima text-lima" : "border-danger text-danger"}`}>
             {online ? "● ONLINE" : "■ OFFLINE"}
           </span>
+          {row && (
+            <span
+              className={`px-2.5 py-1 font-tech text-base tracking-[0.15em] ${
+                row.status === "hot" ? "bg-lima text-black" : row.status === "dead" ? "bg-danger/20 text-danger" : "bg-line text-fog"
+              }`}
+            >
+              {row.status.toUpperCase()}
+            </span>
+          )}
+          {forge?.sim && <span className="border border-line px-2.5 py-1 font-tech text-base tracking-[0.15em] text-fog">SIM</span>}
           <a
             href="https://github.com/Shugar03/Weaver/blob/main/apps/gateway/src/serve.ts"
             target="_blank"
@@ -216,8 +242,8 @@ export function ForgeConsole({
           {[
             ["NODE", "LOCAL · M5 Air"],
             ["UPTIME", bootAt === null ? "—" : uptime(now - bootAt)],
-            ["MODEL", "qwen3:4b"],
-            ["STATUS", online ? "● Accepting jobs" : "■ Gateway down"],
+            ["MODEL", forge?.model ?? "—"],
+            ["MODALIDAD", isImage ? "image" : "text"],
             ["VERSION", status ? `v${status.version}` : "—"],
           ].map(([k, v]) => (
             <div key={k} className="border border-line bg-panel p-4">
@@ -228,7 +254,7 @@ export function ForgeConsole({
           <div className="border border-line bg-panel p-4">
             <div className="font-tech text-sm tracking-[0.2em] text-fog">FORGE ID</div>
             <button onClick={copyId} className="mt-1 font-tech text-2xl leading-tight hover:text-lima" title="Copiar">
-              ollama-local {copied ? "✓" : "⧉"}
+              {forgeId} {copied ? "✓" : "⧉"}
             </button>
           </div>
         </div>
@@ -245,20 +271,22 @@ export function ForgeConsole({
             <div className="border border-line p-4">
               <div className="font-tech text-sm tracking-[0.2em] text-fog">MODEL VRAM</div>
               <div className="mt-1 font-tech text-3xl">{gb(loaded?.size_vram ?? loaded?.size)}</div>
-              <div className="mt-1 font-tech text-base text-fog">{loaded ? `${loaded.name} · Metal` : "modelo sin cargar"}</div>
+              <div className="mt-1 font-tech text-base text-fog">
+                {isImage ? "difusión por proceso — sin residencia" : loaded ? `${loaded.name} · Metal` : "modelo descargado (idle)"}
+              </div>
             </div>
             <div className="border border-line p-4">
               <div className="font-tech text-sm tracking-[0.2em] text-fog">EXECUTIONS</div>
               <div className="mt-1 font-tech text-3xl">{execs === null ? "—" : execs.length}</div>
-              <div className="mt-1 font-tech text-base text-fog">esta sesión del nodo</div>
+              <div className="mt-1 font-tech text-base text-fog">este forge, desde el boot</div>
             </div>
             <div className="border border-line p-4">
-              <div className="font-tech text-sm tracking-[0.2em] text-fog">P50 TTFT</div>
+              <div className="font-tech text-sm tracking-[0.2em] text-fog">{metricLabel}</div>
               <div className="mt-1 font-tech text-3xl">{p50 === null ? "—" : `${p50.toLocaleString()} ms`}</div>
               <div className="mt-1 font-tech text-base text-fog">medido sirviendo</div>
             </div>
             <div className="border border-line p-4">
-              <div className="font-tech text-sm tracking-[0.2em] text-fog">TTFT HISTORY</div>
+              <div className="font-tech text-sm tracking-[0.2em] text-fog">{isImage ? "MS/IMG HISTORY" : "TTFT HISTORY"}</div>
               <div className="mt-2">
                 <Spark values={ttfts} />
               </div>
@@ -278,7 +306,7 @@ export function ForgeConsole({
                 </div>
                 <div className="mt-2 grid grid-cols-3 gap-2 font-tech text-lg">
                   <div><span className="text-fog">FORGE </span>{last.forgeId}</div>
-                  <div><span className="text-fog">TTFT </span>{last.ttftMs} ms</div>
+                  <div><span className="text-fog">{isImage ? "MS " : "TTFT "}</span>{last.ttftMs} ms</div>
                   <div><span className="text-fog">WHEN </span>{ago(last.ts)}</div>
                 </div>
                 <div className="mt-2 font-tech text-lg">
@@ -304,7 +332,7 @@ export function ForgeConsole({
               </div>
             ) : (
               <div className="mt-3 border border-line p-4 font-tech text-lg text-fog">
-                {execs === null ? "Gateway caído — levantá :3101." : "Sin ejecuciones todavía — corré algo en /chat."}
+                {execs === null ? "Gateway caído — levantá :3001." : "Sin ejecuciones de este forge todavía — corré algo en /chat."}
               </div>
             )}
             <div className="mt-4 font-tech text-lg tracking-[0.2em] text-fog">RECENT</div>

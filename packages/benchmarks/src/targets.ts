@@ -14,15 +14,17 @@ async function* openAIStream(url: string, body: unknown): AsyncIterable<Chunk> {
       yield { token: "", done: true };
       return;
     }
-    let json: { error?: unknown; choices?: { delta?: { content?: string } }[] };
+    let json: { error?: unknown; choices?: { delta?: { content?: string; reasoning?: string } }[] };
     try {
       json = JSON.parse(data) as typeof json;
     } catch {
       continue; // frame no-JSON: se ignora, no se mide como token
     }
     if (typeof json.error === "string" && json.error) throw new Error(`bench: forge ${json.error}`);
-    const content = json.choices?.[0]?.delta?.content ?? "";
-    if (content) yield { token: content, done: false };
+    // TTFT honesto = primer token que el modelo produjo, sea reasoning o content.
+    const delta = json.choices?.[0]?.delta;
+    const token = (delta?.reasoning ?? "") + (delta?.content ?? "");
+    if (token) yield { token, done: false };
   }
   yield { token: "", done: true };
 }

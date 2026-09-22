@@ -6,7 +6,7 @@ import { createApp } from "../src/index.ts";
 import { InMemoryApiKeys } from "@weaver/api-keys";
 
 const forges = () => [];
-const chaos = { setDead: (_dead: boolean) => {} };
+const chaos = { setDead: (_id: string | undefined, _dead: boolean) => true };
 const json = { "content-type": "application/json" };
 
 async function setup() {

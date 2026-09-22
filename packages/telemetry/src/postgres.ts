@@ -3,7 +3,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { JOB_PRICE_USDC } from "@weaver/settlement";
 import { type Db, performanceSamples } from "@weaver/db";
-import type { Sample, Telemetry, Usage } from "./ports.ts";
+import { P50_WINDOW, type Sample, type Telemetry, type Usage } from "./ports.ts";
 
 export class PostgresTelemetry implements Telemetry {
   private readonly db: Db;
@@ -27,15 +27,16 @@ export class PostgresTelemetry implements Telemetry {
   }
 
   async p50(model: string, forgeId: string): Promise<number> {
+    // S27: ventana — mediana sobre los últimos P50_WINDOW samples ok del forge
+    // (subquery por ts desc), no all-time: un forge degradado debe reflejarse ya.
     const rows = await this.db
       .select({ v: sql<number>`percentile_cont(0.5) within group (order by ttft_ms)` })
-      .from(performanceSamples)
-      .where(
-        and(
-          eq(performanceSamples.model, model),
-          eq(performanceSamples.forgeId, forgeId),
-          eq(performanceSamples.ok, true),
-        ),
+      .from(
+        sql`(
+          select ttft_ms from performance_samples
+          where model = ${model} and forge_id = ${forgeId} and ok
+          order by ts desc limit ${P50_WINDOW}
+        ) recent`,
       );
     return Math.round(rows[0]?.v ?? 0);
   }

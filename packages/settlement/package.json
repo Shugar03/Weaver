@@ -11,6 +11,8 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^17.1.0"
+    "@stellar/stellar-sdk": "^17.1.0",
+    "@weaver/db": "workspace:^",
+    "drizzle-orm": "0.45.2"
   }
 }

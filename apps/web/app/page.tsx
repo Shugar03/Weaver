@@ -19,10 +19,10 @@ export default async function Landing() {
         logoHref="/"
         links={[
           { label: "PRODUCT", href: "#pillars" },
-          { label: "TECHNOLOGY", href: "/dashboard" },
+          { label: "TECHNOLOGY", href: "/network" },
           { label: "DOCS", href: "https://github.com/Shugar03/Weaver" },
         ]}
-        cta={{ label: "GET EARLY ACCESS →", href: "/dashboard" }}
+        cta={{ label: "GET EARLY ACCESS →", href: "/network" }}
       />
       <main className="mx-auto max-w-7xl px-4 md:px-6">
         {/* HERO: arco + texto + logo integrados */}
@@ -44,7 +44,7 @@ export default async function Landing() {
               </p>
               <div className="mt-7 flex flex-wrap items-center gap-6">
                 <a
-                  href="/dashboard"
+                  href="/network"
                   className="pointer-events-auto bg-lima px-7 py-3.5 text-base font-bold tracking-wide text-black transition-transform active:translate-y-[1px]"
                 >
                   RUN LIVE DEMO →

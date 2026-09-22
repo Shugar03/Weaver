@@ -21,6 +21,17 @@ describe("S1 warm-first", () => {
     const s = new EtrScheduler();
     assert.throws(() => s.select({ id: "j2", model: "qwen3.5:4b" }, []), /sin forges/);
   });
+
+  it("S27: sin forge para el modelo → throw, jamás fallback a forges que no lo sirven", () => {
+    const s = new EtrScheduler();
+    assert.throws(
+      () =>
+        s.select({ id: "j3", model: "no-existe:7b" }, [
+          { forgeId: "f1", model: "qwen3.5:4b", hot: true, rttMs: 5, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 },
+        ]),
+      /sin forges para no-existe:7b/,
+    );
+  });
 });
 
 describe("S20 ETR medido", () => {
@@ -43,5 +54,38 @@ describe("S20 ETR medido", () => {
     ]);
     assert.equal(d.forgeId, "tibio");
     assert.equal(d.reason, "warm-first");
+  });
+});
+
+describe("S28 ETR size-aware", () => {
+  const base = { model: "m", hot: true, rttMs: 0, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 };
+
+  it("estOutTokens × tokPerSec pesa el decode en la elección", () => {
+    const s = new EtrScheduler();
+    // rápidoTTFT gana en primer token, pero a 2000 tok el lento decode pierde.
+    const d = s.select({ id: "j", model: "m", estOutTokens: 2000 }, [
+      { ...base, forgeId: "rapido-lento", measuredTtftMs: 10, tokPerSec: 10 }, // 10 + 200s
+      { ...base, forgeId: "lento-rapido", measuredTtftMs: 400, tokPerSec: 100 }, // 400 + 20s
+    ]);
+    assert.equal(d.forgeId, "lento-rapido");
+  });
+
+  it("job sin estOutTokens → ETR es TTFT (comportamiento anterior)", () => {
+    const s = new EtrScheduler();
+    const d = s.select({ id: "j", model: "m" }, [
+      { ...base, forgeId: "rapido-lento", measuredTtftMs: 10, tokPerSec: 10 },
+      { ...base, forgeId: "lento-rapido", measuredTtftMs: 400, tokPerSec: 100 },
+    ]);
+    assert.equal(d.forgeId, "rapido-lento");
+  });
+
+  it("forge sin tokPerSec medido → no se le inventa decode", () => {
+    const s = new EtrScheduler();
+    const d = s.select({ id: "j", model: "m", estOutTokens: 5000 }, [
+      { ...base, forgeId: "sin-tok", measuredTtftMs: 10 }, // sin tokPerSec: solo TTFT
+      { ...base, forgeId: "con-tok", measuredTtftMs: 400, tokPerSec: 100 },
+    ]);
+    assert.equal(d.forgeId, "sin-tok");
+    assert.equal(d.etrMs, 10);
   });
 });

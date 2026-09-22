@@ -1,4 +1,7 @@
 export const MAX_SAMPLES = 500; // S11: tope anti-DoS lento. Lo viejo se evicta.
+// S27: p50 con ventana — los últimos N samples del forge, no all-time.
+// Sin ventana un forge degradado arrastra su mediana buena vieja para siempre.
+export const P50_WINDOW = 50;
 import { JOB_PRICE_USDC } from "@weaver/settlement";
 // In-memory = desde el boot (se declara en UI); tabla Postgres viene después (ADR-0002).
 export type Sample = {
@@ -8,6 +11,10 @@ export type Sample = {
   ok: boolean;
   ts: number;
   keyId?: string;
+  // S28: stats del engine en el frame done (Ollama los reporta gratis).
+  // genTokens/decodeMs alimentan tokPerSec del ForgeView → ETR size-aware.
+  genTokens?: number;
+  decodeMs?: number;
   // S23: payerTx = cobro x402 del cliente; fundTx/releaseTx = escrow operador→worker.
   settle?: { payerTx?: string; fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
 };
@@ -35,6 +42,7 @@ export class InMemoryTelemetry implements Telemetry {
   async p50(model: string, forgeId: string): Promise<number> {
     const xs = this.samples
       .filter((s) => s.model === model && s.forgeId === forgeId && s.ok)
+      .slice(-P50_WINDOW)
       .map((s) => s.ttftMs)
       .sort((a, b) => a - b);
     if (xs.length === 0) return 0;

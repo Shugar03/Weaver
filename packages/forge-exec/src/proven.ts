@@ -25,6 +25,9 @@ export class ProvenForgeExec implements ForgeExec {
   probe(): Promise<boolean> {
     return this.inner.probe?.() ?? Promise.resolve(true);
   }
+  resident(): Promise<boolean> {
+    return this.inner.resident?.() ?? Promise.resolve(true);
+  }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     const hasher = createHash("sha256");

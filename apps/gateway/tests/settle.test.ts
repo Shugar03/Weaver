@@ -99,6 +99,38 @@ describe("S17b settle-on-ok", () => {
 });
 
 describe("S21 Idempotency-Key", () => {
+  it("I2: mismo key + proofs DISTINTOS → paga ambos (cada ejecución es trabajo real)", async () => {
+    // Bug anterior: dedup por idemKey a secas — un cliente reusando la key
+    // suprimía el pago del segundo forge aunque el trabajo fue distinto.
+    const telemetry = new InMemoryTelemetry();
+    let calls = 0;
+    const settlement = {
+      async settleJob() {
+        calls++;
+        return { jobId: calls, fundTx: `f${calls}`, releaseTx: `r${calls}` };
+      },
+    };
+    let n = 0;
+    // exec cuyo proof varía por ejecución — output distinto = trabajo distinto
+    class ProofExec {
+      readonly forgeId = "fake-forge";
+      readonly model = "qwen3:4b";
+      async *execute(req: { onProof?: (p: { forgeId: string; resultHash: Buffer; signature: Buffer }) => void }) {
+        const i = n++;
+        yield { token: `out-${i}`, done: false };
+        const resultHash = Buffer.alloc(32, 0);
+        resultHash[0] = i + 1;
+        req.onProof?.({ forgeId: "fake-forge", resultHash, signature: Buffer.alloc(64, 2) });
+        yield { token: "", done: true };
+      }
+    }
+    const app = createApp({ forges, exec: new ProofExec(), telemetry, settlement });
+    await chatOk(app, { "idempotency-key": "misma-key" });
+    await chatOk(app, { "idempotency-key": "misma-key" });
+    await executions(app);
+    assert.equal(calls, 2); // dos outputs distintos = dos trabajos = dos pagos
+  });
+
   it("mismo key en 2 chats → re-ejecuta pero un solo settle on-chain", async () => {
     const telemetry = new InMemoryTelemetry();
     let calls = 0;

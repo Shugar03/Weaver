@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 export type NavLink = { label: string; href: string };
 
-// Header compartido landing/dashboard. Solo cambia contenido, nunca el sistema.
+// Header compartido landing/network. Solo cambia contenido, nunca el sistema.
 export function SiteHeader({
   logoHref,
   links,

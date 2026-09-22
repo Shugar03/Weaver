@@ -1,6 +1,6 @@
 // Module DB — schema Drizzle (ADR-0002). S16a: solo lo que el gateway usa vivo
 // (api_keys, performance_samples). jobs/forges/instances/settlements post-hackathon.
-import { bigint, boolean, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
@@ -27,3 +27,30 @@ export const performanceSamples = pgTable(
   },
   (t) => [index("samples_model_ts_idx").on(t.model, t.ts)],
 );
+
+// S44 (ADR-0006, I3): journal de escrows — referencia durable a todo fund_job
+// para que un crash entre fund y release jamás deje plata huérfana.
+export const settleJobs = pgTable("settle_jobs", {
+  jobId: bigint("job_id", { mode: "number" }).primaryKey(),
+  worker: text("worker").notNull(),
+  resultHash: text("result_hash").notNull(),
+  forgeSig: text("forge_sig").notNull(),
+  fundTx: text("fund_tx").notNull(),
+  releaseTx: text("release_tx"),
+  state: text("state").notNull().default("funded"), // funded|released|failed
+  failReason: text("fail_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// S30: identidades de forges remotos (ADR-0005). El estado vivo (capacidad,
+// inFlight) es efímero por heartbeat — acá solo persiste la identidad.
+export const forges = pgTable("forges", {
+  pubkey: text("pubkey").primaryKey(), // G... = identidad + payout address
+  displayName: text("display_name"),
+  attested: boolean("attested").notNull().default(false),
+  // S46: strikes de audit sobreviven al restart — un forge que mintió no
+  // recupera la confianza por reboot del gateway.
+  strikes: integer("strikes").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+});

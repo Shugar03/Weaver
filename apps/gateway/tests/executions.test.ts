@@ -70,6 +70,23 @@ describe("S9a executions", () => {
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), []);
   });
+
+  it("?forgeId= filtra server-side: solo los samples de ese forge", async () => {
+    const telemetry = new InMemoryTelemetry();
+    const rec = (forgeId: string) =>
+      telemetry.record({ forgeId, model: "qwen3:4b", ttftMs: 100, ok: true, ts: Date.now() });
+    await rec("ollama-local");
+    await rec("image-local");
+    await rec("ollama-local");
+    const app = createApp({ forges, telemetry });
+    const all = (await (await app.request("/v1/executions")).json()) as Sample[];
+    assert.equal(all.length, 3);
+    const only = (await (await app.request("/v1/executions?forgeId=image-local")).json()) as Sample[];
+    assert.equal(only.length, 1);
+    assert.equal(only[0].forgeId, "image-local");
+    const none = (await (await app.request("/v1/executions?forgeId=nadie")).json()) as Sample[];
+    assert.equal(none.length, 0);
+  });
 });
 
 describe("S9a status", () => {
