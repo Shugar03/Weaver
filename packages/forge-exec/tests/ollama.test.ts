@@ -43,9 +43,31 @@ describe("S3 OllamaMLXAdapter", () => {
     assert.equal(seen.body?.["stream"], true);
   });
 
+  it("S19: sirve el modelo del request, no el configurado", async () => {
+    const seen: { url?: string; body?: Record<string, unknown> } = {};
+    const a = new OllamaMLXAdapter({ model: "qwen3:4b", fetchFn: fakeFetch(seen) });
+    await collect(a); // req.model = "qwen3.5:4b"
+    assert.equal(seen.body?.["model"], "qwen3.5:4b");
+  });
+
   it("HTTP 500 → throw con estado", async () => {
     const seen: { url?: string; body?: Record<string, unknown> } = {};
     const a = new OllamaMLXAdapter({ fetchFn: fakeFetch(seen, 500) });
     await assert.rejects(collect(a), /500/);
+  });
+
+  it("S24 probe: 200 → true, 500 → false, fetch throw → false", async () => {
+    const urls: string[] = [];
+    const statusFetch = (status: number) => async (url: string) => {
+      urls.push(url);
+      return new Response("{}", { status });
+    };
+    const ok = new OllamaMLXAdapter({ fetchFn: statusFetch(200) });
+    assert.equal(await ok.probe(), true);
+    assert.equal(urls[0], "http://localhost:11434/v1/models");
+    const down = new OllamaMLXAdapter({ fetchFn: statusFetch(500) });
+    assert.equal(await down.probe(), false);
+    const gone = new OllamaMLXAdapter({ fetchFn: async () => { throw new Error("ECONNREFUSED"); } });
+    assert.equal(await gone.probe(), false);
   });
 });

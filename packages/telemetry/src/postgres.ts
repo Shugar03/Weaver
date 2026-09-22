@@ -19,17 +19,24 @@ export class PostgresTelemetry implements Telemetry {
       ok: s.ok,
       ts: s.ts,
       keyId: s.keyId ?? null,
+      payerTx: s.settle?.payerTx ?? null,
       fundTx: s.settle?.fundTx ?? null,
       releaseTx: s.settle?.releaseTx ?? null,
       settleStatus: s.settle?.status ?? null,
     });
   }
 
-  async p50(model: string): Promise<number> {
+  async p50(model: string, forgeId: string): Promise<number> {
     const rows = await this.db
       .select({ v: sql<number>`percentile_cont(0.5) within group (order by ttft_ms)` })
       .from(performanceSamples)
-      .where(and(eq(performanceSamples.model, model), eq(performanceSamples.ok, true)));
+      .where(
+        and(
+          eq(performanceSamples.model, model),
+          eq(performanceSamples.forgeId, forgeId),
+          eq(performanceSamples.ok, true),
+        ),
+      );
     return Math.round(rows[0]?.v ?? 0);
   }
 
@@ -50,6 +57,7 @@ export class PostgresTelemetry implements Telemetry {
         ? {
             settle: {
               status: r.settleStatus as "pending" | "settled" | "failed",
+              ...(r.payerTx ? { payerTx: r.payerTx } : {}),
               ...(r.fundTx ? { fundTx: r.fundTx } : {}),
               ...(r.releaseTx ? { releaseTx: r.releaseTx } : {}),
             },

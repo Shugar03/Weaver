@@ -32,4 +32,15 @@ describe("S2 POST /v1/jobs", () => {
     const body = (await res.json()) as unknown[];
     assert.equal(body.length, 2);
   });
+
+  it("S19: modelo sin forges → 404 unknown_model, no 500", async () => {
+    const app = createApp({ forges });
+    const res = await app.request("/v1/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "inexistente" }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(((await res.json()) as { code: string }).code, "unknown_model");
+  });
 });

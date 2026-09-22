@@ -27,6 +27,14 @@ export type EscrowConfig = {
 
 export type SettleReceipt = { jobId: number; fundTx: string; releaseTx: string };
 
+// S23: firma ed25519 Stellar para Proof L0 (Keypair.sign = ed25519 puro).
+// Vive acá porque settlement es quien posee stellar-sdk; forge-exec recibe una
+// función `sign(hash) => Buffer` y nunca ve la librería.
+export function stellarSigner(secret: string): (msg: Buffer) => Buffer {
+  const kp = Keypair.fromSecret(secret);
+  return (msg) => Buffer.from(kp.sign(msg));
+}
+
 const PAYOUT_MAX = 10_000_000; // 1 USDC: techo anti-typo (nunca drena de más)
 
 export class EscrowSettlement {
@@ -41,7 +49,16 @@ export class EscrowSettlement {
     }
   }
 
-  async settleJob(): Promise<SettleReceipt> {
+  // S22/S23: el release exige sha256 del resultado + firma ed25519 del forge.
+  // El contrato verifica la firma contra la pubkey registrada en init (Proof L0):
+  // sin recibo firmado por el forge que sirvió, no hay pago.
+  async settleJob(resultHash: Buffer, forgeSig: Buffer): Promise<SettleReceipt> {
+    if (resultHash.length !== 32) {
+      throw new Error(`result_hash debe ser 32 bytes, vino ${resultHash.length}`);
+    }
+    if (forgeSig.length !== 64) {
+      throw new Error(`forge_sig debe ser 64 bytes, vino ${forgeSig.length}`);
+    }
     const { contractId, operator, worker, payout } = this.cfg;
     const funded = await this.submitter.invoke(contractId, "fund_job", [
       new Address(operator).toScVal(),
@@ -52,6 +69,8 @@ export class EscrowSettlement {
       new Address(operator).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
       new Address(worker).toScVal(),
+      nativeToScVal(resultHash), // BytesN<32> on-chain
+      nativeToScVal(forgeSig), // BytesN<64> — proof L0
     ]);
     return { jobId, fundTx: funded.txHash, releaseTx: released.txHash };
   }

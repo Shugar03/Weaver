@@ -3,7 +3,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { FakeVerifier, FacilitatorVerifier } from "../src/verifier.ts";
-import { FakeSettlement } from "../src/ports.ts";
+import { JOB_PRICE_USDC } from "../src/ports.ts";
 
 const REQS = { scheme: "exact", network: "stellar:testnet", price: "$0.01", payTo: "GTESTPAYTO" } as const;
 
@@ -13,6 +13,12 @@ describe("S4 FakeVerifier", () => {
     assert.equal(await v.verify("valid-proof", REQS), true);
     assert.equal(await v.verify("trucho", REQS), false);
     assert.equal(await v.verify("", REQS), false);
+  });
+
+  it("S23: settle del proof válido devuelve txHash fake", async () => {
+    const v = new FakeVerifier();
+    assert.deepEqual(await v.settle("valid-proof", REQS), { success: true, txHash: "fake-client-tx" });
+    assert.deepEqual(await v.settle("trucho", REQS), { success: false });
   });
 });
 
@@ -36,12 +42,25 @@ describe("S4 FacilitatorVerifier", () => {
     const err = new FacilitatorVerifier("https://x", async () => new Response("boom", { status: 500 }));
     assert.equal(await err.verify("h", REQS), false);
   });
+
+  it("S23: POST a /settle y mapea success+txHash; error → success:false", async () => {
+    const seen: { url?: string } = {};
+    const ok = new FacilitatorVerifier("https://facilitador.test/x402", async (url) => {
+      seen.url = url;
+      return new Response(JSON.stringify({ success: true, txHash: "abc123" }), { status: 200 });
+    });
+    assert.deepEqual(await ok.settle("h", REQS), { success: true, txHash: "abc123" });
+    assert.equal(seen.url, "https://facilitador.test/x402/settle");
+
+    const down = new FacilitatorVerifier("https://x", async () => {
+      throw new Error("facilitador caído");
+    });
+    assert.deepEqual(await down.settle("h", REQS), { success: false });
+  });
 });
 
-describe("S4 quote", () => {
-  it("cotiza $0.01 en stellar:testnet", () => {
-    const q = new FakeSettlement().quote("j1");
-    assert.equal(q.amountUSDC, "0.01");
-    assert.equal(q.network, "stellar:testnet");
+describe("S4 precio único", () => {
+  it("JOB_PRICE_USDC es $0.01 (fuente única de metering)", () => {
+    assert.equal(JOB_PRICE_USDC, 0.01);
   });
 });

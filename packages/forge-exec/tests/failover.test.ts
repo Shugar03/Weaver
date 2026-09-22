@@ -58,3 +58,60 @@ describe("S3 mid-stream explícito", () => {
     await assert.rejects(collect(f), /mitad/);
   });
 });
+
+describe("S19 onForge", () => {
+  it("requests concurrentes se atribuyen cada una su forge (sin cross-talk)", async () => {
+    // pares caen en "primero" → sirve "segundo"; impares sirven en "primero".
+    class AlternatingExec implements ForgeExec {
+      readonly forgeId = "primero";
+      readonly model = "m";
+      async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+        if (req.jobId.endsWith("2")) throw new Error("cae solo pares");
+        yield { token: "p1", done: false };
+        yield { token: "", done: true };
+      }
+    }
+    class SecondExec implements ForgeExec {
+      readonly forgeId = "segundo";
+      readonly model = "m";
+      async *execute(): AsyncIterable<StreamChunk> {
+        yield { token: "s1", done: false };
+        yield { token: "", done: true };
+      }
+    }
+    const seen: Record<string, string[]> = { j1: [], j2: [] };
+    const f = new FailoverForgeExec([new AlternatingExec(), new SecondExec()]);
+    const run = (req: ExecRequest) => {
+      return (async () => {
+        for await (const _ of f.execute(req)) void _;
+      })();
+    };
+    await Promise.all([
+      run({ jobId: "j1", model: "m", prompt: "x", onForge: (id) => seen.j1.push(id) }),
+      run({ jobId: "j2", model: "m", prompt: "x", onForge: (id) => seen.j2.push(id) }),
+    ]);
+    assert.deepEqual(seen.j1, ["primero"]);
+    assert.deepEqual(seen.j2, ["segundo"]);
+  });
+
+  it("reporta una sola vez el forge que sirvió de verdad (por request, no compartido)", async () => {
+    const seen: string[] = [];
+    const f = new FailoverForgeExec([new DeadExec(), new OkExec()]);
+    let out = "";
+    for await (const c of f.execute({
+      jobId: "j",
+      model: "qwen3.5:4b",
+      prompt: "h",
+      onForge: (id) => seen.push(id),
+    })) {
+      out += c.token;
+    }
+    assert.equal(out, "ok-secondary");
+    assert.deepEqual(seen, ["ok"]);
+  });
+
+  it("sin onForge en el request, no explota", async () => {
+    const f = new FailoverForgeExec([new OkExec()]);
+    assert.equal(await collect(f), "ok-secondary");
+  });
+});

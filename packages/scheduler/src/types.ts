@@ -1,7 +1,7 @@
 // Module Scheduler — tipos del dominio (sin infra).
 // Vocabulario de CONTEXT.md, nada de HTTP ni Stellar acá.
 
-export type Job = { id: string; model: string; estGenMs?: number };
+export type Job = { id: string; model: string };
 
 export type ForgeView = {
   forgeId: string;
@@ -12,6 +12,9 @@ export type ForgeView = {
   loadTimeMs: number; // 0 si HOT
   price: number; // USD por job, para S2 (scoring con precio)
   reliability: number; // 0..1
+  // S20: TTFT real medido (p50 de telemetry). Si HOT y presente, reemplaza
+  // rttMs estimado. Ausente o forge frío → estimado (el medido sería stale).
+  measuredTtftMs?: number;
   sim?: boolean; // true = capacidad simulada (badge SIM en UI, nunca se hace pasar por real)
 };
 

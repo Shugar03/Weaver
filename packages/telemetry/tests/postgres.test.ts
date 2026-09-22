@@ -17,7 +17,7 @@ describe("S16a PostgresTelemetry", () => {
       await t.record({ forgeId: "a", model: "m", ttftMs: 300, ok: true, ts: 2 });
       await t.record({ forgeId: "a", model: "m", ttftMs: 200, ok: true, ts: 3 });
       assert.deepEqual((await t.recent(2)).map((s) => s.ttftMs), [300, 200]);
-      assert.equal(await t.p50("m"), 200);
+      assert.equal(await t.p50("m", "a"), 200);
       assert.deepEqual(await t.usage(), { jobs: 3, ok: 3, okRate: 1, spentUSDC: 0.03 });
     } finally {
       await db.delete(performanceSamples);

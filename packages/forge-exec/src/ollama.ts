@@ -18,11 +18,23 @@ export class OllamaMLXAdapter implements ForgeExec {
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, init));
   }
 
+  // S24: liveness real — GET /v1/models responde = el forge está vivo.
+  async probe(): Promise<boolean> {
+    try {
+      const res = await this.fetchFn(`${this.baseUrl}/v1/models`, { method: "GET" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     const res = await this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: req.prompt }], stream: true }),
+      // S19: el modelo es el del request (el scheduler ya validó que la fleet lo
+      // sirve). `this.model` queda como label de qué declara servir este forge.
+      body: JSON.stringify({ model: req.model, messages: [{ role: "user", content: req.prompt }], stream: true }),
     });
     if (!res.ok || !res.body) throw new Error(`ollama: http ${res.status}`);
     const reader = res.body.getReader();

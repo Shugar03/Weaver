@@ -20,6 +20,7 @@ export const performanceSamples = pgTable(
     ok: boolean("ok").notNull(),
     ts: bigint("ts", { mode: "number" }).notNull(),
     keyId: text("key_id"),
+    payerTx: text("payer_tx"), // S23: tx x402 cliente→operador
     fundTx: text("fund_tx"),
     releaseTx: text("release_tx"),
     settleStatus: text("settle_status"),

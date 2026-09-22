@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
-import type { Deployment } from "../../lib/site";
+import { EXPLORER, short, type Deployment } from "../../lib/site";
 
 // Consola del proveedor (supply). Todo número es vivo o declarado:
 // gateway (/v1/status, /v1/executions), Ollama /api/ps directo, o deployment commiteado.
@@ -17,9 +17,6 @@ type Exec = {
 };
 type Status = { version: string; uptimeMs: number } | null;
 type PsModel = { name?: string; size?: number; size_vram?: number; expires_at?: string };
-
-const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx/";
-const EXPLORER_ACCOUNT = "https://stellar.expert/explorer/testnet/account/";
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -43,10 +40,6 @@ function uptime(ms: number): string {
 function gb(bytes?: number): string {
   if (!bytes) return "—";
   return `${(bytes / 1e9).toFixed(1)} GB`;
-}
-
-function short(h: string) {
-  return h.length > 12 ? `${h.slice(0, 4)}...${h.slice(-4)}` : h;
 }
 
 function Spark({ values }: { values: number[] }) {
@@ -123,7 +116,6 @@ export function ForgeConsole({
   const settled = (execs ?? []).filter((e) => e.settle?.status === "settled");
   const earnedUSDC = (settled.length * 0.01).toFixed(2);
   const releaseTx = settled[0]?.settle?.releaseTx ?? deployment?.txs.release_job_1;
-  void now;
 
   async function copyId() {
     try {
@@ -297,12 +289,12 @@ export function ForgeConsole({
                     <span className="text-lima">
                       ● settled
                       {last.settle.fundTx && (
-                        <a href={`${EXPLORER_TX}${last.settle.fundTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                        <a href={`${EXPLORER.tx}${last.settle.fundTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
                           fund {short(last.settle.fundTx)} ↗
                         </a>
                       )}
                       {last.settle.releaseTx && (
-                        <a href={`${EXPLORER_TX}${last.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                        <a href={`${EXPLORER.tx}${last.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
                           release {short(last.settle.releaseTx)} ↗
                         </a>
                       )}
@@ -323,7 +315,7 @@ export function ForgeConsole({
                   <span className={e.ok ? "text-lima" : "text-danger"}>
                     {e.ok ? `Completed · ${e.ttftMs} ms` : "Failed"}
                     {e.settle?.status === "settled" && e.settle.releaseTx && (
-                      <a href={`${EXPLORER_TX}${e.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-2 text-fog hover:text-lima">
+                      <a href={`${EXPLORER.tx}${e.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-2 text-fog hover:text-lima">
                         ${short(e.settle.releaseTx)} ↗
                       </a>
                     )}
@@ -342,7 +334,7 @@ export function ForgeConsole({
             <div className="font-tech text-base text-fog">Total · {settled.length} payout{settled.length === 1 ? "" : "s"} · USDC de juguete</div>
             {releaseTx ? (
               <a
-                href={`${EXPLORER_TX}${releaseTx}`}
+                href={`${EXPLORER.tx}${releaseTx}`}
                 target="_blank"
                 rel="noreferrer"
                 className="mt-4 flex items-center justify-between border border-line px-4 py-3 hover:border-lima"
@@ -357,7 +349,7 @@ export function ForgeConsole({
             </div>
             {deployment?.worker && (
               <a
-                href={`${EXPLORER_ACCOUNT}${deployment.worker}`}
+                href={`${EXPLORER.account}${deployment.worker}`}
                 target="_blank"
                 rel="noreferrer"
                 className="mt-3 block font-tech text-lg text-fog hover:text-lima"

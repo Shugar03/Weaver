@@ -51,17 +51,18 @@ serve — and exactly what Weaver routes and settles.
    cheapest HOT one. No server picking, no config. (`packages/scheduler`)
 2. **Survive dead nodes.** Kill the primary and the next request fails over to
    standby, live — nodes fall, the network doesn't. (`/dashboard` → Kill Forge)
-3. **Settle on Stellar.** Soroban escrow in USDC: the client funds, the contract
-   releases to the worker on result. Per job, no expiring credits.
+3. **Settle on Stellar.** The client pays per request via x402; the operator's
+   Soroban escrow releases USDC to the worker bound to the result's sha256 —
+   the payment declares what it paid for. Per job, no expiring credits.
    (`contracts/weaver-escrow`)
 4. **Keep zero data.** Prompts live in RAM and die with the request; chats persist
    only on your device (deletable). Public ledger, private prompts. (`/security`)
 
 ## Live proof (Stellar testnet, verify it yourself)
 
-- fund $0.01: https://stellar.expert/explorer/testnet/tx/177a7185e3349c0adef305ec856ba6d17d6868171c66388c8d3382b5eb727655
-- release: https://stellar.expert/explorer/testnet/tx/d6e75fcdb967b56a4dd6cd2218f1e6a12efc636287212ed48bbf1d6b2ff86b3b
-- contract: https://stellar.expert/explorer/testnet/contract/CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3
+- fund $0.01: https://stellar.expert/explorer/testnet/tx/d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7
+- release (con result_hash + firma ed25519 verificada): https://stellar.expert/explorer/testnet/tx/00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab
+- contract v3: https://stellar.expert/explorer/testnet/contract/CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB
 
 Demo video script (3 min, ES + EN subs, failover + Stellar): [`docs/demo-guion.md`](docs/demo-guion.md).
 

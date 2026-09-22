@@ -5,7 +5,8 @@
 // SIN expiry/cancel en MVP (declarado): solo jobs discretos.
 // Rojo S5a: fns en todo!(), los tests deben fallar con panics.
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Symbol,
 };
 
 const DAY_LEDGERS: u32 = 17_280; // ~24h a 5s por ledger
@@ -16,6 +17,7 @@ pub enum DataKey {
     Admin,
     Token,
     NextId,
+    Worker, // S23: pubkey ed25519 del forge que firma resultados (Proof L0)
     Job(u64),
 }
 
@@ -33,6 +35,9 @@ pub struct Job {
     pub client: Address,
     pub amount: i128,
     pub state: JobState,
+    // S22: sha256 del output servido. El release lo exige y lo deja on-chain:
+    // el pago queda atado a UN resultado concreto, auditable por cualquiera.
+    pub result_hash: Option<BytesN<32>>,
 }
 
 #[contracterror]
@@ -52,15 +57,25 @@ pub struct WeaverEscrow;
 #[contractimpl]
 impl WeaverEscrow {
     pub fn version(_env: Env) -> u32 {
-        1
+        3
     }
 
-    pub fn init(env: Env, admin: Address, token: Address) -> Result<(), Error> {
+    /// S23: worker_pubkey = clave ed25519 del forge cuyas firmas valida release.
+    pub fn init(
+        env: Env,
+        admin: Address,
+        token: Address,
+        worker_pubkey: BytesN<32>,
+    ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        // S22: sin esto, el primero en llamar init en un deploy fresco quedaba
+        // admin sin firmar nada. El admin propuesto debe autorizarlo.
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::Worker, &worker_pubkey);
         env.storage().instance().set(&DataKey::NextId, &1u64);
         env.storage().instance().extend_ttl(DAY_LEDGERS, TTL_30D);
         Ok(())
@@ -89,32 +104,62 @@ impl WeaverEscrow {
                 client: client.clone(),
                 amount,
                 state: JobState::Funded,
+                result_hash: None,
             },
         );
-        Self::emit(&env, symbol_short!("funded"), id, client, amount);
+        Self::emit(&env, symbol_short!("funded"), id, client, amount, None);
         env.storage().instance().extend_ttl(DAY_LEDGERS, TTL_30D);
         Ok(id)
     }
 
-    /// Solo admin: paga el escrow al worker.
-    pub fn release(env: Env, caller: Address, job_id: u64, worker: Address) -> Result<(), Error> {
+    /// Solo admin: paga el escrow al worker, atado al hash del resultado (S22).
+    /// S23 — Proof L0: release exige la firma ed25519 del forge sobre result_hash.
+    /// Sin recibo firmado por el forge registrado, no hay pago: el contrato
+    /// VERIFICA la entrega, no solo la declara.
+    pub fn release(
+        env: Env,
+        caller: Address,
+        job_id: u64,
+        worker: Address,
+        result_hash: BytesN<32>,
+        forge_sig: BytesN<64>,
+    ) -> Result<(), Error> {
         let (admin, token) = Self::require_init(&env)?;
         caller.require_auth();
         if caller != admin {
             return Err(Error::Unauthorized);
         }
+        let pubkey: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Worker)
+            .ok_or(Error::NotInitialized)?;
+        // Firma inválida → trap del host (la tx entera revierte, incluido el job).
+        env.crypto().ed25519_verify(
+            &pubkey,
+            &result_hash.clone().into(),
+            &forge_sig,
+        );
         let mut job = Self::load_job(&env, job_id)?;
         if job.state != JobState::Funded {
             return Err(Error::BadState);
         }
         job.state = JobState::Released;
+        job.result_hash = Some(result_hash.clone());
         Self::save_job(&env, job_id, &job);
         token::Client::new(&env, &token).transfer(
             &env.current_contract_address(),
             &worker,
             &job.amount,
         );
-        Self::emit(&env, symbol_short!("released"), job_id, worker, job.amount);
+        Self::emit(
+            &env,
+            symbol_short!("released"),
+            job_id,
+            worker,
+            job.amount,
+            Some(result_hash),
+        );
         env.storage().instance().extend_ttl(DAY_LEDGERS, TTL_30D);
         Ok(())
     }
@@ -138,7 +183,7 @@ impl WeaverEscrow {
             &client,
             &job.amount,
         );
-        Self::emit(&env, symbol_short!("refunded"), job_id, client, job.amount);
+        Self::emit(&env, symbol_short!("refunded"), job_id, client, job.amount, None);
         env.storage().instance().extend_ttl(DAY_LEDGERS, TTL_30D);
         Ok(())
     }
@@ -171,14 +216,22 @@ impl WeaverEscrow {
             .extend_ttl(&DataKey::Job(job_id), DAY_LEDGERS, TTL_30D);
     }
 
-    fn emit(env: &Env, name: Symbol, job_id: u64, party: Address, amount: i128) {
-        env.events().publish((name, job_id), (party, amount));
+    fn emit(
+        env: &Env,
+        name: Symbol,
+        job_id: u64,
+        party: Address,
+        amount: i128,
+        result_hash: Option<BytesN<32>>,
+    ) {
+        env.events().publish((name, job_id), (party, amount, result_hash));
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use soroban_sdk::{
         symbol_short,
         testutils::Address as _,
@@ -187,19 +240,26 @@ mod test {
 
     const UNIT: i128 = 10_000_000; // 1.0 USDC con 7 decimales
     const PAYOUT: i128 = 100_000; // $0.01 demo
+    const HASH: [u8; 32] = [7u8; 32];
 
-    fn setup() -> (Env, Address, Address, Address, Address, Address) {
+    fn sign(env: &Env, sk: &SigningKey, hash: &[u8; 32]) -> BytesN<64> {
+        BytesN::from_array(env, &sk.sign(hash).to_bytes())
+    }
+
+    fn setup() -> (Env, Address, Address, Address, Address, Address, SigningKey) {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
         let client = Address::generate(&env);
         let worker = Address::generate(&env);
+        let worker_sk = SigningKey::from_bytes(&[42u8; 32]);
+        let worker_pubkey = BytesN::from_array(&env, &worker_sk.verifying_key().to_bytes());
         let sac = env.register_stellar_asset_contract_v2(admin.clone());
         let token_id = sac.address();
         StellarAssetClient::new(&env, &token_id).mint(&client, &(1_000 * UNIT));
         let contract_id = env.register(WeaverEscrow, ());
-        WeaverEscrowClient::new(&env, &contract_id).init(&admin, &token_id);
-        (env, admin, client, worker, token_id, contract_id)
+        WeaverEscrowClient::new(&env, &contract_id).init(&admin, &token_id, &worker_pubkey);
+        (env, admin, client, worker, token_id, contract_id, worker_sk)
     }
 
     fn contract_of<'a>(env: &'a Env, contract_id: &'a Address) -> WeaverEscrowClient<'a> {
@@ -218,17 +278,35 @@ mod test {
 
     #[test]
     fn init_doble_falla() {
-        let (env, admin, _, _, token_id, contract_id) = setup();
+        let (env, admin, _, _, token_id, contract_id, _) = setup();
         let contract = contract_of(&env, &contract_id);
+        let pubkey = BytesN::from_array(&env, &[9u8; 32]);
         assert_eq!(
-            contract.try_init(&admin, &token_id),
+            contract.try_init(&admin, &token_id, &pubkey),
             Err(Ok(Error::AlreadyInitialized))
         );
     }
 
     #[test]
+    fn init_requiere_auth_del_admin() {
+        // S22: sin require_auth, el primero en llamar init queda admin.
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_id = Address::generate(&env);
+        let pubkey = BytesN::from_array(&env, &[9u8; 32]);
+        let contract_id = env.register(WeaverEscrow, ());
+        WeaverEscrowClient::new(&env, &contract_id).init(&admin, &token_id, &pubkey);
+        let auths = env.auths();
+        assert!(
+            auths.iter().any(|(addr, _)| *addr == admin),
+            "init debe exigir auth del admin"
+        );
+    }
+
+    #[test]
     fn fund_mueve_tokens_y_deja_funded() {
-        let (env, _, client, _, token_id, contract_id) = setup();
+        let (env, _, client, _, token_id, contract_id, _) = setup();
         let contract = contract_of(&env, &contract_id);
         let t = token_of(&env, &token_id);
         let before = t.balance(&client);
@@ -243,7 +321,7 @@ mod test {
 
     #[test]
     fn fund_cero_falla() {
-        let (env, _, client, _, _, contract_id) = setup();
+        let (env, _, client, _, _, contract_id, _) = setup();
         let contract = contract_of(&env, &contract_id);
         assert_eq!(
             contract.try_fund_job(&client, &0),
@@ -252,44 +330,68 @@ mod test {
     }
 
     #[test]
-    fn release_paga_al_worker() {
-        let (env, admin, client, worker, token_id, contract_id) = setup();
+    fn release_paga_al_worker_y_ata_al_resultado() {
+        // S22/S23: el pago exige el hash del resultado Y la firma del forge (L0).
+        let (env, admin, client, worker, token_id, contract_id, sk) = setup();
         let contract = contract_of(&env, &contract_id);
         let t = token_of(&env, &token_id);
         contract.fund_job(&client, &PAYOUT);
         let before = t.balance(&worker);
-        contract.release(&admin, &1, &worker);
+        let hash = BytesN::from_array(&env, &HASH);
+        contract.release(&admin, &1, &worker, &hash, &sign(&env, &sk, &HASH));
         assert_eq!(t.balance(&worker), before + PAYOUT);
-        assert_eq!(contract.get_job(&1).state, JobState::Released);
+        let job = contract.get_job(&1);
+        assert_eq!(job.state, JobState::Released);
+        assert_eq!(job.result_hash, Some(hash));
+    }
+
+    #[test]
+    fn release_sin_firma_valida_falla() {
+        // S23 Proof L0: una firma de otra clave (o sobre otro hash) → error.
+        let (env, admin, client, worker, _, contract_id, _) = setup();
+        let contract = contract_of(&env, &contract_id);
+        let mallory_sk = SigningKey::from_bytes(&[66u8; 32]);
+        contract.fund_job(&client, &PAYOUT);
+        let hash = BytesN::from_array(&env, &HASH);
+        let bad_sig = sign(&env, &mallory_sk, &HASH);
+        assert!(contract
+            .try_release(&admin, &1, &worker, &hash, &bad_sig)
+            .is_err());
+        // El job sigue Funded: nada se pagó, nada se marcó.
+        assert_eq!(contract.get_job(&1).state, JobState::Funded);
     }
 
     #[test]
     fn release_de_extraño_falla() {
-        let (env, _, client, worker, _, contract_id) = setup();
+        let (env, _, client, worker, _, contract_id, _) = setup();
         let contract = contract_of(&env, &contract_id);
         let mallory = Address::generate(&env);
+        let hash = BytesN::from_array(&env, &[0u8; 32]);
+        let sig = BytesN::from_array(&env, &[0u8; 64]);
         contract.fund_job(&client, &PAYOUT);
         assert_eq!(
-            contract.try_release(&mallory, &1, &worker),
+            contract.try_release(&mallory, &1, &worker, &hash, &sig),
             Err(Ok(Error::Unauthorized))
         );
     }
 
     #[test]
     fn doble_release_falla() {
-        let (env, admin, client, worker, _, contract_id) = setup();
+        let (env, admin, client, worker, _, contract_id, sk) = setup();
         let contract = contract_of(&env, &contract_id);
+        let hash = BytesN::from_array(&env, &HASH);
+        let sig = sign(&env, &sk, &HASH);
         contract.fund_job(&client, &PAYOUT);
-        contract.release(&admin, &1, &worker);
+        contract.release(&admin, &1, &worker, &hash, &sig);
         assert_eq!(
-            contract.try_release(&admin, &1, &worker),
+            contract.try_release(&admin, &1, &worker, &hash, &sig),
             Err(Ok(Error::BadState))
         );
     }
 
     #[test]
     fn refund_devuelve_al_cliente() {
-        let (env, _, client, _, token_id, contract_id) = setup();
+        let (env, _, client, _, token_id, contract_id, _) = setup();
         let contract = contract_of(&env, &contract_id);
         let t = token_of(&env, &token_id);
         contract.fund_job(&client, &PAYOUT);

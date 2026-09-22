@@ -1,11 +1,15 @@
 // Module Scheduler — Implementation S1: ETR puro, sin precio todavía.
-// ETR = RTT + queue + load_si_COLD + gen_estimado. Gana el menor ETR.
+// ETR = RTT + queue + load_si_COLD. Gana el menor ETR.
 // S2 agregará score = w1*ETR + w2*price - w3*reliability (Strategy).
 import type { Decision, ForgeView, Job, Scheduler } from "./types.js";
 
-export function etrMs(forge: ForgeView, job: Job): number {
-  const load = forge.hot ? 0 : forge.loadTimeMs;
-  return forge.rttMs + forge.queueMs + load + (job.estGenMs ?? 0);
+export function etrMs(forge: ForgeView, _job: Job): number {
+  // S20: HOT + medición real → el p50 medido ES el ETR (reemplaza el estimado).
+  // Forge frío/muerto: el medido es stale — estimado + load_time.
+  if (forge.hot && forge.measuredTtftMs !== undefined) {
+    return forge.measuredTtftMs + forge.queueMs;
+  }
+  return forge.rttMs + forge.queueMs + (forge.hot ? 0 : forge.loadTimeMs);
 }
 
 export class EtrScheduler implements Scheduler {
@@ -25,7 +29,12 @@ export class EtrScheduler implements Scheduler {
     return {
       forgeId: best.forgeId,
       etrMs: bestEtr,
-      reason: best.hot ? "warm-first" : "cold-pero-unico",
+      reason:
+        best.hot && best.measuredTtftMs !== undefined
+          ? "measured"
+          : best.hot
+            ? "warm-first"
+            : "cold-pero-unico",
     };
   }
 }

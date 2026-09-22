@@ -33,10 +33,15 @@ class OkExec implements ForgeExec {
 }
 
 const chatBody = JSON.stringify({ model: "qwen3.5:4b", messages: [{ role: "user", content: "hola" }], stream: true });
+// S19: chat exige que el modelo exista en la fleet.
+const forges = () => [
+  { forgeId: "dead", model: "qwen3.5:4b", hot: true, rttMs: 1, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 },
+  { forgeId: "ok", model: "qwen3.5:4b", hot: true, rttMs: 2, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 },
+];
 
 describe("S3 gateway failover", () => {
   it("forge muerto → 200 con contenido del secondary + [DONE]", async () => {
-    const app = createApp({ forges: () => [], exec: new FailoverForgeExec([new DeadExec(), new OkExec()]) });
+    const app = createApp({ forges, exec: new FailoverForgeExec([new DeadExec(), new OkExec()]) });
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -49,7 +54,7 @@ describe("S3 gateway failover", () => {
   });
 
   it("muerte mid-stream → evento error y sin [DONE]", async () => {
-    const app = createApp({ forges: () => [], exec: new FailoverForgeExec([new FlakyExec(), new OkExec()]) });
+    const app = createApp({ forges, exec: new FailoverForgeExec([new FlakyExec(), new OkExec()]) });
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -4,7 +4,7 @@ import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
 import { EtrScheduler } from "@weaver/scheduler";
 import type { ForgeView } from "@weaver/scheduler";
-import type { ForgeExec } from "@weaver/forge-exec";
+import type { ForgeExec, Proof } from "@weaver/forge-exec";
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
 import type { SettleReceipt } from "@weaver/settlement";
 import type { ApiKeys } from "@weaver/api-keys";
@@ -14,21 +14,45 @@ export type Paywall = { verifier: PaymentVerifier; payTo: string };
 export type Chaos = { setDead: (dead: boolean) => void };
 export type NodeInfo = { version: string; startedAt: number };
 type Deps = {
-  forges: () => ForgeView[];
+  forges: () => ForgeView[] | Promise<ForgeView[]>; // async = forma canónica (un registry real lo es)
   exec?: ForgeExec;
   paywall?: Paywall;
   chaos?: Chaos;
   telemetry?: Telemetry;
   node?: NodeInfo;
   apiKeys?: ApiKeys;
-  settlement?: { settleJob(): Promise<SettleReceipt> }; // S17b: ausente = sin liquidación (dev)
+  settlement?: { settleJob(resultHash: Buffer, forgeSig: Buffer): Promise<SettleReceipt> }; // S17b+S22/23: ausente = sin liquidación (dev)
   rateLimit?: { rpm: number }; // S15a: ausente = abierto (dev)
   corsOrigins?: string[]; // S15a: ausente = abierto (dev); presente = allowlist
 };
 
 export function createApp(deps: Deps) {
-  const app = new Hono<{ Variables: { keyId?: string; keyOwner?: string } }>();
+  const app = new Hono<{
+    Variables: { keyId?: string; keyOwner?: string; paymentHeader?: string; paymentReqs?: PaymentRequirements };
+  }>();
   const scheduler = new EtrScheduler();
+
+  // S21: Idempotency-Key — el retry del cliente re-ejecuta pero no re-cobra.
+  // Cachea la Promise (no el resultado): requests concurrentes con la misma key
+  // comparten el settle en vuelo. Fallo → se borra y el retry reintenta de verdad.
+  const settleCache = new Map<string, Promise<SettleReceipt>>();
+  const settleOnce = (
+    s: { settleJob(h: Buffer, sig: Buffer): Promise<SettleReceipt> },
+    key: string,
+    hash: Buffer,
+    sig: Buffer,
+  ) => {
+    const hit = settleCache.get(key);
+    if (hit) return hit;
+    const p = s.settleJob(hash, sig);
+    p.catch(() => settleCache.delete(key));
+    settleCache.set(key, p);
+    if (settleCache.size > 10_000) {
+      const first = settleCache.keys().next().value;
+      if (first !== undefined) settleCache.delete(first);
+    }
+    return p;
+  };
 
   // S11: admin solo operador. Sin apiKeys (dev local), pasa todo (opt-in como el resto).
   const requireOperator = async (c: Context, next: Next) => {
@@ -111,15 +135,18 @@ export function createApp(deps: Deps) {
       const header = c.req.header("x-payment");
       const ok = header ? await verifier.verify(header, requirements) : false;
       if (!ok) return c.json({ x402Version: 2, error: "pago requerido", accepts: [requirements] }, 402);
+      // S23: verify autoriza; el settle (cobro real) corre post-serve en el handler.
+      c.set("paymentHeader", header);
+      c.set("paymentReqs", requirements);
       await next();
     });
   }
 
-  app.get("/v1/forges", (c) => c.json(deps.forges()));
+  app.get("/v1/forges", async (c) => c.json(await deps.forges()));
 
   // S8b: descubrimiento OpenAI (opencode/cursor/pi leen esto para listar modelos).
-  app.get("/v1/models", (c) => {
-    const ids = [...new Set(deps.forges().map((f) => f.model))];
+  app.get("/v1/models", async (c) => {
+    const ids = [...new Set((await deps.forges()).map((f) => f.model))];
     return c.json({ object: "list", data: ids.map((id) => ({ id, object: "model", owned_by: "weaver" })) });
   });
 
@@ -174,7 +201,11 @@ export function createApp(deps: Deps) {
 
   app.post("/v1/jobs", async (c) => {
     const body = await c.req.json<{ model: string }>();
-    const forges = deps.forges().filter((f) => f.model === body.model);
+    // S19: modelo que nadie sirve → 404 con código, jamás 500.
+    const forges = (await deps.forges()).filter((f) => f.model === body.model);
+    if (forges.length === 0) {
+      return c.json({ error: "modelo sin forges", code: "unknown_model" }, 404);
+    }
     const d = scheduler.select({ id: crypto.randomUUID(), model: body.model }, forges);
     return c.json({ forge: d.forgeId, etr_ms: d.etrMs, reason: d.reason });
   });
@@ -189,16 +220,23 @@ export function createApp(deps: Deps) {
     if (messages.length > 20 || prompt.length > 8000) {
       return c.json({ error: "prompt demasiado grande", code: "prompt_too_large" }, 413);
     }
+    // S19: el modelo pedido debe existir en la fleet — si no, 404 antes de
+    // abrir stream ni tocar un forge (nada de servir otro modelo en silencio).
+    if (!(await deps.forges()).some((f) => f.model === body.model)) {
+      return c.json({ error: "modelo sin forges", code: "unknown_model" }, 404);
+    }
     const exec = deps.exec;
     const id = `chatcmpl-${crypto.randomUUID()}`;
-    // S9a: telemetría de la ejecución real (quién sirvió + TTFT + ok).
+    // S9a/S19: telemetría de la ejecución real — onForge reporta por request
+    // quién sirvió (sin espiar internals ni estado compartido entre requests).
     const t0 = Date.now();
     let firstAt = -1;
-    const servedForge = () =>
-      (exec as unknown as { lastForgeId?: string | null }).lastForgeId ?? exec.forgeId;
+    let servedForgeId: string | null = null;
+    // S23: el forge firma su output (Proof L0) — el contrato lo exige en release.
+    let proof: Proof | null = null;
     const telRecord = (ok: boolean) => {
       const base = {
-        forgeId: servedForge(),
+        forgeId: servedForgeId ?? exec.forgeId,
         model: body.model,
         ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
         ok,
@@ -207,20 +245,51 @@ export function createApp(deps: Deps) {
       };
       // S17b: lo fallido no se paga (solo se registra). Lo OK liquida en background:
       // fire-and-forget a propósito — settle lento o caído jamás frena ni voltea requests.
-      if (!ok || !deps.settlement) {
+      const payerHeader = c.get("paymentHeader");
+      const payerReqs = c.get("paymentReqs");
+      if (!ok || (!deps.settlement && !payerHeader)) {
         deps.telemetry?.record(base).catch(() => {});
         return;
       }
       const settlement = deps.settlement;
+      const idemKey = c.req.header("idempotency-key");
+      const paywall = deps.paywall;
+      const servedProof = proof;
       void (async () => {
+        // S23: pata cliente — x402 settle ejecuta el pago YA verificado.
+        let payerTx: string | undefined;
+        let payerOk = true;
+        if (payerHeader && payerReqs && paywall) {
+          const s = await paywall.verifier.settle(payerHeader, payerReqs);
+          payerOk = s.success;
+          payerTx = s.txHash;
+        }
+        // S17b+S22/23: pata worker — escrow operador→worker exige result_hash
+        // + firma del forge. Sin proof no hay pago (trabajo no probado).
+        if (!settlement) {
+          await deps.telemetry
+            ?.record({ ...base, settle: { payerTx, status: payerOk ? "settled" : "failed" } })
+            .catch(() => {});
+          return;
+        }
+        if (!servedProof) {
+          await deps.telemetry
+            ?.record({ ...base, settle: { payerTx, status: "failed" } })
+            .catch(() => {});
+          return;
+        }
         try {
-          const r = await settlement.settleJob();
+          const r = idemKey
+            ? await settleOnce(settlement, idemKey, servedProof.resultHash, servedProof.signature)
+            : await settlement.settleJob(servedProof.resultHash, servedProof.signature);
           await deps.telemetry?.record({
             ...base,
-            settle: { fundTx: r.fundTx, releaseTx: r.releaseTx, status: "settled" },
+            settle: { payerTx, fundTx: r.fundTx, releaseTx: r.releaseTx, status: payerOk ? "settled" : "failed" },
           });
         } catch {
-          await deps.telemetry?.record({ ...base, settle: { status: "failed" } }).catch(() => {});
+          await deps.telemetry
+            ?.record({ ...base, settle: { payerTx, status: "failed" } })
+            .catch(() => {});
         }
       })();
     };
@@ -237,7 +306,17 @@ export function createApp(deps: Deps) {
           }
         };
         try {
-          for await (const chunk of exec.execute({ jobId: id, model: body.model, prompt })) {
+          for await (const chunk of exec.execute({
+            jobId: id,
+            model: body.model,
+            prompt,
+            onForge: (fid) => {
+              servedForgeId = fid;
+            },
+            onProof: (p) => {
+              proof = p;
+            },
+          })) {
             if (firstAt < 0) firstAt = Date.now();
             if (chunk.done) break;
             const data = JSON.stringify({

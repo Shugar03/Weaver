@@ -1,17 +1,22 @@
 {
   "network": "testnet",
-  "contract_id": "CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3",
+  "contract_id": "CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB",
   "admin": "GDQGSN4K3MEBNTYEOGFHAUPJAH6FMGSJC6W6K37RY43KMW44G3CP4SMA",
   "token_usdc_sac": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-  "wasm_hash": "f76e9e7032416c3de2bf383853f18978d987cb779b989d7eb4f30727025003e7",
+  "wasm_hash": "a542b6b5ab1289effb05e4bfc0f647e16f6572531046f289c5547fceff82c0b5",
   "worker": "GDWZGZBSGDM2522KDT4MZZ6MGDDBTIX2CPFLXZMWMCWOHAPARTUZJX6T",
+  "worker_pubkey_hex": "ed93643230d9aeeb4a1cf8cce7cc30c619a2fa13cabbe59660ace381e08ce994",
   "txs": {
-    "upload_wasm": "70f61c49c61364ba74fd7cc046902e837d93aa18ec74a552b3a4691d5e8ccfa9",
-    "deploy_contract": "27812722a571decbfb5e10e1457bcbcc2426ff70d1da600acf8a3a3843477355",
-    "init": "5e8b6628b5f5ad3274c4856d738b11642e35212e7d4d5726755db9aadd2875a5",
-    "fund_job_1": "177a7185e3349c0adef305ec856ba6d17d6868171c66388c8d3382b5eb727655",
-    "release_job_1": "d6e75fcdb967b56a4dd6cd2218f1e6a12efc636287212ed48bbf1d6b2ff86b3b"
+    "upload_wasm": "d8605680ea4bf7dfe6297da1e1114c34070cbf6ef81f9286e966c50f96c3a699",
+    "deploy_contract": "018577f01a29f9a3ff792e4afe2e23df7c11a8a432d844aa36d18fb789817031",
+    "init": "f1a08d89c1feee1b8655fc72deb4f4952d413ef19c2b4aa44aa468074249adf4",
+    "fund_job_live": "d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7",
+    "release_job_live": "00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab"
   },
   "versions": { "sdk": "22.0.11", "cli": "28.0.0" },
-  "note": "Secrets viven en ~/.config/stellar, jamás en el repo. Loop vivo job 1: fund $0.01 client→escrow, release escrow→worker, balance worker 100000 verificado."
+  "previous": {
+    "contract_id": "CDEEVEE7FV4DFNZVYVLBU6A2XRUCMP2RACR7HJIDISIEAXJJQUBTCGJH",
+    "note": "v2: init auth + result_hash sin firma — queda como referencia histórica"
+  },
+  "note": "v3 (Proof L0): init registra la pubkey ed25519 del worker y release exige su firma sobre result_hash — firma inválida revierte y el job queda Funded. Secrets viven en ~/.config/stellar, jamás en el repo."
 }

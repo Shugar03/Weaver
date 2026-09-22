@@ -5,7 +5,7 @@ import { Opportunity } from "../components/landing/Opportunity";
 import { Pillars } from "../components/landing/Pillars";
 import { Trusted } from "../components/landing/Trusted";
 import { getForges } from "../lib/weaver";
-import { readDeployment } from "../lib/site";
+import { readDeployment } from "../lib/deployment";
 
 const GATEWAY = process.env.WEAVER_GATEWAY ?? "http://localhost:3001";
 

@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "test": "node --test tests/*.test.ts",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

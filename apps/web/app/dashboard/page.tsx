@@ -7,28 +7,12 @@ import { SectionHead } from "../../components/SectionHead";
 import { SiteHeader } from "../../components/SiteHeader";
 import { TrendsSection } from "../../components/TrendsSection";
 import { getForges, type ForgeView } from "../../lib/weaver";
+import { EXPLORER, short, type Deployment } from "../../lib/site";
+import { readDeployment } from "../../lib/deployment";
 
 const GATEWAY = process.env.WEAVER_GATEWAY ?? "http://localhost:3001";
-const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx/";
-
-type Deployment = {
-  contract_id: string;
-  admin: string;
-  worker?: string;
-  token_usdc_sac: string;
-  txs: Record<string, string>;
-} | null;
 
 type Bench = { stamp: number; n: number; summaries: { name: string; ok: number; p50ttft: number; maxtotal: number }[] } | null;
-
-async function readDeployment(): Promise<Deployment> {
-  try {
-    const p = join(process.cwd(), "..", "..", "contracts", "weaver-escrow", "deployments", "testnet.json");
-    return JSON.parse(await readFile(p, "utf8")) as Deployment;
-  } catch {
-    return null;
-  }
-}
 
 async function readBench(): Promise<Bench> {
   try {
@@ -37,7 +21,7 @@ async function readBench(): Promise<Bench> {
     if (files.length === 0) return null;
     const json = JSON.parse(await readFile(join(dir, files[files.length - 1]), "utf8")) as {
       prompts: string[];
-      summaries: Bench extends null ? never : NonNullable<Bench>["summaries"];
+      summaries: NonNullable<Bench>["summaries"];
     };
     const stamp = Number(files[files.length - 1].replace("bench-", "").replace(".json", ""));
     return { stamp, n: json.prompts.length, summaries: json.summaries };
@@ -46,18 +30,14 @@ async function readBench(): Promise<Bench> {
   }
 }
 
-function short(h: string) {
-  return h.length > 12 ? `${h.slice(0, 4)}...${h.slice(-4)}` : h;
-}
-
 export default async function Page() {
-  const [forges, deployment, bench]: [ForgeView[] | null, Deployment, Bench] = await Promise.all([
+  const [forges, deployment, bench]: [ForgeView[] | null, Deployment | null, Bench] = await Promise.all([
     getForges(GATEWAY),
     readDeployment(),
     readBench(),
   ]);
   const releaseTx = deployment?.txs.release_job_1;
-  const lastTx = releaseTx ? { label: `release ${short(releaseTx)}`, url: `${EXPLORER_TX}${releaseTx}` } : null;
+  const lastTx = releaseTx ? { label: `release ${short(releaseTx)}`, url: `${EXPLORER.tx}${releaseTx}` } : null;
 
   return (
     <>

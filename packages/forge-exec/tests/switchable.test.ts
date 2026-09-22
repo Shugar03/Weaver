@@ -26,4 +26,11 @@ describe("S7 switchable", () => {
     s.setDead(false);
     assert.ok((await collect(s)).includes("hola forge"));
   });
+
+  it("probe: muerto → false, vivo → delega al inner", async () => {
+    const s = new SwitchableExec(new FakeForgeExec());
+    assert.equal(await s.probe(), true);
+    s.setDead(true);
+    assert.equal(await s.probe(), false);
+  });
 });

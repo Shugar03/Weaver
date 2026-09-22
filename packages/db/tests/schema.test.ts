@@ -10,8 +10,8 @@ describe("S16a schema", () => {
     const cols = Object.keys(getTableColumns(apiKeys)).sort();
     assert.deepEqual(cols, ["createdAt", "hash", "id", "owner", "revoked"]);
   });
-  it("performance_samples: + settle (S17b, nullable)", () => {
+  it("performance_samples: + settle (S17b, nullable) + payerTx (S23)", () => {
     const cols = Object.keys(getTableColumns(performanceSamples)).sort();
-    assert.deepEqual(cols, ["forgeId", "fundTx", "id", "keyId", "model", "ok", "releaseTx", "settleStatus", "ts", "ttftMs"]);
+    assert.deepEqual(cols, ["forgeId", "fundTx", "id", "keyId", "model", "ok", "payerTx", "releaseTx", "settleStatus", "ts", "ttftMs"]);
   });
 });

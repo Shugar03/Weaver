@@ -1,5 +1,5 @@
 import { ForgeConsole } from "../../components/forge/ForgeConsole";
-import { readDeployment } from "../../lib/site";
+import { readDeployment } from "../../lib/deployment";
 
 export default async function ForgePage() {
   const base = process.env.WEAVER_GATEWAY ?? "http://localhost:3001";

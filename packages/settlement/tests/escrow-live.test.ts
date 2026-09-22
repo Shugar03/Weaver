@@ -1,17 +1,20 @@
-// S17b — settleJob contra testnet real. Requiere TEST_SETTLEMENT_SECRET
-// (secret del admin GDQG…SMA, jamás en repo); sin ella, skip.
-// Nota: release exitoso PRUEBA estado Released (el contrato revierte si no).
+// S17b — settleJob contra testnet real. Requiere TEST_SETTLEMENT_SECRET (admin
+// GDQG…SMA) y TEST_WORKER_SECRET (forge que firma el proof L0); sin ellas, skip.
+// Nota: release exitoso PRUEBA estado Released (el contrato revierte si la
+// firma ed25519 del result_hash no es del worker registrado en init).
+import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair } from "@stellar/stellar-sdk";
-import { EscrowSettlement, RpcSubmitter } from "../src/escrow.ts";
+import { EscrowSettlement, RpcSubmitter, stellarSigner } from "../src/escrow.ts";
 
 const SECRET = process.env.TEST_SETTLEMENT_SECRET;
-const CONTRACT = "CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3";
+const WORKER_SECRET = process.env.TEST_WORKER_SECRET;
+const CONTRACT = "CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB";
 const WORKER = "GDWZGZBSGDM2522KDT4MZZ6MGDDBTIX2CPFLXZMWMCWOHAPARTUZJX6T";
 
 describe("S17b testnet vivo", () => {
-  it("fund+release dejan 2 txs verificables", { skip: !SECRET, timeout: 120000 }, async () => {
+  it("fund+release con proof L0 dejan 2 txs verificables", { skip: !SECRET || !WORKER_SECRET, timeout: 120000 }, async () => {
     const secret = SECRET as string;
     const operator = Keypair.fromSecret(secret).publicKey();
     const s = new EscrowSettlement(new RpcSubmitter("https://soroban-testnet.stellar.org", secret), {
@@ -20,7 +23,10 @@ describe("S17b testnet vivo", () => {
       worker: WORKER,
       payout: 100000,
     });
-    const r = await s.settleJob();
+    // El forge (worker) firma el sha256 de su output — el contrato lo verifica.
+    const hash = createHash("sha256").update("live-proof-test").digest();
+    const sig = stellarSigner(WORKER_SECRET as string)(hash);
+    const r = await s.settleJob(hash, sig);
     assert.ok(r.jobId > 0);
     assert.match(r.fundTx, /^[0-9a-f]{64}$/);
     assert.match(r.releaseTx, /^[0-9a-f]{64}$/);

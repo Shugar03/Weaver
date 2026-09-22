@@ -10,12 +10,20 @@ describe("S9a telemetry", () => {
     await t.record({ forgeId: "a", model: "m", ttftMs: 300, ok: true, ts: 2 });
     await t.record({ forgeId: "a", model: "m", ttftMs: 200, ok: true, ts: 3 });
     assert.deepEqual((await t.recent(2)).map((s) => s.ttftMs), [200, 300]);
-    assert.equal(await t.p50("m"), 200);
+    assert.equal(await t.p50("m", "a"), 200);
   });
 
   it("vacío → recent [] y p50 0", async () => {
     const t = new InMemoryTelemetry();
     assert.deepEqual(await t.recent(5), []);
-    assert.equal(await t.p50("m"), 0);
+    assert.equal(await t.p50("m", "a"), 0);
+  });
+
+  it("S20: p50 es por forge — uno lento no contamina al rápido", async () => {
+    const t = new InMemoryTelemetry();
+    await t.record({ forgeId: "lento", model: "m", ttftMs: 900, ok: true, ts: 1 });
+    await t.record({ forgeId: "rapido", model: "m", ttftMs: 20, ok: true, ts: 2 });
+    assert.equal(await t.p50("m", "lento"), 900);
+    assert.equal(await t.p50("m", "rapido"), 20);
   });
 });

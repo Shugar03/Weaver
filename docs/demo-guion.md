@@ -57,21 +57,23 @@ Pantalla: `Kill Forge` → RUN → `forge-sim-01` en el meta → `Revivir Forge`
 
 ### 1:50–2:40 — Plata real (stellar.expert)
 
-> ES: "Y esto no es teatro: cada job se paga. Escrow en Soroban, testnet de Stellar,
-> un centavo de USDC: el cliente fondea, el contrato libera al worker contra resultado.
-> Sin fee por recargar, sin créditos que expiran: plata programable, por job.
+> ES: "Y esto no es teatro: cada job se paga. El cliente paga por request vía x402;
+> el escrow en Soroban libera al worker un centavo de USDC solo si el forge firmó
+> el hash del resultado con su clave ed25519 — el contrato verifica la firma antes
+> de pagar. Sin firma válida, no hay pago: proof de entrega, on-chain.
 > Estas transacciones las verifica cualquiera."
 >
-> EN: "And this isn't theater: every job gets paid. A Soroban escrow on Stellar testnet,
-> one cent in USDC: the client funds, the contract releases to the worker on result.
-> No top-up fees, no expiring credits: programmable money, per job.
+> EN: "And this isn't theater: every job gets paid. The client pays per request via
+> x402; the Soroban escrow releases one cent of USDC only if the forge signed the
+> result hash with its ed25519 key — the contract verifies the signature before
+> paying. No valid signature, no payment: delivery proof, on-chain.
 > Anyone can verify these transactions."
 
 Pantalla (pestañas ya abiertas, nada de tipear hashes en cámara):
 
-- fund $0.01: `https://stellar.expert/explorer/testnet/tx/177a7185e3349c0adef305ec856ba6d17d6868171c66388c8d3382b5eb727655`
-- release: `https://stellar.expert/explorer/testnet/tx/d6e75fcdb967b56a4dd6cd2218f1e6a12efc636287212ed48bbf1d6b2ff86b3b`
-- contrato: `https://stellar.expert/explorer/testnet/contract/CDPOGSQLTLRZPCE2NF4WFVSMGQEGLOAPBM5LFCK2U26LP6B5YVN5GBU3`
+- fund $0.01: `https://stellar.expert/explorer/testnet/tx/d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7`
+- release (con proof L0 — hash firmado por el forge): `https://stellar.expert/explorer/testnet/tx/00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab`
+- contrato v3: `https://stellar.expert/explorer/testnet/contract/CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB`
 
 ### 2:40–3:00 — Cierre (`/security` 5s + CTA)
 
