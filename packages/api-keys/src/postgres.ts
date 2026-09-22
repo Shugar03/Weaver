@@ -49,4 +49,9 @@ export class PostgresApiKeys implements ApiKeys {
       revoked: k.revoked,
     }));
   }
+
+  async listByOwner(owner: string): Promise<KeyPublic[]> {
+    const rows = await this.db.select().from(apiKeys).where(eq(apiKeys.owner, owner));
+    return rows.map((k) => ({ id: k.id, owner: k.owner, createdAt: k.createdAt.getTime(), revoked: k.revoked }));
+  }
 }

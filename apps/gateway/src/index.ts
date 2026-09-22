@@ -9,6 +9,8 @@ import type { ExecStats, ForgeExec, ImageExec, Proof } from "@weaver/forge-exec"
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
 import type { SettleReceipt } from "@weaver/settlement";
 import type { ApiKeys } from "@weaver/api-keys";
+import type { AccountStore, CreditLedger, PricingBook } from "@weaver/accounts";
+import { depositMemoFor } from "@weaver/accounts";
 import type { Telemetry } from "@weaver/telemetry";
 import type { AgentHost } from "./agent.ts";
 import { extractDocText } from "./agent.ts";
@@ -51,11 +53,33 @@ type Deps = {
   breaker?: Breaker; // S27: ausente = sin circuit breaker (tests/dev aislado)
   // S32: nonces de handshake forge (ADR-0005). Ausente = sin forges remotos.
   challenges?: { issue(): { nonce: string; expiresAt: number } };
+  // S47 (ADR-0007): cuentas de usuario + billing prepago. Todas opt-in —
+  // sin accounts/ledger el gateway se comporta exactamente como hoy (A5).
+  accounts?: AccountStore;
+  ledger?: CreditLedger;
+  pricing?: PricingBook;
+  // Challenges de login wallet (firma de "weaver-login:<nonce>") — instancia
+  // separada del NonceStore de forges. Ausente = login por mgmt token solo.
+  meChallenges?: { issue(): { nonce: string; expiresAt: number }; consume(nonce: string): boolean };
+  verifyWalletSig?: (pubkey: string, msg: Buffer, sig: Buffer) => boolean;
+  // Deposit address pública del operador — la muestra el panel (Overview).
+  depositAddress?: string;
+  // S48: metadata declarada por modelo para el marketplace (env MODEL_CATALOG).
+  // Solo lo que el operador declara — nada se infiere ni se inventa.
+  catalog?: Record<string, CatalogMeta>;
+};
+
+export type CatalogMeta = {
+  name?: string;
+  description?: string;
+  context?: number; // tokens de context window declarados
+  features?: string[]; // tools | reasoning | vision | image | json | audio | video
+  docs?: string; // URL de documentación del modelo
 };
 
 export function createApp(deps: Deps) {
   const app = new Hono<{
-    Variables: { keyId?: string; keyOwner?: string; paymentHeader?: string; paymentReqs?: PaymentRequirements };
+    Variables: { keyId?: string; keyOwner?: string; accountId?: string; paymentHeader?: string; paymentReqs?: PaymentRequirements };
   }>();
   const scheduler = new EtrScheduler();
 
@@ -111,6 +135,13 @@ export function createApp(deps: Deps) {
     const keys = deps.apiKeys;
     app.use("/v1/*", async (c, next) => {
       const auth = c.req.header("authorization");
+      // S47: /v1/me/* y /v1/accounts tienen su propia auth (mgmt/session
+      // tokens también empiezan con wvr_ — el middleware de api-keys las
+      // rechazaría con 401 falso antes de llegar al requireAccount).
+      if (c.req.path.startsWith("/v1/me") || c.req.path === "/v1/accounts") {
+        await next();
+        return;
+      }
       if (!auth?.startsWith("Bearer ")) {
         await next();
         return;
@@ -203,6 +234,206 @@ export function createApp(deps: Deps) {
       return c.json({ revoked: true });
     });
   }
+
+  // S47 (ADR-0007): cuentas de usuario — self-serve keys + créditos prepagos.
+  // Auth dual: Bearer wvr_acct_ (management token) o wvr_sess_ (sesión de
+  // firma wallet). Todo lo de /v1/me/* pasa por requireAccount — una cuenta
+  // jamás ve ni toca los recursos de otra (A4).
+  if (deps.accounts) {
+    const accounts = deps.accounts;
+    const ledger = deps.ledger;
+    const keys = deps.apiKeys;
+
+    const requireAccount = async (c: Context, next: Next) => {
+      const auth = c.req.header("authorization");
+      const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+      const account = token.startsWith("wvr_acct_")
+        ? await accounts.byMgmtToken(token)
+        : token.startsWith("wvr_sess_")
+          ? await accounts.bySession(token)
+          : null;
+      if (!account) return c.json({ error: "autenticación de cuenta requerida", code: "unauthorized" }, 401);
+      c.set("accountId", account.id);
+      await next();
+    };
+
+    app.post("/v1/accounts", async (c) => {
+      const { account, mgmtToken } = await accounts.create();
+      return c.json({ accountId: account.id, mgmtToken, depositMemo: depositMemoFor(account) }, 201);
+    });
+
+    // Login wallet: challenge → firma "weaver-login:<nonce>" → sesión.
+    // El nonce es single-use + 60s TTL (replay no autentica). Si la wallet
+    // no tiene cuenta, se crea on-first-login atada al pubkey.
+    if (deps.meChallenges && deps.verifyWalletSig) {
+      const challenges = deps.meChallenges;
+      const verify = deps.verifyWalletSig;
+      const verifyLogin = async (pubkey: string, nonce: string, sigHex: string): Promise<boolean> => {
+        if (!challenges.consume(nonce)) return false;
+        try {
+          return verify(pubkey, Buffer.from(`weaver-login:${nonce}`), Buffer.from(sigHex, "hex"));
+        } catch {
+          return false;
+        }
+      };
+
+      app.post("/v1/me/challenge", (c) => c.json(challenges.issue()));
+
+      app.post("/v1/me/session", async (c) => {
+        const body = await c.req
+          .json<{ pubkey?: string; nonce?: string; signature?: string }>()
+          .catch((): { pubkey?: string; nonce?: string; signature?: string } => ({}));
+        if (!body.pubkey || !body.nonce || !body.signature) {
+          return c.json({ error: "faltan pubkey/nonce/signature", code: "bad_request" }, 400);
+        }
+        if (!(await verifyLogin(body.pubkey, body.nonce, body.signature))) {
+          return c.json({ error: "firma inválida o nonce usado", code: "unauthorized" }, 401);
+        }
+        const account = (await accounts.byWallet(body.pubkey)) ?? (await accounts.createForWallet(body.pubkey));
+        const { token, expiresAt } = await accounts.issueSession(account.id);
+        return c.json({ sessionToken: token, accountId: account.id, expiresAt });
+      });
+
+      // Link de wallet a una cuenta existente (autenticada). La firma prueba
+      // control de la wallet; una wallet ya atada a OTRA cuenta → 409.
+      app.post("/v1/me/link-wallet", requireAccount, async (c) => {
+        const body = await c.req
+          .json<{ pubkey?: string; nonce?: string; signature?: string }>()
+          .catch((): { pubkey?: string; nonce?: string; signature?: string } => ({}));
+        if (!body.pubkey || !body.nonce || !body.signature) {
+          return c.json({ error: "faltan pubkey/nonce/signature", code: "bad_request" }, 400);
+        }
+        if (!(await verifyLogin(body.pubkey, body.nonce, body.signature))) {
+          return c.json({ error: "firma inválida o nonce usado", code: "unauthorized" }, 401);
+        }
+        const existing = await accounts.byWallet(body.pubkey);
+        if (existing && existing.id !== c.get("accountId")) {
+          return c.json({ error: "wallet ya atada a otra cuenta", code: "wallet_taken" }, 409);
+        }
+        await accounts.linkWallet(c.get("accountId")!, body.pubkey);
+        return c.json({ linked: true, walletPubkey: body.pubkey });
+      });
+    }
+
+    app.get("/v1/me", requireAccount, async (c) => {
+      const account = (await accounts.get(c.get("accountId")!))!;
+      const balance = ledger ? await ledger.balance(account.id) : 0n;
+      // Uso agregado: Σ telemetría por key propia (sin columna nueva en samples).
+      let usage = { jobs: 0, ok: 0, okRate: 0 };
+      if (keys && deps.telemetry) {
+        const mine = await keys.listByOwner(account.id);
+        const us = await Promise.all(mine.map((k) => deps.telemetry!.usage(k.id)));
+        const jobs = us.reduce((a, u) => a + u.jobs, 0);
+        const ok = us.reduce((a, u) => a + u.ok, 0);
+        usage = { jobs, ok, okRate: jobs === 0 ? 0 : ok / jobs };
+      }
+      return c.json({
+        accountId: account.id,
+        walletPubkey: account.walletPubkey ?? null,
+        balanceStroops: balance.toString(),
+        balanceUSDC: Number(balance) / 1e7,
+        depositMemo: depositMemoFor(account),
+        depositAddress: deps.depositAddress ?? null,
+        usage,
+      });
+    });
+
+    app.get("/v1/me/billing", requireAccount, async (c) => {
+      const accountId = c.get("accountId")!;
+      const balance = ledger ? await ledger.balance(accountId) : 0n;
+      const events = ledger ? await ledger.history(accountId, 100) : [];
+      return c.json({
+        balanceStroops: balance.toString(),
+        balanceUSDC: Number(balance) / 1e7,
+        events: events.map((e) => ({ ...e, amount: e.amount.toString(), amountUSDC: Number(e.amount) / 1e7 })),
+      });
+    });
+
+    // Keys self-serve: owner = accountId — eso las conecta al billing (P3).
+    if (keys) {
+      app.post("/v1/me/keys", requireAccount, async (c) => {
+        const { id, secret } = await keys.issue(c.get("accountId")!);
+        return c.json({ id, secret }, 201);
+      });
+      app.get("/v1/me/keys", requireAccount, async (c) => c.json(await keys.listByOwner(c.get("accountId")!)));
+      app.delete("/v1/me/keys/:id", requireAccount, async (c) => {
+        const id = c.req.param("id") ?? "";
+        // 404 para keys ajenas o inexistentes — no filtrar existencia.
+        const mine = await keys.listByOwner(c.get("accountId")!);
+        if (!mine.some((k) => k.id === id)) return c.json({ error: "key inexistente" }, 404);
+        await keys.revoke(id);
+        return c.json({ revoked: true });
+      });
+    }
+
+    // Catálogo público de precios — el usuario ve el costo ANTES de gastar.
+    if (deps.pricing) {
+      const pricing = deps.pricing;
+      app.get("/v1/pricing", (c) =>
+        c.json({
+          unit: "stroops_per_mtok",
+          models: Object.fromEntries(
+            pricing.list().map(({ model, price }) => [
+              model,
+              { prompt: price.prompt.toString(), completion: price.completion.toString(), image: price.image.toString() },
+            ]),
+          ),
+        }),
+      );
+    }
+  }
+
+  // S48 (ADR-0007 P6): marketplace catalog — join de metadata declarada
+  // (MODEL_CATALOG env) + fleet viva + pricing + medidas. Público siempre:
+  // el catálogo existe aunque no haya accounts/billing. Lo no declarado sale
+  // con declared:false; lo no medido sale null — jamás inventado.
+  app.get("/v1/catalog", async (c) => {
+    const meta = deps.catalog ?? {};
+    const fleet = await Promise.resolve()
+      .then(() => deps.forges())
+      .catch(() => [] as ForgeView[]);
+    const prices = deps.pricing
+      ? Object.fromEntries(deps.pricing.list().map((p) => [p.model, p.price]))
+      : {};
+    const ids = new Set<string>([
+      ...Object.keys(meta),
+      ...fleet.map((f) => f.model),
+      ...Object.keys(prices),
+    ]);
+    const models = [...ids].sort().map((id) => {
+      const m = meta[id];
+      const providers = fleet.filter((f) => f.model === id);
+      const alive = providers.filter((f) => f.queueMs < 99_999);
+      const ttfts = alive.map((f) => f.measuredTtftMs).filter((x): x is number => typeof x === "number");
+      const toks = alive.map((f) => f.tokPerSec).filter((x): x is number => typeof x === "number");
+      const p = prices[id];
+      const features = m?.features ?? (providers.some((f) => f.capability === "image") ? ["image"] : []);
+      return {
+        id,
+        name: m?.name ?? null,
+        description: m?.description ?? null,
+        context: m?.context ?? null,
+        features,
+        docs: m?.docs ?? null,
+        declared: m !== undefined,
+        pricing: {
+          prompt: p ? p.prompt.toString() : null,
+          completion: p ? p.completion.toString() : null,
+          image: p ? p.image.toString() : null,
+        },
+        availability: {
+          providers: providers.length,
+          hot: alive.filter((f) => f.hot).length,
+          available: alive.length > 0,
+        },
+        measured: {
+          ttftMsP50: ttfts.length ? Math.min(...ttfts) : null,
+          tokPerSec: toks.length ? Math.max(...toks) : null,
+        },
+      };
+    });
+    return c.json({ unit: "stroops_per_mtok", models });
+  });
 
   // S7: kill switch del dashboard. Solo existe si el composition root da chaos.
   // S26: {forgeId} opcional — kill granular por forge (chaos drill real: morir
@@ -322,6 +553,19 @@ export function createApp(deps: Deps) {
       // proceso entero; dos jobs concurrentes se pisan la VRAM).
       const open = candidates.filter((f) => f.saturated !== true && f.queueMs < DEAD_QUEUE_MS);
       if (open.length === 0) return c.json({ error: "forges de imagen ocupados, reintentar", code: "busy" }, 429);
+      // S47: billing prepago de imagen — flat por generación (sin tokens).
+      const billImg =
+        deps.ledger && deps.pricing && c.get("keyOwner")?.startsWith("acct_") ? c.get("keyOwner")! : null;
+      if (billImg) {
+        const bal = await deps.ledger!.balance(billImg);
+        const need = deps.pricing!.minCost(body.model, "image");
+        if (bal < need) {
+          return c.json(
+            { error: "créditos insuficientes", code: "insufficient_credits", balanceStroops: bal.toString(), neededStroops: need.toString() },
+            402,
+          );
+        }
+      }
       const jobId = `img-${crypto.randomUUID()}`;
       const d = scheduler.select({ id: jobId, model: body.model }, open);
       const ex = imageExecs[d.forgeId]; // candidates ya exige exec registrado
@@ -338,6 +582,11 @@ export function createApp(deps: Deps) {
         }
         deps.breaker?.ok(r.forgeId); // S27: éxito resetea sus fallos consecutivos
         deps.telemetry?.record({ forgeId: r.forgeId, model: body.model, ttftMs: r.ms, ok: true, ts: Date.now(), keyId: c.get("keyId") }).catch(() => {});
+        // S47: debit flat post-gen — imagen servida = trabajo hecho.
+        if (billImg) {
+          const cost = deps.pricing!.costOfImage(body.model);
+          if (cost > 0n) void deps.ledger!.debit(billImg, cost, `job:${jobId}`).catch(() => {});
+        }
         let mediaUrl: string | undefined;
         if (deps.media) {
           const id = crypto.randomUUID();
@@ -410,6 +659,21 @@ export function createApp(deps: Deps) {
     if (alive.length > 0 && alive.every((f) => f.saturated === true)) {
       return c.json({ error: "forges saturados, reintentar", code: "busy" }, 429);
     }
+    // S47 (ADR-0007): billing prepago — keys con owner acct_* consumen crédito.
+    // Pre-serve: balance >= costo mínimo estimado o 402 (fail closed ANTES de
+    // tocar el forge). Post-serve: debit del costo MEDIDO (usage del engine).
+    const billTo =
+      deps.ledger && deps.pricing && c.get("keyOwner")?.startsWith("acct_") ? c.get("keyOwner")! : null;
+    if (billTo) {
+      const bal = await deps.ledger!.balance(billTo);
+      const need = deps.pricing!.minCost(body.model, "text");
+      if (bal < need) {
+        return c.json(
+          { error: "créditos insuficientes", code: "insufficient_credits", balanceStroops: bal.toString(), neededStroops: need.toString() },
+          402,
+        );
+      }
+    }
     const exec = deps.exec;
     const id = `chatcmpl-${crypto.randomUUID()}`;
     // S9a/S19: telemetría de la ejecución real — onForge reporta por request
@@ -433,6 +697,19 @@ export function createApp(deps: Deps) {
           ? { genTokens: lastStats.genTokens, decodeMs: lastStats.decodeMs }
           : {}),
       };
+      // S47: debit prepago — post-serve sobre usage MEDIDO del engine, ref
+      // estable por job (job:chatcmpl-…) → retry/reconnect jamás debita dos
+      // veces. Sin stats reportados: minCost (el trabajo se hizo igual).
+      // Fire-and-forget como el settle — jamás frena el cierre del stream.
+      if (ok && billTo) {
+        const cost = lastStats
+          ? deps.pricing!.costOf(body.model, {
+              promptTokens: lastStats.promptTokens ?? 0,
+              completionTokens: lastStats.genTokens ?? 0,
+            })
+          : deps.pricing!.minCost(body.model);
+        if (cost > 0n) void deps.ledger!.debit(billTo, cost, `job:${id}`).catch(() => {});
+      }
       // S17b: lo fallido no se paga (solo se registra). Lo OK liquida en background:
       // fire-and-forget a propósito — settle lento o caído jamás frena ni voltea requests.
       const payerHeader = c.get("paymentHeader");

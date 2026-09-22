@@ -57,6 +57,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.6.5)
+      '@weaver/accounts':
+        specifier: workspace:*
+        version: link:../../packages/accounts
       '@weaver/api-keys':
         specifier: workspace:*
         version: link:../../packages/api-keys
@@ -122,6 +125,22 @@ importers:
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
+
+  packages/accounts:
+    dependencies:
+      '@weaver/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(postgres@3.4.9)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.4
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
 
   packages/api-keys:
     dependencies:

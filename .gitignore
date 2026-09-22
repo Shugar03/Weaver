@@ -9,7 +9,8 @@ turbo/
 *.local.mjs
 .env*.local
 .ollama/
-models/
+# pesos de modelos en la raíz — acotado: apps/web/app/models es una ruta web
+/models/
 target/
 .DS_Store
 .tgrep/

@@ -179,6 +179,10 @@ export function ChatApp({ base }: { base: string }) {
 
   useEffect(() => {
     setChats(loadRecents());
+    // ?model= desde el marketplace (/models/[id] → TRY IN CHAT). El efecto de
+    // forges corrige si el id no es servido por ningún forge de texto.
+    const q = new URLSearchParams(window.location.search).get("model");
+    if (q) setModel(q);
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();

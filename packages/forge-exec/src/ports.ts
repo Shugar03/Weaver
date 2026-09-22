@@ -102,7 +102,9 @@ export class FakeForgeExec implements ForgeExec {
       resultHash: Buffer.alloc(32, 1),
       signature: Buffer.alloc(64, 2),
     });
-    yield { token: "", done: true };
+    // Stats sintéticas pero de shape real — el billing/telemetría ejercitan
+    // el mismo camino que con Ollama (prompt estimado + 1 token de echo).
+    yield { token: "", done: true, stats: { promptTokens: Math.ceil(req.prompt.length / 4), genTokens: 1, decodeMs: 1 } };
   }
   async probe(): Promise<boolean> {
     return true;

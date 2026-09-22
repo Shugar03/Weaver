@@ -14,12 +14,13 @@
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { createApp } from "./index.ts";
+import { createApp, type CatalogMeta } from "./index.ts";
 import { createAgentHost } from "./agent.ts";
 import { Auditor } from "./audit.ts";
 import { FakeForgeExec, FluxKleinForge, OllamaMLXAdapter, ProvenForgeExec, RoutedExec, SwitchableExec, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
+import { DepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
 import { EscrowSettlement, FacilitatorVerifier, InMemorySettleJournal, PostgresSettleJournal, registerForge, RpcSubmitter, stellarPubkey, stellarSigner, stellarVerify, sweepPendingSettles } from "@weaver/settlement";
 import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
@@ -279,6 +280,30 @@ const apiKeys = process.env.DATABASE_URL
   ? new PostgresApiKeys(dbFromUrl(process.env.DATABASE_URL))
   : new InMemoryApiKeys();
 
+// S47 (ADR-0007): cuentas + ledger + pricing. Con DATABASE_URL persisten;
+// sin ella in-memory (dev — las cuentas mueren con el proceso, declarado).
+// MODEL_PRICING='{"model":{"prompt":N,"completion":N,"image":N}}' stroops/Mtok.
+const accounts = process.env.DATABASE_URL
+  ? new PostgresAccountStore(dbFromUrl(process.env.DATABASE_URL))
+  : new InMemoryAccountStore();
+const creditLedger = process.env.DATABASE_URL
+  ? new PostgresCreditLedger(dbFromUrl(process.env.DATABASE_URL))
+  : new InMemoryCreditLedger();
+const pricing = pricingFromEnv(process.env.MODEL_PRICING);
+const meChallenges = new NonceStore();
+
+// S48: metadata declarada para el marketplace. MODEL_CATALOG='{"id":{"name":…,
+// "context":N,"features":[…],"docs":…}}' — solo lo que el operador declara;
+// lo ausente se muestra como "no declarado", jamás se inventa.
+const modelCatalog = (() => {
+  try {
+    return JSON.parse(process.env.MODEL_CATALOG ?? "{}") as Record<string, CatalogMeta>;
+  } catch {
+    console.warn("MODEL_CATALOG JSON inválido — catálogo sin metadata declarada");
+    return {};
+  }
+})();
+
 if (process.env.SETTLEMENT_SECRET && !sign) {
   console.warn("SETTLEMENT_SECRET sin WORKER_SECRET: los settle quedarán failed (sin proof L0)");
 }
@@ -379,6 +404,14 @@ const app = createApp({
   telemetry,
   node: { version: "0.1.0", startedAt: Date.now() },
   apiKeys,
+  accounts,
+  ledger: creditLedger,
+  pricing,
+  meChallenges,
+  verifyWalletSig: stellarVerify,
+  catalog: modelCatalog,
+  // Pública — el panel la muestra en Overview para fondear.
+  depositAddress: process.env.DEPOSIT_ADDRESS,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
@@ -421,6 +454,25 @@ if (envOperator) {
 } else {
   const operator = await apiKeys.issue("operator");
   console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
+}
+
+// S47: DepositWatcher — convierte payments USDC clásicos (memo = accountId o
+// wallet pubkey) en créditos del ledger. Solo con DEPOSIT_ADDRESS + USDC_ISSUER
+// configurados; sin ellos el topup on-chain no corre (el resto de cuentas sí).
+if (process.env.DEPOSIT_ADDRESS && process.env.USDC_ISSUER) {
+  const watcher = new DepositWatcher({
+    horizonUrl: process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org",
+    depositAddress: process.env.DEPOSIT_ADDRESS,
+    assetCode: "USDC",
+    assetIssuer: process.env.USDC_ISSUER,
+    store: accounts,
+    ledger: creditLedger,
+    pollMs: Number(process.env.DEPOSIT_POLL_MS ?? 15_000),
+  });
+  watcher.start();
+  console.log(`deposit-watcher ON → ${process.env.DEPOSIT_ADDRESS.slice(0, 8)}… (poll ${Number(process.env.DEPOSIT_POLL_MS ?? 15_000)}ms)`);
+} else {
+  console.log("deposit-watcher OFF (DEPOSIT_ADDRESS/USDC_ISSUER ausentes — topups manuales o dev)");
 }
 
 const port = Number(process.env.PORT ?? 3001);

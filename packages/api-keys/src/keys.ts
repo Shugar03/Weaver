@@ -19,6 +19,8 @@ export interface ApiKeys {
   verify(secret: string): Promise<KeyInfo | null>;
   revoke(id: string): Promise<boolean>;
   list(): Promise<KeyPublic[]>;
+  // S47: keys de UN owner — el panel del usuario lista solo las suyas.
+  listByOwner(owner: string): Promise<KeyPublic[]>;
 }
 
 export class InMemoryApiKeys implements ApiKeys {
@@ -60,5 +62,9 @@ export class InMemoryApiKeys implements ApiKeys {
 
   async list(): Promise<KeyPublic[]> {
     return [...this.keys.values()].map(({ hash: _hash, ...pub }) => pub);
+  }
+
+  async listByOwner(owner: string): Promise<KeyPublic[]> {
+    return [...this.keys.values()].filter((k) => k.owner === owner).map(({ hash: _h, ...pub }) => pub);
   }
 }

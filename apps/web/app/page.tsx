@@ -18,11 +18,12 @@ export default async function Landing() {
       <SiteHeader
         logoHref="/"
         links={[
+          { label: "MODELS", href: "/models" },
           { label: "PRODUCT", href: "#pillars" },
           { label: "TECHNOLOGY", href: "/network" },
           { label: "DOCS", href: "https://github.com/Shugar03/Weaver" },
         ]}
-        cta={{ label: "GET EARLY ACCESS →", href: "/network" }}
+        cta={{ label: "ACCOUNT", href: "/account" }}
       />
       <main className="mx-auto max-w-7xl px-4 md:px-6">
         {/* HERO: arco + texto + logo integrados */}

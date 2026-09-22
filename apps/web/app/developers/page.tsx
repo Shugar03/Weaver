@@ -12,7 +12,8 @@ const CURL_MODELS = `curl ${GATEWAY}/v1/models
 
 const PY_OPENAI = `from openai import OpenAI
 
-client = OpenAI(base_url="${GATEWAY}/v1", api_key="weaver")
+# La key se crea en /account (wvr_…, se muestra una sola vez).
+client = OpenAI(base_url="${GATEWAY}/v1", api_key="wvr_TU_API_KEY")
 stream = client.chat.completions.create(
     model="qwen3:4b",
     messages=[{"role": "user", "content": "hola"}],
@@ -27,9 +28,9 @@ const OPENCODE = `// opencode.jsonc — Weaver como provider custom (docs: openc
   "$schema": "https://opencode.ai/config.json",
   "providers": {
     "weaver": {
-      "name": "Weaver (local)",
+      "name": "Weaver",
       "package": "@opencode-ai/ai/providers/openai-compatible",
-      "settings": { "baseURL": "${GATEWAY}/v1" },
+      "settings": { "baseURL": "${GATEWAY}/v1", "apiKey": "wvr_TU_API_KEY" },
       "models": {
         "qwen3:4b": { "name": "Qwen3 4B (Weaver)" }
       }
@@ -46,12 +47,12 @@ const PI_AGENT = `// ~/.pi/agent/models.json — Weaver en pi (docs: pi.dev)
     "weaver": {
       "baseUrl": "${GATEWAY}/v1",
       "api": "openai-completions",
-      "apiKey": "weaver",
+      "apiKey": "wvr_TU_API_KEY",
       "models": [{ "id": "qwen3:4b", "name": "Qwen3 4B (Weaver)" }]
     }
   }
 }
-// apiKey es dummy pero obligatorio: sin auth pi no lista el modelo en /model.`;
+// apiKey real de /account — el consumo debita créditos de tu cuenta.`;
 
 const HERMES_QUICK = `# camino rápido (wizard recomendado por sus docs)
 hermes model
@@ -93,7 +94,7 @@ register_provider(ProviderProfile(
 # contra {base_url}/models (nuestro endpoint lo sirve).`;
 
 const CURSOR_STEPS = `1. Cursor Settings (Cmd+Shift+J) → Models
-2. OpenAI API Key: cualquier texto no vacío (ej. "weaver")
+2. OpenAI API Key: tu wvr_… de /account
 3. Override OpenAI Base URL: ${GATEWAY}/v1   (con /v1, SIN /chat/completions)
 4. + Add Model: qwen3:4b
 5. Verify
@@ -102,20 +103,23 @@ Límites honestos: Tab y Background Agents usan modelos de Cursor,
 no tu endpoint. Si hay errores de conexión, probá HTTP/1.1
 en Settings → Network → HTTP Compatibility Mode.`;
 
-const KEYS_CURL = `# emitir (solo operador con acceso al gateway)
-curl -X POST ${GATEWAY}/v1/admin/keys \\
-  -H "content-type: application/json" \\
-  -d '{"owner":"jurado-demo"}'
+const KEYS_CURL = `# self-serve: creá tu cuenta y tu key en /account — sin pedirle nada a nadie.
+# (el panel usa estas rutas debajo del capó)
+
+# crear cuenta (una vez — el mgmt token se muestra UNA vez):
+curl -X POST ${GATEWAY}/v1/accounts
+# → {"accountId":"acct_...","mgmtToken":"wvr_acct_...","depositMemo":"..."}
+
+# emitir key (con tu mgmt token):
+curl -X POST ${GATEWAY}/v1/me/keys \\
+  -H "Authorization: Bearer wvr_acct_..."
 # → {"id":"key_...","secret":"wvr_..."}  (el secreto se muestra UNA vez)
 
-# usar (identifica y mete en allowlist del paywall):
-curl ${GATEWAY}/v1/jobs \\
+# usar (billing por cuenta, debit medido post-stream):
+curl ${GATEWAY}/v1/chat/completions \\
   -H "content-type: application/json" \\
   -H "Authorization: Bearer wvr_..." \\
-  -d '{"model":"qwen3:4b"}'
-
-# revocar:
-curl -X POST ${GATEWAY}/v1/admin/keys/key_.../revoke`;
+  -d '{"model":"qwen3:4b","messages":[{"role":"user","content":"hola"}],"stream":true}'`;
 
 export default function Developers() {
   return (
@@ -123,11 +127,11 @@ export default function Developers() {
       <SiteHeader
         logoHref="/"
         links={[
+          { label: "MODELS", href: "/models" },
           { label: "CHAT", href: "/chat" },
           { label: "CONSOLE", href: "/network" },
-          { label: "DOCS", href: "https://github.com/Shugar03/Weaver" },
         ]}
-        cta={{ label: "RUN LIVE DEMO →", href: "/network" }}
+        cta={{ label: "ACCOUNT", href: "/account" }}
       />
       <main className="mx-auto max-w-5xl px-4 pb-16 md:px-6">
         <section className="pt-10">
@@ -139,8 +143,10 @@ export default function Developers() {
           </h1>
           <p className="mt-4 max-w-[62ch] text-sm leading-relaxed text-fog">
             El gateway habla OpenAI-compatible: <span className="text-white">chat completions + models</span>.
-            Cualquier cliente OpenAI anda. En dev local está abierto; en testnet cobra $0.01 por request vía
-            x402 (header <span className="font-tech text-base text-white">x-payment</span>).
+            Cualquier cliente OpenAI anda. El billing es <span className="text-white">crédito prepago por cuenta</span>:
+            creás una cuenta en <a href="/account" className="text-lima underline">/account</a>, fondeás con
+            USDC (Stellar), emitís una key <span className="font-tech text-base text-white">wvr_…</span> y cada
+            request debita tokens medidos post-stream.
           </p>
         </section>
 
@@ -182,20 +188,23 @@ export default function Developers() {
             <span className="text-lima">03</span> {"//"} API KEYS
           </div>
           <p className="-mt-2 max-w-[62ch] text-sm leading-relaxed text-fog">
-            La key identifica <span className="text-white">quién</span> llama (metering, allowlist, revoke).
-            El cobro va por x402. Formato <span className="font-tech text-base text-white">wvr_…</span>, guardada
-            hasheada, visible una sola vez al emitir.
+            La key identifica <span className="text-white">quién</span> llama y a qué cuenta debita.
+            Formato <span className="font-tech text-base text-white">wvr_…</span>, guardada hasheada,
+            visible una sola vez al emitir. Se crea y revoca self-serve en{" "}
+            <a href="/account" className="text-lima underline">/account</a>.
           </p>
           <CodeBlock title="keys" lang="bash" code={KEYS_CURL} />
         </section>
 
         <section className="mt-10 border border-lima/60 bg-panel p-5">
-          <div className="font-tech text-lg tracking-[0.15em] text-lima">PAGOS x402 (SOLO TESTNET)</div>
+          <div className="font-tech text-lg tracking-[0.15em] text-lima">BILLING — CRÉDITOS PREPAGOS</div>
           <p className="mt-2 text-sm leading-relaxed text-fog">
-            Contra el gateway con paywall, cada request sin pago devuelve <span className="text-white">402</span> con
-            los requisitos (<span className="font-tech text-base text-white">exact / stellar:testnet / $0.01</span>).
-            Firmás el transfer USDC, lo mandás en el header <span className="font-tech text-base text-white">x-payment</span> y
-            el facilitador verifica. En local, todo abierto.
+            Tu cuenta tiene un balance en USDC (stroops). Fondeás mandando USDC a la deposit address con tu
+            memo (todo visible en <span className="font-tech text-base text-white">/account → BILLING</span>).
+            Al servir, el gateway debita <span className="text-white">prompt+completion tokens medidos</span> del
+            stream real — nunca estimado si hay medición. Sin fondos: <span className="text-white">402</span> antes
+            de tocar un forge. Request fallido: sin cargo. Precios públicos en{" "}
+            <span className="font-tech text-base text-white">GET /v1/pricing</span>.
           </p>
         </section>
       </main>

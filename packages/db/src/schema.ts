@@ -1,6 +1,6 @@
 // Module DB — schema Drizzle (ADR-0002). S16a: solo lo que el gateway usa vivo
 // (api_keys, performance_samples). jobs/forges/instances/settlements post-hackathon.
-import { bigint, boolean, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, integer, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const apiKeys = pgTable("api_keys", {
   id: text("id").primaryKey(),
@@ -54,3 +54,35 @@ export const forges = pgTable("forges", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// S47 (ADR-0007): cuentas de usuario — el consumidor de la red. Anónima por
+// defecto (mgmt token hasheado), wallet linkeable (firma de nonce).
+export const accounts = pgTable("accounts", {
+  id: text("id").primaryKey(), // acct_...
+  mgmtTokenHash: text("mgmt_token_hash"), // sha256 del wvr_acct_ — jamás el secreto
+  walletPubkey: text("wallet_pubkey"), // G... linkeada — depósitos por memo=pubkey
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const accountSessions = pgTable("account_sessions", {
+  tokenHash: text("token_hash").primaryKey(), // sha256 del wvr_sess_
+  accountId: text("account_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+// Ledger append-only de créditos: topup (depósito USDC on-chain) y debit
+// (consumo post-serve medido). Dedup por (kind, ref): topup ref = tx hash,
+// debit ref = jobId — reintentar jamás acredita/debita dos veces.
+export const creditEvents = pgTable(
+  "credit_events",
+  {
+    id: serial("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    kind: text("kind").notNull(), // topup | debit
+    amount: bigint("amount", { mode: "bigint" }).notNull(), // stroops
+    ref: text("ref").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("credit_events_kind_ref").on(t.kind, t.ref)],
+);

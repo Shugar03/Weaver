@@ -31,11 +31,12 @@ export default function Security() {
       <SiteHeader
         logoHref="/"
         links={[
+          { label: "MODELS", href: "/models" },
           { label: "CHAT", href: "/chat" },
           { label: "CONSOLE", href: "/network" },
           { label: "DEVELOPERS", href: "/developers" },
         ]}
-        cta={{ label: "RUN LIVE DEMO →", href: "/network" }}
+        cta={{ label: "ACCOUNT", href: "/account" }}
       />
       <main className="mx-auto max-w-5xl px-4 pb-16 md:px-6">
         <section className="pt-10">

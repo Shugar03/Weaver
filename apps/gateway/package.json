@@ -12,6 +12,7 @@
   "dependencies": {
     "@hono/node-server": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@weaver/accounts": "workspace:*",
     "@weaver/api-keys": "workspace:*",
     "@weaver/db": "workspace:*",
     "@weaver/forge-exec": "workspace:*",

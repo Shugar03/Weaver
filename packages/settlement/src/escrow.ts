@@ -123,6 +123,13 @@ export function stellarPubkey(secret: string): string {
   return Keypair.fromSecret(secret).publicKey();
 }
 
+// S47: keypair random para tests/dev — el SDK queda dentro de settlement,
+// los consumidores no importan @stellar/stellar-sdk directo.
+export function stellarKeypair(): { pubkey: string; secret: string; sign(msg: Buffer): Buffer } {
+  const kp = Keypair.random();
+  return { pubkey: kp.publicKey(), secret: kp.secret(), sign: (m) => Buffer.from(kp.sign(m)) };
+}
+
 const PAYOUT_MAX = 10_000_000; // 1 USDC: techo anti-typo (nunca drena de más)
 
 export class EscrowSettlement {
