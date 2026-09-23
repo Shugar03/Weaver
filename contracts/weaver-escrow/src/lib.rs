@@ -71,7 +71,22 @@ pub struct WeaverEscrow;
 #[contractimpl]
 impl WeaverEscrow {
     pub fn version(_env: Env) -> u32 {
-        4
+        5
+    }
+
+    /// S51: upgrade in-place — el admin reemplaza el ejecutable del contrato
+    /// sin redeploy ni re-registro de forges (el state y el contract id
+    /// sobreviven). Es el poder máximo del operador: puede cambiar TODA la
+    /// lógica con escrows vivos — trade-off declarado en ADR-0006: lo
+    /// aceptamos porque el admin ya controla release+refund, y la
+    /// alternativa (redeploy + re-registro global por cada fix) es peor
+    /// operativamente. La ventana de claim protege al worker en el interim.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let (admin, _) = Self::require_init(&env)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.storage().instance().extend_ttl(DAY_LEDGERS, TTL_30D);
+        Ok(())
     }
 
     /// S41: init ya no recibe worker_pubkey — las claves de firma son per-forge
@@ -285,6 +300,7 @@ impl WeaverEscrow {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use soroban_sdk::{
@@ -333,6 +349,32 @@ mod test {
     fn funded_evt_name_compiles() {
         // El símbolo del evento existe y el helper emit compila (se usa en green).
         let _ = symbol_short!("funded");
+    }
+
+    #[test]
+    fn upgrade_sin_auth_falla() {
+        // S51: el require_auth del admin está en el path — sin auth
+        // mockeada la invocación es rechazada antes de tocar el ejecutable.
+        let (env, _, _, _, _, contract_id, _) = setup();
+        env.set_auths(&[]); // desactiva mocking: ningún require_auth pasa
+        let contract = contract_of(&env, &contract_id);
+        let hash = BytesN::from_array(&env, &[9u8; 32]);
+        assert!(contract.try_upgrade(&hash).is_err());
+    }
+
+    #[test]
+    fn upgrade_sin_init_falla() {
+        // S51: require_init corre primero — un deploy sin init no es
+        // upgradeable por nadie.
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(WeaverEscrow, ());
+        let contract = WeaverEscrowClient::new(&env, &contract_id);
+        let hash = BytesN::from_array(&env, &[9u8; 32]);
+        assert_eq!(
+            contract.try_upgrade(&hash),
+            Err(Ok(Error::NotInitialized))
+        );
     }
 
     #[test]

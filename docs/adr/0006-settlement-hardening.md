@@ -124,14 +124,20 @@ resetear renombrando instanceIds (la clave es la identidad, no el slot).
 - **Cobertura de audit depende del fleet**: un modelo servido por UN solo
   operador nunca tiene referencia independiente → audits siempre skipped
   para él. La red necesita diversidad real de operadores por modelo.
-- **Rate-limit de heartbeats** por pubkey.
-- **Deploy v4 pendiente**: testnet corre v3 (clave global). Runbook abajo.
+- ~~Rate-limit de heartbeats~~ **resuelto** (S49): `ForgeSession` droppea
+  heartbeats <500ms y mata la sesión a la 5ª violación consecutiva —
+  `job.*`/`pong` no limitados (bursts legítimos).
+- **Deploy v5 pendiente**: testnet corre v3 (clave global, sin upgrade).
+  Runbook abajo. Desde v5 el contrato incluye `upgrade(new_wasm_hash)`
+  admin-gated (S51): fixes futuros van in-place sin redeploy ni
+  re-registro — trade-off aceptado: el admin ya controla release+refund,
+  y la alternativa (redeploy + re-registro global por fix) era peor.
 - ~~genTokens declarado~~ **resuelto**: `RemoteForgeExec` sobrescribe
   `stats.genTokens` con el conteo de chunks que relayeó al cliente —
   medido gateway-side y atado al hash verificado (chunk ≈ token del
   engine stream; aproximación honesta, no inflable por el forge).
 
-## Runbook de deploy v4
+## Runbook de deploy v5
 
 ```bash
 cd contracts/weaver-escrow

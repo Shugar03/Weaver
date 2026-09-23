@@ -20,5 +20,5 @@
   },
   "note": "v3 (Proof L0): init registra la pubkey ed25519 del worker y release exige su firma sobre result_hash — firma inválida revierte y el job queda Funded. Secrets viven en ~/.config/stellar, jamás en el repo.",
   "abi": "v3",
-  "abi_warning": "El source actual es v4 (ADR-0006): fund_job(client,amount,worker) + register_forge self-service + release caller∈{admin,worker}. Este deploy es v3 — el adapter settlement YA NO es compatible con él (fund_job de v3 no toma worker). Redeploy con ./deploy.sh y actualizar este archivo antes de usar settlement on-chain."
+  "abi_warning": "El source actual es v5 (ADR-0006): fund_job(client,amount,worker) + register_forge self-service + release caller∈{admin,worker} + ventana de claim + upgrade admin-gated. Este deploy es v3 — el adapter settlement YA NO es compatible con él (fund_job de v3 no toma worker). Redeploy con ./deploy.sh y actualizar este archivo antes de usar settlement on-chain."
 }
