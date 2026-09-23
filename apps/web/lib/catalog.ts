@@ -34,3 +34,24 @@ export function fmtCtx(n: number | null): string {
   if (n === null) return "—";
   return n >= 1000 ? `${Math.round(n / 1024)}K` : String(n);
 }
+
+// Curación del marketplace — pura para testear (Hick: los defaults hacen la
+// elección, no el sort alfabético). available > medido > declarado > resto.
+export function filterModels(
+  models: CatalogModel[],
+  opts: { q?: string; feat?: string | null; onlyAvail?: boolean },
+): CatalogModel[] {
+  const needle = (opts.q ?? "").trim().toLowerCase();
+  return models
+    .filter((m) => {
+      if (needle && !`${m.id} ${m.name ?? ""} ${m.description ?? ""}`.toLowerCase().includes(needle)) return false;
+      if (opts.feat && !m.features.includes(opts.feat)) return false;
+      if (opts.onlyAvail && !m.availability.available) return false;
+      return true;
+    })
+    .sort((a, b) => rank(b) - rank(a) || a.id.localeCompare(b.id));
+}
+
+function rank(m: CatalogModel): number {
+  return (m.availability.available ? 4 : 0) + (m.measured.ttftMsP50 !== null ? 2 : 0) + (m.declared ? 1 : 0);
+}

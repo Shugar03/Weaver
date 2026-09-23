@@ -198,6 +198,20 @@ if (debits.length > 0) {
 }
 if (topups.length > 0) ok(`topup en ledger: +$${topups[0].amountUSDC.toFixed(4)} (ref ${topups[0].ref})`);
 
+// 7b. pata forge: el sample del job debe mostrar settle on-chain si el
+// gateway corre con SETTLEMENT_* — fundTx+releaseTx son links a expert.
+const execs = await req("/v1/executions?limit=10");
+const mine = (execs.json ?? []).find((s) => s.ok && s.model === target);
+if (mine?.settle?.status === "settled") {
+  ok("forge pagado on-chain (settle.settled en el sample)");
+  if (mine.settle.fundTx) console.log(`    fund:    ${EXPLORER}/tx/${mine.settle.fundTx}`);
+  if (mine.settle.releaseTx) console.log(`    release: ${EXPLORER}/tx/${mine.settle.releaseTx}`);
+} else if (mine?.settle?.status === "failed") {
+  fail(`settle del forge FAILED — revisá SETTLEMENT_CONTRACT (¿v3 vs v4?)`);
+} else {
+  console.log("  (sin settle en el sample — settlement off en este gateway, ok en dev)");
+}
+
 // 8. catálogo post-serve: debería tener medidas frescas
 const cat2 = await req("/v1/catalog");
 const m2 = cat2.json?.models?.find((m) => m.id === target);

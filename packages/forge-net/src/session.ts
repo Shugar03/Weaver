@@ -26,6 +26,15 @@ export class ForgeSession implements ForgeChannel {
   private alive = true;
   private authed = false;
   private _pubkey: string | null = null;
+  // S50: rate-limit de heartbeats — el intervalo legítimo es ~5s; frames a
+  // <500ms son flood (parse + registry churn gratis para el atacante).
+  // Se dropea sin tocar el registry; 5 violaciones seguidas = kill (abuso
+  // de protocolo, no latencia de red). job.*/pong no se limitan — los
+  // bursts de resultados son trabajo legítimo.
+  private lastHbAt = 0;
+  private hbViolations = 0;
+  private static readonly HB_MIN_MS = 500;
+  private static readonly HB_MAX_VIOLATIONS = 5;
 
   constructor(deps: {
     send: (raw: string) => void;
@@ -77,9 +86,17 @@ export class ForgeSession implements ForgeChannel {
       return;
     }
     switch (m.type) {
-      case "heartbeat":
+      case "heartbeat": {
+        const now = Date.now();
+        if (now - this.lastHbAt < ForgeSession.HB_MIN_MS) {
+          if (++this.hbViolations >= ForgeSession.HB_MAX_VIOLATIONS) return this.kill("heartbeat flood");
+          return; // dropeado: el registry no se entera del flood
+        }
+        this.lastHbAt = now;
+        this.hbViolations = 0;
         if (!this.registry.heartbeat(this._pubkey!, m.instances)) this.kill("heartbeat sin registro");
         break;
+      }
       case "pong":
         this.registry.setRtt(this._pubkey!, Date.now() - m.t);
         break;

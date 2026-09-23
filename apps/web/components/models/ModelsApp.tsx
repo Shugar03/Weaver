@@ -6,7 +6,7 @@
 // los defaults hacen la elección). Lo no medido muestra "—", no ceros.
 import { useEffect, useMemo, useState } from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
-import { getCatalog, usdPerMtok, fmtCtx, type CatalogModel } from "../../lib/catalog";
+import { getCatalog, usdPerMtok, fmtCtx, filterModels, type CatalogModel } from "../../lib/catalog";
 
 const FEATURE_CHIPS = ["tools", "reasoning", "vision", "image", "json", "audio", "video"];
 
@@ -30,23 +30,7 @@ export function ModelsApp({ base }: { base: string }) {
     return () => clearInterval(id);
   }, [base]);
 
-  const list = useMemo(() => {
-    if (!models) return [];
-    const needle = q.trim().toLowerCase();
-    return models
-      .filter((m) => {
-        if (needle && !`${m.id} ${m.name ?? ""} ${m.description ?? ""}`.toLowerCase().includes(needle)) return false;
-        if (feat && !m.features.includes(feat)) return false;
-        if (onlyAvail && !m.availability.available) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        // curado: available > medido > declarado > resto; desempate por id
-        const score = (m: CatalogModel) =>
-          (m.availability.available ? 4 : 0) + (m.measured.ttftMsP50 !== null ? 2 : 0) + (m.declared ? 1 : 0);
-        return score(b) - score(a) || a.id.localeCompare(b.id);
-      });
-  }, [models, q, feat, onlyAvail]);
+  const list = useMemo(() => filterModels(models ?? [], { q, feat, onlyAvail }), [models, q, feat, onlyAvail]);
 
   return (
     <main className="mx-auto max-w-7xl px-4 pb-16 md:px-6">

@@ -3,10 +3,25 @@
 // Login del panel — tres caminos, uno solo obligatorio:
 // 1. CREATE ACCOUNT: un click → mgmt token (una vez) + memo de depósito.
 // 2. Paste token: wvr_acct_ / wvr_sess_ pegado (Postel: normaliza whitespace).
-// 3. Wallet: challenge → firma manual → sesión (v1 sin Freighter — ADR-0007).
-import { useState } from "react";
+// 3. Wallet: Freighter (un click, si la ext está) o firma manual → sesión.
+import { useEffect, useState } from "react";
 import { Key, Wallet, Lightning, Copy, Check } from "@phosphor-icons/react";
 import { createAccount, saveAccountToken, walletChallenge, walletSession } from "../../lib/account";
+
+// Freighter (browser ext): firma el nonce en un click — el camino sin fricción.
+// La firma llega como Buffer o base64 según la versión del ext; el endpoint
+// quiere hex.
+function sigToHex(signed: unknown): string {
+  if (signed == null) return "";
+  if (typeof signed === "string") {
+    // v4 devuelve base64; si ya es hex pasa igual
+    return /^[0-9a-f]+$/i.test(signed) && signed.length % 2 === 0 ? signed : Buffer.from(signed, "base64").toString("hex");
+  }
+  const buf = signed as { type?: string; data?: number[] } | Uint8Array;
+  if (buf instanceof Uint8Array) return Buffer.from(buf).toString("hex");
+  if (Array.isArray((buf as { data?: number[] }).data)) return Buffer.from((buf as { data: number[] }).data).toString("hex");
+  return "";
+}
 
 export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: string) => void }) {
   const [mode, setMode] = useState<"pick" | "token" | "wallet">("pick");
@@ -19,6 +34,14 @@ export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: s
   const [challenge, setChallenge] = useState<{ nonce: string; expiresAt: number } | null>(null);
   const [pubkey, setPubkey] = useState("");
   const [sig, setSig] = useState("");
+  // freighter: detectado al montar (la ext inyecta window.freighter)
+  const [hasFreighter, setHasFreighter] = useState(false);
+  useEffect(() => {
+    void import("@stellar/freighter-api")
+      .then((m) => m.isConnected())
+      .then((r) => setHasFreighter(r.isConnected === true))
+      .catch(() => setHasFreighter(false));
+  }, []);
 
   async function mk() {
     setBusy(true);
@@ -59,6 +82,35 @@ export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: s
     } catch (e) {
       setErr(e instanceof Error ? e.message : "error de login");
       setChallenge(null); // nonce consumido o expirado → pedir otro
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Freighter: un click — detecta address, pide challenge, firma el nonce,
+  // canjea por sesión. Cualquier fallo cae al path manual con el error.
+  async function freighterLogin() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const m = await import("@stellar/freighter-api");
+      const addr = await m.getAddress();
+      if (addr.error || !addr.address) {
+        setErr("Freighter no devolvió address — ¿permiso denegado o sin cuenta?");
+        return;
+      }
+      const ch = await walletChallenge(base);
+      const signed = await m.signMessage(`weaver-login:${ch.nonce}`, { address: addr.address });
+      const hex = sigToHex(signed.signedMessage);
+      if (!hex) {
+        setErr(signed.error?.message ?? "Freighter rechazó la firma");
+        return;
+      }
+      const s = await walletSession(base, addr.address, ch.nonce, hex);
+      saveAccountToken(s.sessionToken);
+      onLogin(s.sessionToken);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Freighter no responde");
     } finally {
       setBusy(false);
     }
@@ -127,6 +179,21 @@ export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: s
               <span className="block text-sm text-fog">wvr_acct_… o wvr_sess_…</span>
             </span>
           </button>
+          {hasFreighter && (
+            <button
+              onClick={() => void freighterLogin()}
+              disabled={busy}
+              className="flex w-full items-center gap-4 border border-lima/60 bg-panel p-5 text-left transition-colors hover:border-lima disabled:opacity-50"
+            >
+              <Wallet size={28} className="shrink-0 text-lima" />
+              <span>
+                <span className="block font-tech text-xl tracking-[0.1em] text-white">
+                  {busy ? "ESPERÁ A FREIGHTER…" : "FREIGHTER"}
+                </span>
+                <span className="block text-sm text-fog">un click — firmás el nonce en la extensión</span>
+              </span>
+            </button>
+          )}
           <button
             onClick={() => {
               setMode("wallet");
@@ -136,8 +203,12 @@ export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: s
           >
             <Wallet size={28} className="shrink-0 text-fog" />
             <span>
-              <span className="block font-tech text-xl tracking-[0.1em] text-white">WALLET STELLAR</span>
-              <span className="block text-sm text-fog">firmás un nonce, tu pubkey es tu cuenta</span>
+              <span className="block font-tech text-xl tracking-[0.1em] text-white">
+                {hasFreighter ? "WALLET — FIRMA MANUAL" : "WALLET STELLAR"}
+              </span>
+              <span className="block text-sm text-fog">
+                {hasFreighter ? "otra wallet (stellar keys sign, etc)" : "firmás un nonce, tu pubkey es tu cuenta"}
+              </span>
             </span>
           </button>
           {err && <div className="border border-danger/60 px-3 py-2 font-tech text-base text-danger">{err}</div>}

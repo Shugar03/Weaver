@@ -1,0 +1,22 @@
+{
+  "qwen3:4b": {
+    "name": "Qwen3 4B",
+    "description": "Coder liviano de Alibaba — buen balance calidad/latencia en hardware chico. Soporta tool calling y modo thinking.",
+    "context": 32768,
+    "features": ["tools", "reasoning", "json"],
+    "docs": "https://ollama.com/library/qwen3"
+  },
+  "gemma4:e2b": {
+    "name": "Gemma 4 E2B",
+    "description": "El más liviano de Google — TTFT bajo en edge/CPU. Sin tools.",
+    "context": 8192,
+    "features": [],
+    "docs": "https://ollama.com/library/gemma3"
+  },
+  "flux2-klein-4b": {
+    "name": "FLUX.2 Klein 4B",
+    "description": "Difusión de imágenes — generación flat-priced por imagen (no tokens).",
+    "features": ["image"],
+    "docs": "https://huggingface.co/black-forest-labs"
+  }
+}

@@ -21,3 +21,13 @@
 - **Attestation:** al registrarse, cada ModelInstance ejecuta un benchmark determinístico (prompt + temp0 + seed) y el gateway compara el hash contra el catálogo. `attested:false` → registrado pero no ruteable. La capacidad se prueba, no se declara.
 - **Registry:** estado vivo de forges remotos (in-memory, TTL por heartbeat) + tabla `forges` para identidades. El ForgeView deja de ser constante: nace del último heartbeat.
 - **Take:** comisión Weaver (5–15% según §19 del paper).
+
+### Lado del consumidor (ADR-0007)
+
+- **Account:** identidad anónima del usuario (`acct_…`). Se crea con un POST, sin email/password. La prueba de posesión ES el token: `wvr_acct_` (management, una vez) o `wvr_sess_` (sesión por firma wallet).
+- **API key:** credencial `wvr_` que el usuario mete en clientes OpenAI-compatibles. `owner = acct_…` la ata a su Account: cada Job con esa key debita su balance.
+- **CreditLedger:** contabilidad append-only en stroops (`topup` + / `debit` −). Balance = suma. `debit` exige uso medido del stream servido; `topup` exige pago on-chain deduplicado.
+- **Deposit memo:** el memo text de un pago clásico Stellar que identifica la Account a acreditar (= `accountId` o wallet linkeada). Solo pagos clásicos llevan memo — un SAC invoke no.
+- **DepositWatcher:** observador que pollea Horizon y convierte pagos con memo válido en `topup`s del ledger. Idempotente por operation id.
+- **402 (billing gate):** la respuesta cuando una key con Account no tiene balance ≥ costo mínimo — se decide ANTES de tocar un Forge. Un stream ya servido termina y debita igual (no se corta mid-flight).
+- **Catalog:** vista marketplace de modelos = metadata declarada por el operador + fleet viva + pricing + telemetría medida. Regla de oro: lo no declarado sale "not declared", lo no medido sale nulo — jamás inventado.

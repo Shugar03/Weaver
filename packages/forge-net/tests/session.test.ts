@@ -108,6 +108,41 @@ describe("S32 ForgeSession post-auth", () => {
     assert.deepEqual(got, ["job.chunk", "job.done"]);
   });
 
+  it("heartbeat flood: <500ms entre heartbeats se dropea; 5 seguidos → kill", async () => {
+    const r = rig();
+    const { nonce } = r.nonces.issue();
+    await r.session.onRaw(auth(nonce));
+    const hb = () => r.session.onRaw(encode({ type: "heartbeat", instances: [inst] }));
+    await hb();
+    assert.equal(r.registry.views().length, 1);
+
+    // 4 floods seguidos: dropeados pero la sesión sobrevive (tolerante).
+    for (let i = 0; i < 4; i++) await hb();
+    assert.equal(r.isClosed(), false);
+    // el registry sigue sano — el flood no tocó nada
+    assert.equal(r.registry.views().length, 1);
+
+    // la 5ta violación mata la sesión (abuso de protocolo, no latencia)
+    await hb();
+    assert.equal(r.isClosed(), true);
+  });
+
+  it("heartbeat espaciado no cuenta como flood", async () => {
+    const r = rig();
+    const { nonce } = r.nonces.issue();
+    await r.session.onRaw(auth(nonce));
+    const session = r.session as unknown as { lastHbAt: number };
+    const hb = async () => {
+      await r.session.onRaw(encode({ type: "heartbeat", instances: [inst] }));
+      // simular el paso del tiempo — el timer real no corre en el test
+      session.lastHbAt -= 1000;
+    };
+    await hb();
+    for (let i = 0; i < 6; i++) await hb();
+    assert.equal(r.isClosed(), false);
+    assert.equal(r.registry.views().length, 1);
+  });
+
   it("ping() sale por el socket con timestamp", async () => {
     const r = rig();
     const { nonce } = r.nonces.issue();

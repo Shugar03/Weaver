@@ -81,6 +81,5 @@ clientes, la cuenta necesita **crédito prepago** debitado post-serve.
 
 - Suscripciones/rate-tiers, auto-topup, refunds de crédito, facturación
   fiat, multi-asset (solo USDC SAC), quotas por key, y panel admin de
-  cuentas. Freighter/wallet-kit en el browser (v1 pide firma manual —
-  el usuario firma con su herramienta; la UX de wallet-connect es
-  mejora posterior).
+  cuentas. (Freighter ya está: login en un click si la ext está
+  instalada — firma manual sigue como fallback para otras wallets.)
