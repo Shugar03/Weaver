@@ -4,5 +4,6 @@ export { EscrowSettlement, RpcSubmitter, stellarSigner, stellarVerify, stellarPu
 export type { ChainSubmitter, EscrowConfig, SettleReceipt } from "./escrow.ts";
 export { InMemorySettleJournal, PostgresSettleJournal } from "./journal.ts";
 export type { PendingSettle, SettleJournal } from "./journal.ts";
+export { stellarPay } from "./pay.ts";
 export { FakeVerifier, FacilitatorVerifier } from "./verifier.ts";
 export type { PaymentRequirements, PaymentVerifier, SettleResult } from "./verifier.ts";
