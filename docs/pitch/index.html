@@ -357,16 +357,47 @@
   <div class="src"><b>fuentes:</b> openrouter.ai/faq+terms · docs.fireworks.ai · docs.together.ai · replicate.com/pricing · opencode.ai/docs/go — snapshot 15-sep-2026</div>
 </section>
 
-<!-- ═══════════ 05 · LA BRECHA ═══════════ -->
+<!-- ═══════════ 05 · THE SUPPLY ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the supply</div>
+    <h2 class="st">La mayoría del silicio del planeta<br><span class="dim">ya está instalada — en las casas.</span></h2>
+    <div class="stats">
+      <div class="stat st"><div>
+        <div class="n">~75<small>%</small></div>
+        <div class="l">de los FLOPS brutos del planeta viven en dispositivos de usuario — no en datacenters<br>(base instalada: Gartner/IDC/Uptime)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">30–50<small>×</small></div>
+        <div class="l">dispositivos de usuario por cada servidor físico (~6.000M edge vs ~40M servers)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">2.4<small> EFLOPS</small></div>
+        <div class="l">Folding@home en 2020 — más que las 500 supercomputadoras del TOP500 juntas, con PCs donadas</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="src"><b>fuentes:</b> base instalada IDC/Gartner · servers Uptime/Synergy · Folding@home mar-2020 · utilización edge ~5–15% diaria</div>
+</section>
+
+<!-- ═══════════ 06 · THE CATCH ═══════════ -->
 <section class="slide">
   <div class="glow" style="width:50vw;height:50vw;background:rgba(208,255,0,.04);bottom:-20vw;left:-12vw"></div>
-  <div class="slide-inner center">
-    <div class="kicker st">the gap</div>
-    <h2 class="st" style="max-width:none">El cómputo existe.<br><span class="dim">Está</span> <span class="lm">apagado.</span></h2>
-    <p class="sub st">Cientos de millones de GPUs de consumo idle la mayor parte del día.
-    Una RTX 4090 compite con instancias cloud en inferencia local.
-    La demanda paga precios de datacenter mientras la oferta no puede venderse.<br><br>
-    <b style="color:var(--ink)">No falta cómputo. Falta el mercado</b> — routing, verificación y pagos
+  <div class="slide-inner">
+    <div class="kicker st">the catch</div>
+    <h2 class="st" style="max-width:26ch">El matiz: no entrenás GPT-6 <span class="dim">sobre WiFi.</span><br><span class="lm">Pero no hace falta.</span></h2>
+    <div class="stats" style="margin-top:4vh">
+      <div class="stat warn st"><div>
+        <div class="n">1000<small>×</small></div>
+        <div class="l">penalización de latencia: residencial ~ms vs InfiniBand ~µs — destruye el paralelismo de entrenamiento</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">1</div>
+        <div class="l">request = una isla. La inferencia es embarrassingly parallel: cero coordinación entre nodos — el patrón donde el edge ya ganó (F@H, BOINC)</div>
+      </div></div>
+    </div>
+    <p class="sub st" style="margin-top:4vh">El edge no entrena la frontera — <b style="color:var(--ink)">la sirve</b>.
+    No falta cómputo: falta el mercado — routing, verificación y pagos
     que hagan confiable a una red de desconocidos.</p>
   </div>
 </section>
