@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WEAVER — pitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=VT323&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<style>
+  :root {
+    --void: #000000;
+    --panel: #050505;
+    --line: #1e1e1e;
+    --fog: #8a8a8a;
+    --lima: #d0ff00;
+    --danger: #ff3b3b;
+    --ink: #e8e8e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--void);
+    color: var(--ink);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+  }
+  ::selection { background: var(--lima); color: #000; }
+
+  /* ---------- grain ---------- */
+  body::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 60; pointer-events: none;
+    opacity: .05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---------- deck chrome ---------- */
+  #progress {
+    position: fixed; top: 0; left: 0; height: 2px; width: 100%;
+    background: var(--line); z-index: 70;
+  }
+  #progress > div {
+    height: 100%; width: 0%; background: var(--lima);
+    transition: width .6s cubic-bezier(.32,.72,0,1);
+  }
+  #counter {
+    position: fixed; bottom: 28px; right: 36px; z-index: 70;
+    font-family: "VT323", monospace; font-size: 18px; letter-spacing: .12em;
+    color: var(--fog);
+  }
+  #counter b { color: var(--lima); font-weight: 400; }
+  #hint {
+    position: fixed; bottom: 28px; left: 36px; z-index: 70;
+    font-family: "VT323", monospace; font-size: 16px; letter-spacing: .15em;
+    color: #3a3a3a; transition: color .4s;
+  }
+  #dots {
+    position: fixed; right: 36px; top: 50%; transform: translateY(-50%);
+    z-index: 70; display: flex; flex-direction: column; gap: 10px;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #2a2a2a; border: none; cursor: pointer;
+    transition: all .4s cubic-bezier(.32,.72,0,1);
+  }
+  .dot.on { background: var(--lima); transform: scale(1.5); }
+  .dot:hover { background: var(--fog); }
+
+  /* ---------- slides ---------- */
+  .slide {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    padding: 6vw 8vw;
+  }
+  .slide.on { display: flex; }
+  .kicker {
+    font-family: "VT323", monospace; font-size: clamp(14px, 1.3vw, 20px);
+    letter-spacing: .3em; color: var(--lima); text-transform: uppercase;
+    margin-bottom: 2.4vh;
+  }
+  .kicker::before { content: "// "; color: #3a3a3a; }
+  h1 {
+    font-size: clamp(56px, 9vw, 140px); font-weight: 600;
+    letter-spacing: -.03em; line-height: .95; color: var(--ink);
+  }
+  h2 {
+    font-size: clamp(34px, 4.6vw, 68px); font-weight: 600;
+    letter-spacing: -.025em; line-height: 1.02; color: var(--ink);
+    max-width: 20ch;
+  }
+  h2 .dim { color: var(--fog); }
+  h2 .lm { color: var(--lima); }
+  .sub {
+    margin-top: 2.6vh; font-size: clamp(15px, 1.4vw, 21px);
+    color: var(--fog); font-weight: 400; max-width: 62ch; line-height: 1.55;
+  }
+  .src {
+    position: absolute; bottom: 64px; left: 8vw; right: 8vw;
+    font-family: "VT323", monospace; font-size: clamp(12px, 1vw, 15px);
+    letter-spacing: .08em; color: #3f3f3a; line-height: 1.7;
+  }
+  .src b { color: var(--fog); font-weight: 400; }
+
+  /* ---------- stat cards (double-bezel) ---------- */
+  .stats { display: flex; gap: 18px; margin-top: 5vh; flex-wrap: wrap; }
+  .stat {
+    flex: 1 1 260px; min-width: 240px;
+    padding: 6px; border-radius: 20px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--line);
+  }
+  .stat > div {
+    border-radius: 14px; background: var(--panel);
+    padding: 26px 24px 22px; height: 100%;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .stat .n {
+    font-family: "VT323", monospace; font-size: clamp(40px, 4.4vw, 62px);
+    color: var(--lima); line-height: 1; letter-spacing: -.01em;
+  }
+  .stat .n small { font-size: .55em; color: var(--fog); }
+  .stat .l {
+    margin-top: 14px; font-size: clamp(13px, 1.1vw, 15px);
+    color: var(--fog); line-height: 1.5;
+  }
+  .stat.warn .n { color: var(--danger); }
+  .stat.plain .n { color: var(--ink); }
+
+  /* ---------- pill / chips ---------- */
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3.4vh; }
+  .chip {
+    font-family: "VT323", monospace; font-size: clamp(13px, 1.1vw, 17px);
+    letter-spacing: .14em; padding: 8px 16px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--fog);
+    background: rgba(255,255,255,.02);
+  }
+  .chip.lm { color: var(--lima); border-color: rgba(208,255,0,.35); }
+
+  /* ---------- toll list (slide 4) ---------- */
+  .tolls { margin-top: 3vh; display: flex; flex-direction: column; gap: 0; width: 100%; max-width: 1080px; }
+  .toll {
+    display: grid; grid-template-columns: 170px 1fr 210px; gap: 24px;
+    align-items: baseline; padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  .toll:last-child { border-bottom: 1px solid var(--line); }
+  .toll .who { font-weight: 600; font-size: clamp(15px, 1.4vw, 20px); color: var(--ink); }
+  .toll .what { font-size: clamp(13px, 1.15vw, 16px); color: var(--fog); line-height: 1.5; }
+  .toll .num {
+    font-family: "VT323", monospace; font-size: clamp(20px, 2vw, 30px);
+    color: var(--danger); text-align: right; letter-spacing: .04em;
+  }
+
+  /* ---------- mesh diagram (slide 6) ---------- */
+  .meshwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 6vw; align-items: center; width: 100%; }
+  .mesh { width: 100%; max-width: 560px; }
+
+  /* ---------- pillars bento ---------- */
+  .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 5vh; width: 100%; }
+  .pillar {
+    padding: 6px; border-radius: 22px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+  }
+  .pillar > div {
+    border-radius: 16px; background: var(--panel); padding: 30px 26px;
+    height: 100%; box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .pillar .tag {
+    font-family: "VT323", monospace; font-size: 15px; letter-spacing: .25em;
+    color: var(--lima); margin-bottom: 20px;
+  }
+  .pillar h3 { font-size: clamp(19px, 1.7vw, 24px); font-weight: 600; margin-bottom: 14px; letter-spacing: -.01em; }
+  .pillar p { font-size: clamp(13px, 1.05vw, 15px); color: var(--fog); line-height: 1.6; }
+  .pillar code {
+    font-family: "VT323", monospace; color: var(--lima);
+    font-size: 1.02em; background: rgba(208,255,0,.07);
+    padding: 0 5px; border-radius: 4px;
+  }
+
+  /* ---------- terminal mock ---------- */
+  .term {
+    margin-top: 3vh; width: 100%; max-width: 880px;
+    padding: 6px; border-radius: 20px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+  }
+  .term > div {
+    border-radius: 14px; background: #0a0a08; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .term .bar {
+    display: flex; gap: 6px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .term .bar i { width: 9px; height: 9px; border-radius: 50%; background: #242424; }
+  .term pre {
+    padding: 18px 24px; font-family: "VT323", monospace;
+    font-size: clamp(14px, 1.35vw, 19px); line-height: 1.6; color: var(--fog);
+    overflow-x: auto;
+  }
+  .term .c1 { color: var(--lima); } .term .c2 { color: #6ee7ff; } .term .c3 { color: #565650; }
+
+  /* ---------- today grid ---------- */
+  .today { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 5vh; width: 100%; }
+  .cell {
+    padding: 5px; border-radius: 18px; background: rgba(255,255,255,.03);
+    border: 1px solid var(--line);
+  }
+  .cell > div {
+    border-radius: 13px; background: var(--panel); padding: 22px 20px;
+    height: 100%; box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .cell .v { font-family: "VT323", monospace; font-size: clamp(26px, 2.8vw, 42px); color: var(--lima); }
+  .cell .k { margin-top: 8px; font-size: clamp(11px, .95vw, 13px); color: var(--fog); line-height: 1.45; letter-spacing: .02em; }
+
+  /* ---------- hero mesh canvas ---------- */
+  #mesh { position: fixed; inset: 0; z-index: 0; opacity: 0; }
+  .slide-inner { position: relative; z-index: 2; width: 100%; max-width: 1280px; }
+  .center { text-align: center; }
+  .center .sub { margin-left: auto; margin-right: auto; }
+
+  .glow {
+    position: absolute; border-radius: 50%; filter: blur(110px);
+    pointer-events: none; z-index: 0;
+  }
+
+  /* ---------- demo slide ---------- */
+  .demolist { margin-top: 4vh; display: flex; flex-direction: column; gap: 14px; }
+  .demolist li {
+    list-style: none; display: flex; align-items: baseline; gap: 16px;
+    font-size: clamp(14px, 1.3vw, 18px); color: var(--fog);
+  }
+  .demolist li::before {
+    content: "▸"; color: var(--lima); font-family: "VT323", monospace;
+    font-size: 1.1em; flex-shrink: 0;
+  }
+
+  .arrow {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 70; font-family: "VT323", monospace; color: #3a3a3a;
+    font-size: 15px; letter-spacing: .2em;
+  }
+  @media (max-width: 860px) {
+    .toll { grid-template-columns: 1fr; gap: 6px; }
+    .toll .num { text-align: left; }
+    .pillars { grid-template-columns: 1fr; }
+    .today { grid-template-columns: repeat(2, 1fr); }
+    .meshwrap { grid-template-columns: 1fr; }
+    #dots { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress"><div></div></div>
+<div id="counter"><b>01</b> / 10</div>
+<div id="hint">← → · SPACE · CLICK</div>
+<div id="dots"></div>
+<canvas id="mesh"></canvas>
+
+<!-- ═══════════ 01 · TITLE ═══════════ -->
+<section class="slide on" data-mesh="1">
+  <div class="glow" style="width:60vw;height:60vw;background:rgba(208,255,0,.045);top:-20vw;right:-15vw"></div>
+  <div class="slide-inner center">
+    <div class="kicker st">inference · unbundled</div>
+    <h1 class="st">WEAVER<span style="color:var(--lima)">.</span></h1>
+    <p class="sub st">El nuevo datacenter no tiene paredes.<br>
+    Cualquier GPU sirve modelos. Cada job se verifica. Cada token se paga — on-chain.</p>
+    <div class="chips st" style="justify-content:center">
+      <span class="chip lm">OPENAI-COMPATIBLE</span>
+      <span class="chip">STELLAR / SOROBAN</span>
+      <span class="chip">TESTNET LIVE</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 02 · DEMANDA ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the demand</div>
+    <h2 class="st">La inferencia explotó.<br><span class="dim">Y no frena.</span></h2>
+    <div class="stats">
+      <div class="stat st"><div>
+        <div class="n">330<small>×</small></div>
+        <div class="l">Google: 9.7T → 3.2 quadrillion tokens/mes en 25 meses<br>(Pichai, I/O 2024→2026)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">6B<small>+</small></div>
+        <div class="l">tokens por minuto en la API de OpenAI · 800M usuarios/semana<br>(Altman, DevDay oct-2025)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">100T<small>+/yr</small></div>
+        <div class="l">OpenRouter — 10× en un año; 25T/mes, 5M usuarios<br>(a16z State of AI, dic-2025)</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="src"><b>fuentes:</b> blog.google I/O 2026 · techcrunch DevDay 2025 · a16z.com/state-of-ai · openrouter.ai</div>
+</section>
+
+<!-- ═══════════ 03 · CAPACIDAD ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the bottleneck</div>
+    <h2 class="st">El cómputo centralizado <span class="dim">no alcanza</span><br>— y cuesta una fortuna.</h2>
+    <div class="stats">
+      <div class="stat warn st"><div>
+        <div class="n">$646B</div>
+        <div class="l">capex hyperscalers 2026 — ~2% del PIB de USA<br>(Apollo, feb-2026)</div>
+      </div></div>
+      <div class="stat warn st"><div>
+        <div class="n">3–7<small> años</small></div>
+        <div class="l">de espera para conectar un datacenter al grid en USA<br>(LBNL · Dominion)</div>
+      </div></div>
+      <div class="stat warn st"><div>
+        <div class="n">63%</div>
+        <div class="l">del cloud en 3 proveedores: AWS 30 · Azure 20 · GCP 13<br>(Synergy, Q2-2025)</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="src"><b>fuentes:</b> apolloacademy.com · publicpower.org/LBNL · crn.com/Synergy · IEA 2025</div>
+</section>
+
+<!-- ═══════════ 04 · EL PEAJE ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the toll</div>
+    <h2 class="st">Y en el medio, <span class="lm">un peaje</span> <span class="dim">sobre cada token.</span></h2>
+    <div class="tolls">
+      <div class="toll st">
+        <div class="who">OpenRouter</div>
+        <div class="what">0% markup por token — pero cobra por <b>cargar</b> créditos. Disponibilidad "as-available": sin garantía.</div>
+        <div class="num">5.5%–8% fee</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Fireworks</div>
+        <div class="what">Serverless admite por escrito cero garantías de latencia. Su 99.9% solo cubre el 503 genuino.</div>
+        <div class="num">0 SLA</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Together</div>
+        <div class="what">La garantía (99% + throughput) se compra aparte: PTU contratado. Serverless = best-effort.</div>
+        <div class="num">$0.05/PTU·min</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Replicate</div>
+        <div class="what">En despliegues privados factura setup + idle + activo. Pagás la espera del centralizado.</div>
+        <div class="num">H100 $5.49/h</div>
+      </div>
+      <div class="toll st">
+        <div class="who">OpenCode Go</div>
+        <div class="what">$10/mes por hasta $60 de modelos abiertos, caps de $15 por modelo. Suscripción que raciona lo abierto.</div>
+        <div class="num">cap $15/modelo</div>
+      </div>
+    </div>
+  </div>
+  <div class="src"><b>fuentes:</b> openrouter.ai/faq+terms · docs.fireworks.ai · docs.together.ai · replicate.com/pricing · opencode.ai/docs/go — snapshot 15-sep-2026</div>
+</section>
+
+<!-- ═══════════ 05 · LA BRECHA ═══════════ -->
+<section class="slide">
+  <div class="glow" style="width:50vw;height:50vw;background:rgba(208,255,0,.04);bottom:-20vw;left:-12vw"></div>
+  <div class="slide-inner center">
+    <div class="kicker st">the gap</div>
+    <h2 class="st" style="max-width:none">El cómputo existe.<br><span class="dim">Está</span> <span class="lm">apagado.</span></h2>
+    <p class="sub st">Cientos de millones de GPUs de consumo idle la mayor parte del día.
+    Una RTX 4090 compite con instancias cloud en inferencia local.
+    La demanda paga precios de datacenter mientras la oferta no puede venderse.<br><br>
+    <b style="color:var(--ink)">No falta cómputo. Falta el mercado</b> — routing, verificación y pagos
+    que hagan confiable a una red de desconocidos.</p>
+  </div>
+</section>
+
+<!-- ═══════════ 06 · WEAVER ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="meshwrap">
+      <div>
+        <div class="kicker st">the solution</div>
+        <h2 class="st">Un mercado de inferencia<br><span class="dim">donde</span> <span class="lm">cualquiera</span><br><span class="dim">sirve y cobra.</span></h2>
+        <p class="sub st">El gateway rutea por TTFT y tok/s <b style="color:var(--ink)">medidos</b> — no declarados.
+        Los forges aportan GPUs por WebSocket autenticado.
+        Stellar liquida cada job en escrow verificable.</p>
+      </div>
+      <svg class="mesh st" viewBox="0 0 560 400" fill="none">
+        <defs>
+          <radialGradient id="lg"><stop offset="0%" stop-color="#d0ff00" stop-opacity=".9"/><stop offset="100%" stop-color="#d0ff00" stop-opacity="0"/></radialGradient>
+        </defs>
+        <g stroke="#2a2a2a" stroke-width="1">
+          <line x1="110" y1="80" x2="280" y2="200"/><line x1="110" y1="200" x2="280" y2="200"/><line x1="110" y1="320" x2="280" y2="200"/>
+          <line x1="280" y1="200" x2="450" y2="70"/><line x1="280" y1="200" x2="450" y2="160"/><line x1="280" y1="200" x2="450" y2="250"/><line x1="280" y1="200" x2="450" y2="340"/>
+          <line x1="450" y1="160" x2="450" y2="250" stroke-dasharray="3 5"/><line x1="450" y1="70" x2="450" y2="160" stroke-dasharray="3 5"/>
+        </g>
+        <g font-family="VT323" font-size="14" fill="#8a8a8a" letter-spacing="2">
+          <text x="60" y="60">CLIENTS</text>
+          <text x="238" y="170">GATEWAY</text>
+          <text x="418" y="45">FORGES</text>
+        </g>
+        <circle cx="110" cy="80" r="5" fill="#e8e8e0"/><circle cx="110" cy="200" r="5" fill="#e8e8e0"/><circle cx="110" cy="320" r="5" fill="#e8e8e0"/>
+        <circle cx="280" cy="200" r="34" fill="url(#lg)" opacity=".35"/>
+        <rect x="258" y="178" width="44" height="44" rx="10" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <text x="280" y="208" text-anchor="middle" font-family="VT323" font-size="18" fill="#d0ff00">W</text>
+        <circle cx="450" cy="70" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <circle cx="450" cy="160" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <circle cx="450" cy="250" r="7" fill="#0a0a08" stroke="#8a8a8a" stroke-width="1.5"/>
+        <circle cx="450" cy="340" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <g font-family="VT323" font-size="12" fill="#565650">
+          <text x="420" y="92">hot</text><text x="420" y="182">hot</text>
+          <text x="420" y="272">cold</text><text x="420" y="362">hot</text>
+        </g>
+        <path d="M110 200 L280 200" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M280 200 L450 160" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M450 160 L280 200" stroke="#565650" stroke-width="1" stroke-dasharray="2 6" class="flowline"/>
+        <text x="300" y="140" font-family="VT323" font-size="12" fill="#565650">job →</text>
+        <text x="320" y="230" font-family="VT323" font-size="12" fill="#565650">← tokens + proof</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 07 · PILARES ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">how trust works</div>
+    <h2 class="st">Confianza <span class="dim">sin confiar.</span></h2>
+    <div class="pillars">
+      <div class="pillar st"><div>
+        <div class="tag">01 / MEASURED</div>
+        <h3>Routing por medida, no por marketing</h3>
+        <p>Cada instancia reporta carga y estado HOT/COLD; el gateway mide <code>TTFT p50</code> y <code>tok/s</code> reales por request y rankea por ETR. Warm-first, failover explícito, métricas nulas jamás inventadas.</p>
+      </div></div>
+      <div class="pillar st"><div>
+        <div class="tag">02 / VERIFIED</div>
+        <h3>Proof de entrega por job</h3>
+        <p>Attestation por benchmark determinístico al conectar. Cada resultado lleva <code>hash sha256</code> firmado con la clave <code>ed25519</code> del forge. Audit replay con referencia cross-operator; strikes persistidos.</p>
+      </div></div>
+      <div class="pillar st"><div>
+        <div class="tag">03 / PAID</div>
+        <h3>Escrow on-chain, self-claim</h3>
+        <p>Contrato Soroban: <code>fund_job</code> ata el pago al worker, <code>release</code> exige el proof — sin firma válida no hay pago. Ventana de 24h anti-refund-rug: el forge cobra aunque el operador desaparezca.</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 08 · PRODUCTO ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the product</div>
+    <h2 class="st">Tu key. Tu billing.<br><span class="dim">Funciona donde ya trabajás.</span></h2>
+    <div class="term st"><div>
+      <div class="bar"><i></i><i></i><i></i></div>
+      <pre><span class="c3"># opencode.json — una línea y estás dentro</span>
+<span class="c2">"provider"</span>: {
+  <span class="c2">"weaver"</span>: {
+    <span class="c2">"npm"</span>: <span class="c1">"@ai-sdk/openai-compatible"</span>,
+    <span class="c2">"options"</span>: { <span class="c2">"baseURL"</span>: <span class="c1">"https://gw.weaver/v1"</span>,
+                 <span class="c2">"apiKey"</span>:  <span class="c1">"wvr_…"</span> }
+  }
+}
+
+<span class="c3"># mismo Bearer en pi · hermes · cursor · curl</span>
+<span class="c3"># billing: USDC prepago, debit por tokens MEDIDOS</span></pre>
+    </div></div>
+    <div class="chips st">
+      <span class="chip lm">/account — panel self-serve</span>
+      <span class="chip lm">/models — marketplace live</span>
+      <span class="chip">402 si no hay crédito</span>
+      <span class="chip">SSE streaming real</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 09 · HOY ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">status</div>
+    <h2 class="st">No es un slide.<br><span class="dim">Está corriendo.</span></h2>
+    <div class="today">
+      <div class="cell st"><div><div class="v">262+</div><div class="k">tests verdes entre packages, gateway, web y contrato</div></div></div>
+      <div class="cell st"><div><div class="v">v5</div><div class="k">contrato escrow: self-claim + ventana anti-rug + upgrade</div></div></div>
+      <div class="cell st"><div><div class="v">WS</div><div class="k">forges remotos: attestation, heartbeats, rate-limit, failover</div></div></div>
+      <div class="cell st"><div><div class="v">e2e</div><div class="k">smoke live: cuenta → depósito USDC → stream → debit → settle</div></div></div>
+      <div class="cell st"><div><div class="v">/v1</div><div class="k">OpenAI-compatible: chat, images, catalog, usage, keys</div></div></div>
+      <div class="cell st"><div><div class="k" style="color:var(--lima);font-family:VT323;font-size:clamp(18px,1.8vw,26px)">testnet</div><div class="k">pagos reales verificables en stellar.expert</div></div></div>
+      <div class="cell st"><div><div class="v">0</div><div class="k">prompts guardados — viven en RAM y mueren con el request</div></div></div>
+      <div class="cell st"><div><div class="v">1</div><div class="k">repo · pnpm monorepo · TS + Rust · ADRs documentados</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 10 · DEMO ═══════════ -->
+<section class="slide">
+  <div class="glow" style="width:55vw;height:55vw;background:rgba(208,255,0,.06);top:-15vw;right:-10vw"></div>
+  <div class="slide-inner center">
+    <div class="kicker st">and now</div>
+    <h2 class="st" style="max-width:none">Todo lo que viste<br><span class="lm">corre.</span></h2>
+    <ul class="demolist st" style="display:inline-flex;text-align:left">
+      <li>job real → forge remoto → stream de tokens</li>
+      <li>TTFT medido en vivo, failover si el nodo cae</li>
+      <li>escrow: fund → proof → release en stellar.expert</li>
+      <li>debit medido en /v1/me · marketplace actualizando</li>
+    </ul>
+    <div class="chips st" style="justify-content:center;margin-top:5vh">
+      <span class="chip lm" style="font-size:clamp(15px,1.4vw,20px);padding:12px 26px">LIVE DEMO →</span>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const slides = [...document.querySelectorAll(".slide")];
+  const dots = document.getElementById("dots");
+  const counter = document.getElementById("counter");
+  const bar = document.querySelector("#progress > div");
+  const N = slides.length;
+  let cur = 0, busy = false;
+
+  slides.forEach((_, i) => {
+    const d = document.createElement("button");
+    d.className = "dot" + (i === 0 ? " on" : "");
+    d.setAttribute("aria-label", "slide " + (i + 1));
+    d.onclick = () => go(i);
+    dots.appendChild(d);
+  });
+
+  function animateIn(slide) {
+    const els = slide.querySelectorAll(".st");
+    gsap.fromTo(els,
+      { y: 34, opacity: 0, filter: "blur(6px)" },
+      { y: 0, opacity: 1, filter: "blur(0px)",
+        duration: .9, ease: "power3.out", stagger: .07, overwrite: true });
+  }
+
+  function go(i) {
+    if (busy || i === cur || i < 0 || i >= N) return;
+    busy = true;
+    const out = slides[cur], inn = slides[i];
+    gsap.to(out, { opacity: 0, y: i > cur ? -26 : 26, duration: .35,
+      ease: "power2.in", onComplete() {
+        out.classList.remove("on");
+        gsap.set(out, { clearProps: "all" });
+        inn.classList.add("on");
+        animateIn(inn);
+        setTimeout(() => busy = false, 250);
+      }});
+    cur = i;
+    counter.innerHTML = "<b>" + String(i + 1).padStart(2, "0") + "</b> / " + N;
+    bar.style.width = ((i + 1) / N * 100) + "%";
+    document.querySelectorAll(".dot").forEach((d, j) =>
+      d.classList.toggle("on", j === i));
+  }
+
+  addEventListener("keydown", e => {
+    if (["ArrowRight", " ", "PageDown", "Enter"].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+    if (["ArrowLeft", "PageUp", "Backspace"].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+    if (e.key === "Home") go(0);
+    if (e.key === "End") go(N - 1);
+  });
+  addEventListener("click", e => {
+    if (e.target.closest(".dot")) return;
+    go(e.clientX > innerWidth / 2 ? cur + 1 : cur - 1);
+  });
+  let tx = null;
+  addEventListener("touchstart", e => tx = e.touches[0].clientX, { passive: true });
+  addEventListener("touchend", e => {
+    if (tx === null) return;
+    const dx = e.changedTouches[0].clientX - tx;
+    if (Math.abs(dx) > 48) go(dx < 0 ? cur + 1 : cur - 1);
+    tx = null;
+  }, { passive: true });
+
+  animateIn(slides[0]);
+  bar.style.width = (1 / N * 100) + "%";
+
+  /* ---------- hero mesh canvas (slide 1 only) ---------- */
+  const cv = document.getElementById("mesh"), ctx = cv.getContext("2d");
+  let pts = [], raf;
+  function size() { cv.width = innerWidth; cv.height = innerHeight; }
+  size(); addEventListener("resize", size);
+  for (let i = 0; i < 46; i++)
+    pts.push({ x: Math.random(), y: Math.random(),
+      vx: (Math.random() - .5) * .00035, vy: (Math.random() - .5) * .00035 });
+  function tick() {
+    if (cur !== 0) { cv.style.opacity = 0; raf = requestAnimationFrame(tick); return; }
+    cv.style.opacity = 1;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const p of pts) {
+      p.x = (p.x + p.vx + 1) % 1; p.y = (p.y + p.vy + 1) % 1;
+    }
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const a = pts[i], b = pts[j];
+      const dx = (a.x - b.x) * cv.width, dy = (a.y - b.y) * cv.height;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 160 * 160) {
+        ctx.strokeStyle = "rgba(208,255,0," + (.12 * (1 - Math.sqrt(d2) / 160)) + ")";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a.x * cv.width, a.y * cv.height);
+        ctx.lineTo(b.x * cv.width, b.y * cv.height);
+        ctx.stroke();
+      }
+    }
+    for (const p of pts) {
+      ctx.fillStyle = "rgba(232,232,224,.35)";
+      ctx.beginPath();
+      ctx.arc(p.x * cv.width, p.y * cv.height, 1.4, 0, 7);
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  tick();
+
+  /* ---------- flow lines dash animation ---------- */
+  document.querySelectorAll(".flowline").forEach(l =>
+    gsap.to(l, { strokeDashoffset: -40, duration: 3, ease: "none", repeat: -1 }));
+})();
+</script>
+</body>
+</html>
