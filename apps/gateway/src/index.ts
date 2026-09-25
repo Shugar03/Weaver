@@ -206,6 +206,25 @@ export function createApp(deps: Deps) {
     });
   }
 
+  // Raíz = índice de servicio: el gateway es API pura, sin página — quien
+  // entra al host ve dónde están las cosas en vez de un 404 mudo.
+  app.get("/", (c) =>
+    c.json({
+      service: "weaver-gateway",
+      status: "ok",
+      endpoints: {
+        models: "/v1/models",
+        catalog: "/v1/catalog",
+        forges: "/v1/forges",
+        chat: "POST /v1/chat/completions",
+        images: "POST /v1/images/generations",
+        accounts: "POST /v1/accounts",
+        pricing: "/v1/pricing",
+        forge_ws: "/v1/forge/ws",
+      },
+    }),
+  );
+
   app.get("/v1/forges", async (c) => c.json(await deps.forges()));
 
   // S8b: descubrimiento OpenAI (opencode/cursor/pi leen esto para listar modelos).
