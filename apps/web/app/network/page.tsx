@@ -1,5 +1,6 @@
 import { Pipeline } from "../../components/network/Pipeline";
 import { SettleFeed } from "../../components/network/SettleFeed";
+import { LedgerFeed } from "../../components/network/LedgerFeed";
 import { ProofSection } from "../../components/ProofSection";
 import { SectionHead } from "../../components/SectionHead";
 import { SiteHeader } from "../../components/SiteHeader";
@@ -29,6 +30,7 @@ export default async function NetworkPage() {
           { label: "Route", href: "#route" },
           { label: "Execute", href: "#execute" },
           { label: "Settle", href: "#settle" },
+          { label: "Ledger", href: "#ledger" },
           { label: "Forges", href: "/forge" },
           { label: "Chat", href: "/chat" },
         ]}
@@ -64,6 +66,16 @@ export default async function NetworkPage() {
             />
             <ProofSection deployment={deployment} />
             <SettleFeed base={GATEWAY} />
+          </section>
+
+          {/* 05 — LEDGER */}
+          <section id="ledger" className="scroll-mt-20 pt-14">
+            <SectionHead index="05" label="LEDGER" right="PUBLIC ROUTES, PRIVATE PROMPTS" />
+            <p className="mt-3 max-w-[62ch] text-sm leading-relaxed text-fog">
+              Cada job que cruza la red: qué modelo, qué forge lo tomó, cuánto tardó, si liquidó.
+              Lo público es la ruta y la medida; el prompt y la cuenta quedan del otro lado — la cadena solo ve plata.
+            </p>
+            <LedgerFeed base={GATEWAY} />
           </section>
         </div>
       </div>
