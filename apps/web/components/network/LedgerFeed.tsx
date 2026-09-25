@@ -87,9 +87,17 @@ export function LedgerFeed({ base }: { base: string }) {
                 <tr key={`${e.ts}-${i}`} className="text-fog">
                   <td className="px-4 py-2 text-fog/60">{ago(e.ts)}</td>
                   <td className="px-4 py-2 text-white">{e.model}</td>
-                  <td className="px-4 py-2 text-lima">{e.forgeId}</td>
+                  <td className="px-4 py-2">
+                    <a href="/forge" className="text-lima hover:underline" title="ops de este forge">
+                      {e.forgeId}
+                    </a>
+                  </td>
                   <td className="px-4 py-2 text-right">{(e.ttftMs / 1000).toFixed(2)}s</td>
-                  <td className="px-4 py-2 text-right">{e.genTokens ?? "—"}</td>
+                  <td className="px-4 py-2 text-right">
+                    {e.genTokens != null
+                      ? `${e.genTokens}${e.decodeMs ? ` · ${(e.genTokens / (e.decodeMs / 1000)).toFixed(1)}/s` : ""}`
+                      : "—"}
+                  </td>
                   <td className="px-4 py-2">
                     {e.ok ? <span className="text-lima">ok</span> : <span className="text-danger">fail</span>}
                   </td>
