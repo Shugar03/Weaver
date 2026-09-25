@@ -16,3 +16,4 @@ target/
 test_snapshots/
 packages/benchmarks/results/
 apps/web/next-env.d.ts
+.qwen/
