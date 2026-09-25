@@ -27,4 +27,26 @@ describe("S15a rate limit", () => {
     assert.equal((await app.request("/v1/status")).status, 200);
     assert.equal((await app.request("/v1/status")).status, 429);
   });
+
+  it("XFF spoofeado no abre buckets nuevos", async () => {
+    // Antes: cada x-forwarded-for distinto era un caller nuevo = bypass trivial.
+    // Ahora la identidad es keyId o IP real del socket; XFF no cuenta.
+    const app = createApp({ forges: () => [], rateLimit: { rpm: 2 } });
+    for (const ip of ["1.1.1.1", "2.2.2.2", "3.3.3.3"]) {
+      await app.request("/v1/forges", { headers: { "x-forwarded-for": ip } });
+    }
+    const limited = await app.request("/v1/forges", { headers: { "x-forwarded-for": "4.4.4.4" } });
+    assert.equal(limited.status, 429);
+  });
+
+  it("clientIp (seam): IPs distintas tienen buckets distintos", async () => {
+    const app = createApp({
+      forges: () => [],
+      rateLimit: { rpm: 1 },
+      clientIp: (c) => c.req.header("x-test-ip") ?? null,
+    });
+    assert.equal((await app.request("/v1/forges", { headers: { "x-test-ip": "10.0.0.1" } })).status, 200);
+    assert.equal((await app.request("/v1/forges", { headers: { "x-test-ip": "10.0.0.2" } })).status, 200);
+    assert.equal((await app.request("/v1/forges", { headers: { "x-test-ip": "10.0.0.1" } })).status, 429);
+  });
 });
