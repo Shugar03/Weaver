@@ -2,8 +2,13 @@
 
 ## Links públicos activos
 
-- **Web**: https://conclusions-boys-conflicts-closure.trycloudflare.com
-- **Gateway**: https://channels-gathering-seriously-impose.trycloudflare.com
+- **Web**: https://mlb-marathon-matched-investment.trycloudflare.com
+- **Gateway**: https://motor-batman-finance-nodes.trycloudflare.com
+
+> Los quick tunnels expiran server-side tras ~7-8h ("Unauthorized: Tunnel
+> not found" en el log). Si caen: reiniciar ambos `cloudflared`, capturar
+> la URL nueva del gw, rebuild web con `NEXT_PUBLIC_GATEWAY` nueva, y
+> actualizar este archivo. Última rotación: 25-sep ~21:50 UTC.
 
 Recorrido principal verificado E2E sobre el link: `/` `/models` `/chat`
 `/account` `/developers` `/security` — todos 200, marketplace con datos
