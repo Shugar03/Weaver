@@ -10,6 +10,16 @@ import type { SettleReceipt } from "@weaver/settlement";
 import type { ApiKeys } from "@weaver/api-keys";
 import type { Telemetry } from "@weaver/telemetry";
 
+// Body roto es input del cliente: 400 con código, jamás 500.
+async function parseJson<T>(c: Context): Promise<T | null> {
+  try {
+    return await c.req.json<T>();
+  } catch {
+    return null;
+  }
+}
+const badJson = { error: "json inválido", code: "bad_json" };
+
 export type Paywall = { verifier: PaymentVerifier; payTo: string };
 export type Chaos = { setDead: (dead: boolean) => void };
 export type NodeInfo = { version: string; startedAt: number };
@@ -127,7 +137,8 @@ export function createApp(deps: Deps) {
   if (deps.apiKeys) {
     const keys = deps.apiKeys;
     app.post("/v1/admin/keys", requireOperator, async (c) => {
-      const body = await c.req.json<{ owner: string }>();
+      const body = await parseJson<{ owner: string }>(c);
+      if (!body) return c.json(badJson, 400);
       if (!body.owner) return c.json({ error: "falta owner" }, 400);
       const { id, secret } = await keys.issue(body.owner);
       return c.json({ id, secret }, 201);
@@ -146,7 +157,8 @@ export function createApp(deps: Deps) {
   if (deps.chaos) {
     const chaos = deps.chaos;
     app.post("/v1/admin/kill", requireOperator, async (c) => {
-      const body = await c.req.json<{ dead: boolean }>();
+      const body = await parseJson<{ dead: boolean }>(c);
+      if (!body) return c.json(badJson, 400);
       const dead = body.dead === true;
       chaos.setDead(dead);
       return c.json({ dead });
@@ -173,16 +185,27 @@ export function createApp(deps: Deps) {
   app.get("/v1/status", (c) => c.json({ version: nodeVersion, uptimeMs: Date.now() - nodeStartedAt }));
 
   app.post("/v1/jobs", async (c) => {
-    const body = await c.req.json<{ model: string }>();
+    const body = await parseJson<{ model: string }>(c);
+    if (!body) return c.json(badJson, 400);
     const forges = deps.forges().filter((f) => f.model === body.model);
+    // Modelo sin forge: 404 honesto, el scheduler jamás ve pool vacío.
+    if (forges.length === 0) {
+      return c.json({ error: "sin forge para ese modelo", code: "no_forge_for_model" }, 404);
+    }
     const d = scheduler.select({ id: crypto.randomUUID(), model: body.model }, forges);
     return c.json({ forge: d.forgeId, etr_ms: d.etrMs, reason: d.reason });
   });
 
   // S2: SSE mínimo OpenAI-compatible. El exec streamea, el gateway solo enmarca.
+  // stream:true → SSE; cualquier otra cosa (default OpenAI = false) → JSON completo.
   app.post("/v1/chat/completions", async (c) => {
     if (!deps.exec) return c.json({ error: "sin forge de ejecución" }, 503);
-    const body = await c.req.json<{ model: string; messages: { role: string; content: string }[] }>();
+    const body = await parseJson<{
+      model: string;
+      messages: { role: string; content: string }[];
+      stream?: boolean;
+    }>(c);
+    if (!body) return c.json(badJson, 400);
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const prompt = messages.map((m) => m.content).join("\n");
     // S11: caps anti-DoS (un request gigante ahoga Ollama). 413 con código, jamás 500 ni OOM.
@@ -224,6 +247,31 @@ export function createApp(deps: Deps) {
         }
       })();
     };
+    // Sin stream:true: se bufferiza todo y se responde chat.completion estándar.
+    // Nada se envió todavía: un forge muerto acá es 502 JSON, no evento SSE.
+    if (body.stream !== true) {
+      try {
+        let content = "";
+        for await (const chunk of exec.execute({ jobId: id, model: body.model, prompt })) {
+          if (firstAt < 0) firstAt = Date.now();
+          if (chunk.done) break;
+          content += chunk.token;
+        }
+        telRecord(true);
+        return c.json({
+          id,
+          object: "chat.completion",
+          created: Math.floor(t0 / 1000),
+          model: body.model,
+          choices: [
+            { index: 0, message: { role: "assistant", content }, finish_reason: "stop" },
+          ],
+        });
+      } catch {
+        telRecord(false);
+        return c.json({ error: "forge-failed", code: "forge_failed" }, 502);
+      }
+    }
     const stream = new ReadableStream({
       async start(controller) {
         const enc = new TextEncoder();
