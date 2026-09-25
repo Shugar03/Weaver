@@ -58,3 +58,23 @@ describe("S3 mid-stream explícito", () => {
     await assert.rejects(collect(f), /mitad/);
   });
 });
+
+describe("S3 cliente abortado", () => {
+  it("signal abortada → no prueba el siguiente forge", async () => {
+    // Cliente desconectado = nadie lee el resultado: el retry es cómputo al pedo.
+    let okCalls = 0;
+    class CountingOk extends OkExec {
+      override async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+        okCalls++;
+        yield* super.execute(req);
+      }
+    }
+    const ac = new AbortController();
+    ac.abort(); // cliente ya se fue antes del dispatch
+    const f = new FailoverForgeExec([new DeadExec(), new CountingOk()]);
+    await assert.rejects(async () => {
+      for await (const c of f.execute({ jobId: "j", model: "m", prompt: "p", signal: ac.signal })) void c;
+    });
+    assert.equal(okCalls, 0);
+  });
+});

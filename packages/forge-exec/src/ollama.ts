@@ -10,19 +10,27 @@ export class OllamaMLXAdapter implements ForgeExec {
   readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchFn: FetchFn;
+  private readonly timeoutMs: number;
 
-  constructor(opts: { forgeId?: string; model?: string; baseUrl?: string; fetchFn?: FetchFn } = {}) {
+  constructor(opts: { forgeId?: string; model?: string; baseUrl?: string; fetchFn?: FetchFn; timeoutMs?: number } = {}) {
     this.forgeId = opts.forgeId ?? "ollama-local";
     this.model = opts.model ?? "qwen3:4b";
     this.baseUrl = (opts.baseUrl ?? "http://localhost:11434").replace(/\/$/, "");
     this.fetchFn = opts.fetchFn ?? ((url, init) => fetch(url, init));
+    // Peor caso acotado: un forge colgado ya no deja el stream abierto para
+    // siempre. En CPU sin GPU la generación es lenta: subir vía env si hace falta.
+    this.timeoutMs = opts.timeoutMs ?? 300_000;
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+    // Un solo AbortSignal: deadline propio + cancelación del cliente (req.signal).
+    const signals = [AbortSignal.timeout(this.timeoutMs)];
+    if (req.signal) signals.push(req.signal);
     const res = await this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: this.model, messages: [{ role: "user", content: req.prompt }], stream: true }),
+      signal: AbortSignal.any(signals),
     });
     if (!res.ok || !res.body) throw new Error(`ollama: http ${res.status}`);
     const reader = res.body.getReader();

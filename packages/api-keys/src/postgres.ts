@@ -1,7 +1,7 @@
 // Module api-keys — Postgres (ADR-0002). Mismo contrato que InMemory:
 // el secreto jamás se guarda (solo SHA-256 hex); Postgres reemplaza al Map.
 import { createHash, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { apiKeys, type Db } from "@weaver/db";
 import type { ApiKeys, KeyInfo, KeyPublic } from "./keys.ts";
 
@@ -22,16 +22,29 @@ export class PostgresApiKeys implements ApiKeys {
   }
 
   async seed(owner: string, secret: string): Promise<KeyInfo> {
+    // OPERATOR_KEY fija + restart: mismo secret, mismo hash. Sin dedup cada
+    // boot inserta una fila nueva (viejas válidas e inidentificables).
+    // Si ya hay una ACTIVA con ese hash, se devuelve; revocada = inserta nueva.
+    const hash = shaHex(secret);
+    const existing = await this.db
+      .select()
+      .from(apiKeys)
+      .where(and(eq(apiKeys.hash, hash), eq(apiKeys.revoked, false)));
+    if (existing[0]) return { id: existing[0].id, owner: existing[0].owner };
     const id = `key_${Date.now().toString(36)}_${Math.floor(Math.random() * 46656).toString(36)}`;
-    await this.db.insert(apiKeys).values({ id, owner, hash: shaHex(secret) });
+    await this.db.insert(apiKeys).values({ id, owner, hash });
     return { id, owner };
   }
 
   async verify(secret: string): Promise<KeyInfo | null> {
     if (!secret.startsWith("wvr_")) return null;
-    const rows = await this.db.select().from(apiKeys).where(eq(apiKeys.hash, shaHex(secret)));
+    // Filtra revoked en SQL: puede haber duplicados de hash (seed tras revoke).
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(and(eq(apiKeys.hash, shaHex(secret)), eq(apiKeys.revoked, false)));
     const k = rows[0];
-    if (!k || k.revoked) return null;
+    if (!k) return null;
     return { id: k.id, owner: k.owner };
   }
 

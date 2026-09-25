@@ -7,9 +7,11 @@
 //   CORS_ORIGIN (coma-separado; ausente = abierto),
 //   OPERATOR_KEY (fija el admin entre reinicios; ausente = efímera impresa),
 //   PAYWALL_PAY_TO (presente = paywall x402 ON; ausente = off),
-//   RATE_LIMIT_RPM (default 120; 0 = off).
+//   RATE_LIMIT_RPM (default 120; 0 = off),
+//   OLLAMA_TIMEOUT_MS (default 300000; deadline del fetch a Ollama).
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { serve } from "@hono/node-server";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { createApp } from "./index.ts";
 import { FailoverForgeExec, FakeForgeExec, OllamaMLXAdapter, SwitchableExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
@@ -18,7 +20,9 @@ import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
 import type { ForgeView } from "@weaver/scheduler";
 
-const primary = new SwitchableExec(new OllamaMLXAdapter({ model: "qwen3:4b" }));
+const primary = new SwitchableExec(
+  new OllamaMLXAdapter({ model: "qwen3:4b", timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 300_000) }),
+);
 const standby = new FakeForgeExec({ forgeId: "forge-sim-01", model: "qwen3:4b" });
 
 const OLLAMA_VIEW: ForgeView = {
@@ -72,6 +76,15 @@ const app = createApp({
   apiKeys,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
+  // IP del socket para el rate limiter (XFF es spoofeable, no entra).
+  // Fuera de node-server (tests) no hay socket: null → bucket "anon".
+  clientIp: (c) => {
+    try {
+      return getConnInfo(c).remote.address ?? null;
+    } catch {
+      return null;
+    }
+  },
   // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
   ...(payTo ? { paywall: { verifier: new FacilitatorVerifier(), payTo } } : {}),
   // S17b: liquidación programática opt-in. Sin SETTLEMENT_SECRET no hay settle

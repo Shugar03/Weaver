@@ -48,4 +48,38 @@ describe("S3 OllamaMLXAdapter", () => {
     const a = new OllamaMLXAdapter({ fetchFn: fakeFetch(seen, 500) });
     await assert.rejects(collect(a), /500/);
   });
+
+  it("timeoutMs: forge colgado → aborta con signal pasado al fetch", async () => {
+    // Antes: fetch sin signal = stream colgado para siempre.
+    const seen: { signal?: AbortSignal | null } = {};
+    const hanging = (url: string, init: RequestInit): Promise<Response> => {
+      void url;
+      seen.signal = init.signal;
+      return new Promise<Response>((_res, rej) => {
+        init.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      });
+    };
+    const a = new OllamaMLXAdapter({ timeoutMs: 30, fetchFn: hanging });
+    await assert.rejects(collect(a));
+    assert.ok(seen.signal instanceof AbortSignal);
+  });
+
+  it("req.signal del cliente también llega al fetch (cancel upstream)", async () => {
+    const seen: { signal?: AbortSignal | null } = {};
+    const hanging = (_url: string, init: RequestInit): Promise<Response> => {
+      seen.signal = init.signal;
+      return new Promise<Response>((_res, rej) => {
+        init.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      });
+    };
+    const ac = new AbortController();
+    const a = new OllamaMLXAdapter({ fetchFn: hanging });
+    const it = a.execute({ jobId: "j", model: "m", prompt: "p", signal: ac.signal });
+    const done = assert.rejects(async () => {
+      for await (const _c of it) void _c;
+    });
+    setTimeout(() => ac.abort(), 10);
+    await done;
+    assert.equal(seen.signal?.aborted, true);
+  });
 });

@@ -1,7 +1,9 @@
 // Module ForgeExec — Seam de ejecución. Dos Adapters => Seam real.
 // El Scheduler nunca ve Ollama ni HTTP acá, solo este puerto.
 export type StreamChunk = { token: string; done: boolean };
-export type ExecRequest = { jobId: string; model: string; prompt: string };
+// signal: cancelación del cliente (se fue mid-stream). Los adapters que hacen
+// red real la propagan a su fetch; si aborta, NO es falla del forge ni retry.
+export type ExecRequest = { jobId: string; model: string; prompt: string; signal?: AbortSignal };
 
 export interface ForgeExec {
   readonly forgeId: string;
