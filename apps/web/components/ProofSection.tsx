@@ -58,14 +58,14 @@ export function ProofSection({ deployment }: { deployment: Deployment | null }) 
       </div>
       <div className="border border-line bg-panel p-6 lg:col-span-2">
         <div className="font-tech text-lg tracking-[0.18em] text-fog">ACCOUNTS (USDC TESTNET)</div>
-        {[
-          ["Client", deployment.admin],
-          ["Escrow", deployment.contract_id],
-          ...(deployment.worker ? [["Worker", deployment.worker] as [string, string]] : []),
-        ].map(([label, addr]) => (
+        {([
+          ["Client", deployment.admin, EXPLORER.account],
+          ["Escrow", deployment.contract_id, EXPLORER.contract],
+          ...(deployment.worker ? [["Worker", deployment.worker, EXPLORER.account]] : []),
+        ] as [string, string, string][]).map(([label, addr, base]) => (
           <a
             key={label}
-            href={`${EXPLORER.account}${addr}`}
+            href={`${base}${addr}`}
             target="_blank"
             rel="noreferrer"
             className="mt-3 flex items-center justify-between border border-line px-4 py-3 hover:border-lima"
