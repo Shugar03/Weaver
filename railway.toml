@@ -1,0 +1,12 @@
+# Deploy del gateway en Railway — servicio desde la raíz del repo.
+# En Railway: New Project → Deploy from GitHub → Shugar03/Weaver.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "apps/gateway/Dockerfile"
+
+[deploy]
+# Healthcheck contra el índice raíz (liviano, no toca forges ni DB).
+healthcheckPath = "/"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -34,23 +34,29 @@ import type { Server as HttpServer } from "node:http";
 const MAX_INFLIGHT_TEXT = 4;
 const MAX_INFLIGHT_IMAGE = 1;
 
+// REMOTE_ONLY=1: gateway hosteado (Railway/Render/VPS) — acá no hay Ollama ni
+// mflux, instanciar runners serían forges fantasmas que fallan al ejecutar.
+// La fleet nace entera de los heartbeats WS de forges remotos (dial-out desde
+// las máquinas con GPU); con el flag los embedded ni se construyen.
+const REMOTE_ONLY = process.env.REMOTE_ONLY === "1";
+
 // Switchable (chaos kill por forge) → Proven (firma L0) → Tracked (in-flight).
 // Las refs "Sw" quedan para el chaos; el registry lleva la capa externa.
-const primarySw = new SwitchableExec(new OllamaMLXAdapter({ model: "qwen3:4b" }));
+const primarySw = REMOTE_ONLY ? null : new SwitchableExec(new OllamaMLXAdapter({ model: "qwen3:4b" }));
 // S26: todos los forges son switchable — kill granular por forgeId para chaos
 // drills reales (matar gemma no toca qwen; matar image rompe solo difusión).
-const standbySw = new SwitchableExec(new FakeForgeExec({ forgeId: "forge-sim-01", model: "qwen3:4b" }));
+const standbySw = REMOTE_ONLY ? null : new SwitchableExec(new FakeForgeExec({ forgeId: "forge-sim-01", model: "qwen3:4b" }));
 // Segundo modelo real en el MISMO Ollama (un engine, N forges lógicos).
 // e2b ≈7.2GB: residente junto a qwen3 (~10.5GB) en una 16GB Air sin swap.
 // gemma con keep_alive acotado: en 16GB, dos LLM residentes + el forge de imagen
 // (~5GB peak) hacen que Ollama evicte mid-request → streams muertos. 5min idle
 // → se descarga solo; el probe /api/ps lo muestra COLD honesto entre usos.
-const gemmaSw = new SwitchableExec(new OllamaMLXAdapter({ forgeId: "gemma-local", model: "gemma4:e2b", keepAlive: 300 }));
+const gemmaSw = REMOTE_ONLY ? null : new SwitchableExec(new OllamaMLXAdapter({ forgeId: "gemma-local", model: "gemma4:e2b", keepAlive: 300 }));
 // Image forge: mismo Ollama, runner MLX de difusión. COLD declarado — Ollama
 // no mantiene el modelo residente entre gens, así que cada job paga load real
 // y la telemetría lo mide (la demo del cold-start es la feature, no un bug).
-const imageForgeInner = new FluxKleinForge({ forgeId: "image-local", model: "flux2-klein-4b" });
-const imageForge = new TrackedImageExec(imageForgeInner);
+const imageForgeInner = REMOTE_ONLY ? null : new FluxKleinForge({ forgeId: "image-local", model: "flux2-klein-4b" });
+const imageForge = imageForgeInner ? new TrackedImageExec(imageForgeInner) : null;
 
 // S27: circuit breaker — ≥3 fallos de exec en 60s → forge fuera 30s.
 // Sin esto un forge roto con probe vivo se intenta primero en cada request.
@@ -131,11 +137,13 @@ const sign = process.env.WORKER_SECRET ? stellarSigner(process.env.WORKER_SECRET
 // y el failover corre sobre ESE orden — la decisión del scheduler ES el dispatch.
 // S27: la capa externa es TrackedExec — inFlight real alimenta queueMs.
 const wrap = (e: ForgeExec): ForgeExec => new TrackedExec(sign ? new ProvenForgeExec(e, sign) : e);
-const execs: Record<string, ForgeExec> = {
-  "ollama-local": wrap(primarySw),
-  "forge-sim-01": wrap(standbySw),
-  "gemma-local": wrap(gemmaSw),
-};
+const execs: Record<string, ForgeExec> = REMOTE_ONLY
+  ? {}
+  : {
+      "ollama-local": wrap(primarySw!),
+      "forge-sim-01": wrap(standbySw!),
+      "gemma-local": wrap(gemmaSw!),
+    };
 
 // Warm-up: un request de 1 token con keep_alive=-1 deja el modelo residente en
 // el engine → load_time = 0 siempre. Sin esto el primer request post-boot (o
@@ -194,13 +202,13 @@ const probeAll = async () => {
   }
   // El image forge se probee aparte (puerto distinto, no está en `execs`).
   try {
-    live.set("image-local", (await imageForge.probe?.()) ?? true);
+    live.set("image-local", imageForge ? ((await imageForge.probe?.()) ?? true) : false);
   } catch {
     live.set("image-local", false);
   }
   // S30: p50/tok por instance remota también — la telemetría es agnóstica al
   // transporte (el sample graba forgeId = instanceId, mismo que el view).
-  const all = [...[OLLAMA_VIEW, SIM_VIEW, GEMMA_VIEW, IMAGE_VIEW], ...registry.views()];
+  const all = [...(REMOTE_ONLY ? [] : [OLLAMA_VIEW, SIM_VIEW, GEMMA_VIEW, IMAGE_VIEW]), ...registry.views()];
   for (const f of all) {
     const v = await telemetry.p50(f.model, f.forgeId).catch(() => 0);
     if (v > 0) p50cache.set(f.forgeId, v);
@@ -224,7 +232,9 @@ const probeAll = async () => {
     if (all.length > 0) relCache.set(f.forgeId, all.filter((s) => s.ok).length / all.length);
   }
 };
-void probeAll().then(() => Promise.all([warmup(execs["ollama-local"]), warmup(execs["gemma-local"])]));
+void probeAll().then(() => {
+  if (!REMOTE_ONLY) void Promise.all([warmup(execs["ollama-local"]), warmup(execs["gemma-local"])]);
+});
 setInterval(() => void probeAll(), 5_000).unref();
 
 // S20: el p50 medido por forge alimenta el ETR — "measured, not marketing".
@@ -233,18 +243,23 @@ setInterval(() => void probeAll(), 5_000).unref();
 // stale no aplica (scheduler lo ignora). Síncrono en la práctica: el dispatch
 // ya no espera telemetría antes de abrir el stream.
 async function forges(): Promise<ForgeView[]> {
-  const ollamaUp = !primarySw.isDead() && live.get("ollama-local") !== false;
-  const base =
-    !ollamaUp
-      ? [{ ...OLLAMA_VIEW, hot: false, queueMs: 99999 }, SIM_VIEW]
-      : [{ ...OLLAMA_VIEW, hot: resident.get("ollama-local") !== false }, SIM_VIEW];
-  // gemma-local: mismo Ollama que el primario — si el engine cae, ambos muertos.
-  // Engine vivo + modelo descargado = COLD ruteable (ETR cobra load_time real);
-  // engine caído = muerto. Sin standby: falla honesto, no hay fake.
-  if (!ollamaUp) base.push({ ...GEMMA_VIEW, hot: false, queueMs: 99999 });
-  else base.push({ ...GEMMA_VIEW, hot: resident.get("gemma-local") !== false });
-  if (live.get("image-local") === false) base.push({ ...IMAGE_VIEW, hot: false, queueMs: 99999 });
-  else base.push(IMAGE_VIEW);
+  const base: ForgeView[] = [];
+  if (!REMOTE_ONLY) {
+    const ollamaUp = !primarySw!.isDead() && live.get("ollama-local") !== false;
+    base.push(
+      !ollamaUp
+        ? { ...OLLAMA_VIEW, hot: false, queueMs: 99999 }
+        : { ...OLLAMA_VIEW, hot: resident.get("ollama-local") !== false },
+      SIM_VIEW,
+    );
+    // gemma-local: mismo Ollama que el primario — si el engine cae, ambos muertos.
+    // Engine vivo + modelo descargado = COLD ruteable (ETR cobra load_time real);
+    // engine caído = muerto. Sin standby: falla honesto, no hay fake.
+    if (!ollamaUp) base.push({ ...GEMMA_VIEW, hot: false, queueMs: 99999 });
+    else base.push({ ...GEMMA_VIEW, hot: resident.get("gemma-local") !== false });
+    if (live.get("image-local") === false) base.push({ ...IMAGE_VIEW, hot: false, queueMs: 99999 });
+    else base.push(IMAGE_VIEW);
+  }
   // S30: forges remotos entran por heartbeat — mismo deco de carga medida.
   base.push(...registry.views());
   // S27: carga medida — queueMs = inFlight × expectedMs (expected = p50 medido;
@@ -256,6 +271,7 @@ async function forges(): Promise<ForgeView[]> {
       ? imageForge
       : ((execs[f.forgeId] ?? forgeWS?.remoteExecs.get(f.forgeId) ?? forgeWS?.remoteImageExecs.get(f.forgeId)) as unknown as
         | { inFlight: number }
+        | null
         | undefined));
     // Remote sin exec todavía: cae al inFlight del heartbeat (self-report).
     const n = tracked?.inFlight ?? f.inFlight ?? 0;
@@ -352,7 +368,7 @@ const auditor = new Auditor({
   },
 });
 
-const imageExecs: Record<string, ImageExec> = { "image-local": imageForge };
+const imageExecs: Record<string, ImageExec> = imageForge ? { "image-local": imageForge } : {};
 // Misma seam que liveExecs para imágenes: remoteImageExecs entra por WS.
 const liveImageExecs = new Proxy(imageExecs, {
   get: (t, k) => t[k as string] ?? forgeWS?.remoteImageExecs.get(k as string),
@@ -376,7 +392,8 @@ const app = createApp({
   chaos: {
     setDead: (forgeId: string | undefined, dead: boolean): boolean => {
       const target =
-        forgeId === undefined || forgeId === "ollama-local" ? primarySw
+        REMOTE_ONLY ? null
+        : forgeId === undefined || forgeId === "ollama-local" ? primarySw
         : forgeId === "forge-sim-01" ? standbySw
         : forgeId === "gemma-local" ? gemmaSw
         : forgeId === "image-local" ? imageForgeInner
