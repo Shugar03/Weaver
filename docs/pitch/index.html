@@ -75,6 +75,21 @@
     padding: 6vw 8vw;
   }
   .slide.on { display: flex; }
+
+  /* Print → PDF: una slide por página, chrome de navegación fuera,
+     fondo oscuro preservado (sin esto el PDF sale blanco). */
+  @page { size: 13.33in 7.5in; margin: 0; }
+  @media print {
+    html, body { height: auto; overflow: visible; }
+    body, .slide { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    /* feTurbulence se rasteriza por página → el PDF pasa de ~1MB a 37MB. */
+    body::after { content: none !important; }
+    #progress, #counter, #hint, #dots, #mesh { display: none !important; }
+    .slide {
+      position: relative; display: flex !important;
+      height: 100vh; page-break-after: always; break-after: page;
+    }
+  }
   .kicker {
     font-family: "VT323", monospace; font-size: clamp(14px, 1.3vw, 20px);
     letter-spacing: .3em; color: var(--lima); text-transform: uppercase;

@@ -95,6 +95,7 @@ Modules, swappable Adapters. (Decisions that hurt to revert: `docs/adr/`.)
 - `packages/benchmarks/` gateway-vs-direct runner + results
 - `contracts/weaver-escrow/` Soroban `init/fund_job/release/refund/get_job` (+ `deployments/testnet.json`)
 - `docs/` pitch evidence (`demanda-`, `competidores-evidencia`), demo script, roadmap notes
+- `docs/pitch/` submission deck — `index.html` (11 slides, self-contained, abrir directo en el browser) + `weaver-pitch.pdf` (generado via `Cmd+P` sobre el HTML)
 - `scripts/` `demo-capture.mjs` (3 deterministic takes), `chat-test.mjs`, `shot.mjs`
 
 ## Contracts
@@ -109,4 +110,4 @@ Roadmap pointers (not dependencies): `docs/referencias-roadmap.md`.
 
 ---
 
-Built for the Argentina Builder Challenge (Stellar) — submission: deck + demo, 27/09.
+Built for the Argentina Builder Challenge (Stellar) — submission: [deck](docs/pitch/index.html) + demo, 27/09.
