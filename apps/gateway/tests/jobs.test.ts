@@ -33,7 +33,7 @@ describe("S2 POST /v1/jobs", () => {
     assert.equal(body.length, 2);
   });
 
-  it("S19: modelo sin forges → 404 unknown_model, no 500", async () => {
+  it("S19: modelo sin forges → 404 no_forge_for_model, no 500", async () => {
     const app = createApp({ forges });
     const res = await app.request("/v1/jobs", {
       method: "POST",
@@ -41,6 +41,6 @@ describe("S2 POST /v1/jobs", () => {
       body: JSON.stringify({ model: "inexistente" }),
     });
     assert.equal(res.status, 404);
-    assert.equal(((await res.json()) as { code: string }).code, "unknown_model");
+    assert.equal(((await res.json()) as { code: string }).code, "no_forge_for_model");
   });
 });
