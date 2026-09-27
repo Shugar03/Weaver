@@ -33,6 +33,9 @@ export class FailoverForgeExec implements ForgeExec {
         if (yielded === 0) throw new Error(`failover: ${exec.forgeId} vacío`);
         return;
       } catch (err) {
+        // Cliente desconectado: reintentar en el siguiente forge es trabajo
+        // que nadie va a leer. El abort se propaga, no cuenta como falla.
+        if (req.signal?.aborted) throw err;
         req.onFail?.(exec.forgeId); // S27: el breaker ve cada intento fallido
         if (yielded > 0) throw err; // mid-stream: explícito, jamás reintento silencioso
         this.lastFailoverMs = performance.now() - t0;

@@ -19,3 +19,4 @@ packages/benchmarks/results/
 apps/web/next-env.d.ts
 .playwright-mcp/
 docs/pitch/RUN.md
+.qwen/

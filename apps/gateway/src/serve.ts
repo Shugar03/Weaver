@@ -11,9 +11,11 @@
 //   SETTLEMENT_SECRET (presente = escrow operador→worker ON),
 //   WORKER_SECRET (clave ed25519 del forge — firma el proof L0 de cada output;
 //   requerida para que el contrato v3 verifique el release).
+//   OLLAMA_TIMEOUT_MS (default 300000; deadline del fetch a Ollama).
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { createApp, type CatalogMeta } from "./index.ts";
 import { createAgentHost } from "./agent.ts";
 import { Auditor } from "./audit.ts";
@@ -42,7 +44,11 @@ const REMOTE_ONLY = process.env.REMOTE_ONLY === "1";
 
 // Switchable (chaos kill por forge) → Proven (firma L0) → Tracked (in-flight).
 // Las refs "Sw" quedan para el chaos; el registry lleva la capa externa.
-const primarySw = REMOTE_ONLY ? null : new SwitchableExec(new OllamaMLXAdapter({ model: "qwen3:4b" }));
+const primarySw = REMOTE_ONLY
+  ? null
+  : new SwitchableExec(
+      new OllamaMLXAdapter({ model: "qwen3:4b", timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 300_000) }),
+    );
 // S26: todos los forges son switchable — kill granular por forgeId para chaos
 // drills reales (matar gemma no toca qwen; matar image rompe solo difusión).
 const standbySw = REMOTE_ONLY ? null : new SwitchableExec(new FakeForgeExec({ forgeId: "forge-sim-01", model: "qwen3:4b" }));
@@ -431,6 +437,15 @@ const app = createApp({
   depositAddress: process.env.DEPOSIT_ADDRESS,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
+  // IP del socket para el rate limiter (XFF es spoofeable, no entra).
+  // Fuera de node-server (tests) no hay socket: null → bucket "anon".
+  clientIp: (c) => {
+    try {
+      return getConnInfo(c).remote.address ?? null;
+    } catch {
+      return null;
+    }
+  },
   // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
   ...(payTo ? { paywall: { verifier: new FacilitatorVerifier(), payTo } } : {}),
   // S17b/S42: liquidación opt-in. El operador DERIVA de SETTLEMENT_SECRET (su

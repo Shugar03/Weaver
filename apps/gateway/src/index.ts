@@ -56,6 +56,9 @@ type Deps = {
   // Fire-and-forget: la implementación decide rate y consecuencias.
   audit?: (forgeId: string, model: string) => void;
   rateLimit?: { rpm: number }; // S15a: ausente = abierto (dev)
+  // IP real del socket (node-server la da vía getConnInfo). XFF jamás se cree:
+  // cualquier cliente lo escribe. Sin clientIp ni key → "anon" compartido.
+  clientIp?: (c: Context) => string | null;
   corsOrigins?: string[]; // S15a: ausente = abierto (dev); presente = allowlist
   agent?: AgentHost; // capabilities server-side del Weaver Agent (MCP, web, skills, persona)
   imageExecs?: Record<string, ImageExec>; // jobs de imagen: mismo scheduler, puerto distinto (no tokens)
@@ -170,8 +173,7 @@ export function createApp(deps: Deps) {
     const { rpm } = deps.rateLimit;
     const buckets = new Map<string, { window: number; count: number }>();
     app.use("/v1/*", async (c, next) => {
-      const caller =
-        c.get("keyId") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "anon";
+      const caller = c.get("keyId") ?? deps.clientIp?.(c) ?? "anon";
       const window = Math.floor(Date.now() / 60000);
       if (buckets.size > 5000) {
         for (const [k, v] of buckets) if (v.window < window) buckets.delete(k);
@@ -711,6 +713,11 @@ export function createApp(deps: Deps) {
     }
     const exec = deps.exec;
     const id = `chatcmpl-${crypto.randomUUID()}`;
+    // Cliente ido = cómputo que nadie lee: el abort llega al fetch de Ollama.
+    // SSE: dispara cancel() del stream. En node-server, req.raw.signal también.
+    const ac = new AbortController();
+    const abort = () => ac.abort();
+    c.req.raw.signal.addEventListener("abort", abort, { once: true });
     // S9a/S19: telemetría de la ejecución real — onForge reporta por request
     // quién sirvió (sin espiar internals ni estado compartido entre requests).
     const t0 = Date.now();
@@ -826,6 +833,7 @@ export function createApp(deps: Deps) {
           messages,
           options,
           tools,
+          signal: ac.signal,
           onForge: (fid) => {
             servedForgeId = fid;
             deps.breaker?.ok(fid);
@@ -866,8 +874,11 @@ export function createApp(deps: Deps) {
           ...usage,
         });
       } catch {
-        telRecord(false);
+        // Abort del cliente no es falla del forge: no ensucia okRate ni settle.
+        if (!ac.signal.aborted) telRecord(false);
         return c.json({ error: "forge-failed", code: "forge_failed" }, 502);
+      } finally {
+        c.req.raw.signal.removeEventListener("abort", abort);
       }
     }
     const stream = new ReadableStream({
@@ -879,7 +890,7 @@ export function createApp(deps: Deps) {
           try {
             controller.enqueue(enc.encode(s));
           } catch {
-            /* cliente ido, se sigue drenando en silencio */
+            /* cliente ido, el abort ya cortó el upstream */
           }
         };
         const chunk = (delta: Record<string, unknown>, finish: string | null = null, extra?: Record<string, unknown>) =>
@@ -900,6 +911,7 @@ export function createApp(deps: Deps) {
             messages,
             options,
             tools,
+            signal: ac.signal,
             onForge: (fid) => {
               servedForgeId = fid;
               deps.breaker?.ok(fid); // sirvió: resetea sus fallos consecutivos
@@ -952,18 +964,27 @@ export function createApp(deps: Deps) {
           send("data: [DONE]\n\n");
           telRecord(true);
         } catch (e) {
-          // S3: muerte mid-stream → evento error explícito, jamás [DONE] trucho.
-          // El mensaje real viaja: "forge-failed" pelado esconde OOMs, evicciones
-          // y timeouts que el operador necesita ver (telemetría ya lo registra).
-          const msg = e instanceof Error ? e.message : String(e);
-          send(`data: ${JSON.stringify({ error: "forge-failed", detail: msg.slice(0, 300) })}\n\n`);
-          telRecord(false);
+          if (ac.signal.aborted) {
+            /* cliente desconectado: nada que reportar ni medir */
+          } else {
+            // S3: muerte mid-stream → evento error explícito, jamás [DONE] trucho.
+            // El mensaje real viaja: "forge-failed" pelado esconde OOMs, evicciones
+            // y timeouts que el operador necesita ver (telemetría ya lo registra).
+            const msg = e instanceof Error ? e.message : String(e);
+            send(`data: ${JSON.stringify({ error: "forge-failed", detail: msg.slice(0, 300) })}\n\n`);
+            telRecord(false);
+          }
         }
         try {
           controller.close();
         } catch {
           /* ya cerrado por cancelación */
         }
+        c.req.raw.signal.removeEventListener("abort", abort);
+      },
+      cancel() {
+        // Cliente se fue mid-stream: corta el fetch a Ollama, no solo el enqueue.
+        ac.abort();
       },
     });
     return new Response(stream, {

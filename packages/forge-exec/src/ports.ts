@@ -51,6 +51,9 @@ export type ExecRequest = {
   // absorbidos por failover, así que el dato tiene que nacer acá.
   onFail?: (forgeId: string) => void;
   onProof?: (proof: Proof) => void;
+  // signal: cancelación del cliente (se fue mid-stream). Los adapters que hacen
+  // red real la propagan a su fetch; si aborta, NO es falla del forge ni retry.
+  signal?: AbortSignal;
 };
 
 export interface ForgeExec {

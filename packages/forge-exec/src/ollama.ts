@@ -30,10 +30,11 @@ export class OllamaMLXAdapter implements ForgeExec {
   readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchFn: FetchFn;
+  private readonly timeoutMs: number;
 
   private readonly keepAlive: number;
 
-  constructor(opts: { forgeId?: string; model?: string; baseUrl?: string; fetchFn?: FetchFn; keepAlive?: number } = {}) {
+  constructor(opts: { forgeId?: string; model?: string; baseUrl?: string; fetchFn?: FetchFn; keepAlive?: number; timeoutMs?: number } = {}) {
     this.forgeId = opts.forgeId ?? "ollama-local";
     this.model = opts.model ?? "qwen3:4b";
     this.baseUrl = (opts.baseUrl ?? "http://localhost:11434").replace(/\/$/, "");
@@ -41,6 +42,9 @@ export class OllamaMLXAdapter implements ForgeExec {
     // -1 = residente forever; N segundos = Ollama lo descarga tras N idle.
     // En 16GB, un segundo LLM residente compite con el forge de imagen.
     this.keepAlive = opts.keepAlive ?? -1;
+    // Peor caso acotado: un forge colgado ya no deja el stream abierto para
+    // siempre. En CPU sin GPU la generación es lenta: subir vía env si hace falta.
+    this.timeoutMs = opts.timeoutMs ?? 300_000;
   }
 
   // S24: liveness del ENGINE — /v1/models responde = el forge es alcanzable
@@ -96,6 +100,11 @@ export class OllamaMLXAdapter implements ForgeExec {
           ...(o?.numCtx !== undefined ? { num_ctx: o.numCtx } : {}),
         },
       }),
+      // Un solo AbortSignal: deadline propio (forge colgado) + cancelación del
+      // cliente (req.signal — abort no es falla del forge, no genera de más).
+      signal: AbortSignal.any(
+        req.signal ? [AbortSignal.timeout(this.timeoutMs), req.signal] : [AbortSignal.timeout(this.timeoutMs)],
+      ),
     });
     if (!res.ok || !res.body) throw new Error(`ollama: http ${res.status}`);
     const reader = res.body.getReader();

@@ -20,6 +20,10 @@ describe("S16a PostgresApiKeys", () => {
       const seeded = await store.seed("operator", "wvr_fija_test");
       assert.deepEqual(await store.verify("wvr_fija_test"), { id: seeded.id, owner: "operator" });
       assert.equal((await store.list()).length, 2);
+      // re-seed (restart con OPERATOR_KEY fija): misma key, sin fila duplicada
+      const reseeded = await store.seed("operator", "wvr_fija_test");
+      assert.equal(reseeded.id, seeded.id);
+      assert.equal((await store.list()).length, 2);
       assert.equal(await store.revoke(id), true);
       assert.equal(await store.verify(secret), null);
       const raw = JSON.stringify(await store.list());
