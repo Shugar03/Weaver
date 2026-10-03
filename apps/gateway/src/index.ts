@@ -693,6 +693,11 @@ export function createApp(deps: Deps) {
       (m) => m && typeof m.role === "string" && typeof m.content === "string",
     );
     const prompt = messages.map((m) => m.content).join("\n");
+    // Sin un solo mensaje válido no hay request: 400 explícito. Antes pasaba
+    // el filtro con prompt "" y el engine generaba sobre contexto vacío.
+    if (messages.length === 0) {
+      return c.json({ error: "faltan messages válidos (role+content string)", code: "bad_request" }, 400);
+    }
     // S11: caps anti-DoS (un request gigante ahoga Ollama). 413 con código, jamás 500 ni OOM.
     // Dimensionados para el agente: system + persona + historial + tool results
     // caben en un num_ctx de 16k (≈60k chars) sin dejar el request abierto a OOM.

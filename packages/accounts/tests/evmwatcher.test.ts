@@ -97,4 +97,47 @@ describe("EVM DepositWatcher", () => {
     await w.pollOnce();
     assert.equal(await ledger.balance(account.id), 5n);
   });
+
+  it("multi-log en la misma tx: dedup por txHash:logIndex acredita ambos", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const { account } = await store.create();
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger,
+      fetcher: async () => [
+        deposit(account.id, 3n, "0xtxM", 10n, 0),
+        deposit(account.id, 7n, "0xtxM", 10n, 1), // mismo tx, otro logIndex
+      ],
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    await w.pollOnce(); // replay: no duplica
+    assert.equal(await ledger.balance(account.id), 10n);
+  });
+
+  it("reorg: log con removed:true jamás acredita", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const { account } = await store.create();
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger,
+      fetcher: async () => [{ ...deposit(account.id, 99n, "0xtxR", 10n), removed: true }],
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    assert.equal(await ledger.balance(account.id), 0n);
+  });
+
+  it("log de bloque viejo (< cursor) se salta — no reacredita tras seek atrás", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const { account } = await store.create();
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger, fromBlock: 100n,
+      fetcher: async () => [deposit(account.id, 4n, "0xtxOld", 50n)], // bn 50 < cursor 100
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    assert.equal(await ledger.balance(account.id), 0n);
+  });
 });
