@@ -26,6 +26,9 @@ export type ForgeConfig = {
   instances: InstanceCfg[];
   // Budgets del operador (ADR-0005, Fase 7): el daemon los respeta local.
   budgets?: { maxVramGb?: number; idleOnly?: boolean };
+  // ERC-8004 (EVM): agentId del Identity Registry — el forge lo registra
+  // solo en el primer `up` y queda persistido acá.
+  agentId?: number;
 };
 
 // init: genera keypair nueva. Re-inicializar PISA la identidad — el payout
@@ -59,6 +62,13 @@ export function initConfig(
   writeFileSync(path, JSON.stringify(cfg, null, 2));
   chmodSync(path, 0o600); // el secreto es solo del operador
   return cfg;
+}
+
+// Persiste cambios al config (p.ej. agentId ERC-8004 tras el primer boot).
+// Mismo chmod 0600 — el archivo contiene el secreto.
+export function saveConfig(path: string, cfg: ForgeConfig): void {
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  chmodSync(path, 0o600);
 }
 
 export function loadConfig(path: string): ForgeConfig {

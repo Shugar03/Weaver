@@ -53,6 +53,7 @@ export class ForgeDaemon {
   private readonly heartbeatMs: number;
   private readonly budgets?: DaemonBudgets;
   private readonly claim?: Claimer;
+  private readonly agentId?: number; // ERC-8004 (EVM) — viaja en el heartbeat
   private readonly probes: BudgetProbes;
   private readonly tok = new Map<string, { tok: number; ms: number }[]>();
   private hbTimer: ReturnType<typeof setInterval> | null = null;
@@ -65,6 +66,7 @@ export class ForgeDaemon {
     heartbeatMs?: number;
     budgets?: DaemonBudgets;
     claim?: Claimer;
+    agentId?: number;
     probes?: Partial<BudgetProbes>;
   }) {
     this.channel = deps.channel;
@@ -73,6 +75,7 @@ export class ForgeDaemon {
     this.heartbeatMs = deps.heartbeatMs ?? 5_000;
     this.budgets = deps.budgets;
     this.claim = deps.claim;
+    this.agentId = deps.agentId;
     this.probes = {
       idleMs: deps.probes?.idleMs ?? osIdleMs,
       vramUsedGb: deps.probes?.vramUsedGb ?? (() => ollamaVramUsedGb()),
@@ -134,7 +137,11 @@ export class ForgeDaemon {
         loadTimeMs: i.loadTimeMs,
       });
     }
-    this.channel.send({ type: "heartbeat", instances });
+    this.channel.send({
+      type: "heartbeat",
+      instances,
+      ...(this.agentId !== undefined ? { agentId: this.agentId } : {}),
+    });
   }
 
   private async onMsg(m: GatewayMsg): Promise<void> {

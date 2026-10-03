@@ -12,12 +12,15 @@ import {
   ESCROW_ABI,
   EvmSubmitter,
   evmForgeKeypair,
+  forgeAgentURI,
+  IDENTITY_ABI,
+  ERC8004_IDENTITY,
   registerForgeEvm,
   RpcSubmitter,
 } from "@weaver/settlement";
 import { FluxKleinForge, OllamaMLXAdapter, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
-import { initConfig, loadConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
+import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
 import { connectLoop } from "./ws.ts";
 
 const CONFIG_PATH = join(homedir(), ".weaver", "forge.json");
@@ -126,6 +129,28 @@ function makeClaimer(cfg: ForgeConfig, contractId: string) {
   };
 }
 
+// ERC-8004 (EVM): el forge registra SU agente en el Identity Registry
+// canónico — owner = su propia key (identidad portable, no de la plataforma).
+// Registra con register() y luego setAgentURI (el register(uri) revierte con
+// algunos formatos — dos txs explícitas, comprobado en testnet).
+async function ensureAgentId(cfg: ForgeConfig, escrow?: string): Promise<number | undefined> {
+  if (cfg.chain !== "evm" || cfg.agentId !== undefined) return cfg.agentId;
+  const sub = new EvmSubmitter({
+    rpcUrl: arg("--rpc") ?? process.env.EVM_RPC_URL ?? "https://testnet-rpc.monad.xyz",
+    privateKey: cfg.secret as Hex,
+  });
+  const { retval } = await sub.invoke(ERC8004_IDENTITY, IDENTITY_ABI, "register", []);
+  const agentId = Number(retval);
+  const uri = forgeAgentURI({
+    name: `weaver-forge-${cfg.pubkey.slice(0, 8)}`,
+    model: cfg.instances[0]?.model ?? "unknown",
+    worker: cfg.pubkey as EvmAddress,
+    ...(escrow ? { escrow: escrow as EvmAddress } : {}),
+  });
+  await sub.invoke(ERC8004_IDENTITY, IDENTITY_ABI, "setAgentURI", [retval, uri]);
+  return agentId;
+}
+
 const cmd = process.argv[2];
 const cfgPath = arg("--config") ?? CONFIG_PATH;
 
@@ -208,9 +233,23 @@ siguiente paso: weaver-forge up`);
   if (contractId) {
     try {
       const tx = await registerForge(cfg, contractId);
-      console.log(`register_forge ✓ tx ${tx} (renueva TTL 30d)`);
+      console.log(`register_forge ✓ tx ${tx}${cfg.chain === "evm" ? "" : " (renueva TTL 30d)"}`);
     } catch (e) {
       console.warn(`register_forge falló — el forge no será fondeable hasta registrar:`, e);
+    }
+  }
+  // ERC-8004 (EVM): identidad portable del forge — register + setAgentURI en
+  // el primer boot; el agentId queda en config para los próximos.
+  if (cfg.chain === "evm" && cfg.agentId === undefined) {
+    try {
+      const agentId = await ensureAgentId(cfg, contractId);
+      if (agentId !== undefined) {
+        cfg.agentId = agentId;
+        saveConfig(cfgPath, cfg);
+        console.log(`erc-8004 agent registrado — agentId ${agentId} (owner ${cfg.pubkey.slice(0, 10)}…)`);
+      }
+    } catch (e) {
+      console.warn("erc-8004 register falló (sin gas/URI inválida) — sigo sin identidad on-chain:", e);
     }
   }
   console.log(`forge ${cfg.pubkey.slice(0, 16)}… levantando ${instances.length} instance(s):`);
@@ -223,6 +262,7 @@ siguiente paso: weaver-forge up`);
         instances,
         sign,
         ...(cfg.budgets ? { budgets: cfg.budgets } : {}),
+        ...(cfg.agentId !== undefined ? { agentId: cfg.agentId } : {}),
         ...(contractId ? { claim: makeClaimer(cfg, contractId) } : {}),
       }),
   );

@@ -18,6 +18,7 @@ type Session = {
   instances: InstanceReport[];
   attested: Set<string>; // instanceIds que pasaron el benchmark
   rttMs?: number; // medido por ping/pong (ws-server lo escribe)
+  agentId?: number; // ERC-8004 (EVM) — reportado por el heartbeat
 };
 
 export class ForgeRegistry {
@@ -48,7 +49,7 @@ export class ForgeRegistry {
   }
 
   // Heartbeat sin registro → false (el ws-server fuerza re-auth/close).
-  heartbeat(pubkey: string, instances: InstanceReport[]): boolean {
+  heartbeat(pubkey: string, instances: InstanceReport[], agentId?: number): boolean {
     const s = this.sessions.get(pubkey);
     if (!s) return false;
     // instanceId único POR FORGE: si el daemon repite id, el último gana
@@ -58,6 +59,7 @@ export class ForgeRegistry {
     // instanceId es handle global de routing: si OTRO forge ya lo reclama,
     // esta instance no entra (colisión honesta, no routing ambiguo).
     s.instances = [...dedup.values()].filter((i) => !this.claimedByOther(i.instanceId, pubkey));
+    if (agentId !== undefined) s.agentId = agentId;
     s.lastSeen = this.now();
     void this.store?.touch(pubkey, s.lastSeen).catch(() => {});
     return true;
@@ -143,6 +145,7 @@ export class ForgeRegistry {
           forgePubkey: s.pubkey,
           attested: s.attested.has(i.instanceId),
           remote: true,
+          ...(s.agentId !== undefined ? { forgeAgentId: s.agentId } : {}),
         });
       }
     }

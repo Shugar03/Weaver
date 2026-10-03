@@ -96,7 +96,7 @@ export class ForgeSession implements ForgeChannel {
         }
         this.lastHbAt = now;
         this.hbViolations = 0;
-        if (!this.registry.heartbeat(this._pubkey!, m.instances)) this.kill("heartbeat sin registro");
+        if (!this.registry.heartbeat(this._pubkey!, m.instances, m.agentId)) this.kill("heartbeat sin registro");
         break;
       }
       case "pong":

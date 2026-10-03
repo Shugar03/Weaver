@@ -24,7 +24,9 @@ export type InstanceReport = {
   loadTimeMs: number; // carga COLD estimada declarada por el forge
   price?: number; // USD/job que pide el forge (S2 scoring futuro)
 };
-export type HeartbeatMsg = { type: "heartbeat"; instances: InstanceReport[] };
+// agentId: identidad ERC-8004 del forge (EVM, opcional — forges Stellar no
+// la tienen). Va a nivel heartbeat, no por instance: es del dueño, no del slot.
+export type HeartbeatMsg = { type: "heartbeat"; instances: InstanceReport[]; agentId?: number };
 
 // Streaming de un job de texto — espejo del ForgeExec local.
 export type JobAckMsg = { type: "job.ack"; jobId: string }; // aceptó el assign (timeout sin ack = saturado/caido)
@@ -130,7 +132,12 @@ export function decode(raw: string): ForgeMsg | null {
       if (!Array.isArray(m.instances)) return null;
       const instances = m.instances.map(instanceReport);
       if (instances.some((i) => i === null)) return null;
-      return { type: "heartbeat", instances: instances as InstanceReport[] };
+      if (m.agentId !== undefined && !isNum(m.agentId)) return null;
+      return {
+        type: "heartbeat",
+        instances: instances as InstanceReport[],
+        ...(isNum(m.agentId) ? { agentId: m.agentId } : {}),
+      };
     }
     case "job.ack":
       if (!isStr(m.jobId)) return null;

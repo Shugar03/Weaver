@@ -16,6 +16,13 @@ export const IDENTITY_ABI = [
     type: "function",
     name: "register",
     stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "agentId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "register",
+    stateMutability: "nonpayable",
     inputs: [{ name: "agentURI", type: "string" }],
     outputs: [{ name: "agentId", type: "uint256" }],
   },
