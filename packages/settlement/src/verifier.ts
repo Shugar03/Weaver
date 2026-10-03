@@ -4,9 +4,16 @@
 // caído no puede voltear el gateway, solo cierra la puerta (false).
 export type PaymentRequirements = {
   scheme: "exact";
-  network: "stellar:testnet";
-  price: string;
+  // Stellar clásico o CAIP-2 EVM ("eip155:<chainId>" — Monad = eip155:10143).
+  network: "stellar:testnet" | `eip155:${number}`;
+  price?: string; // display "$0.01" — los facilitadores EVM usan amount/asset
   payTo: string;
+  // — x402 v2 canónico (facilitadores EVM exigen este shape) —
+  asset?: string; // token EIP-3009 (USDC en Monad)
+  amount?: string; // atomic units
+  resource?: string;
+  maxTimeoutSeconds?: number;
+  extra?: Record<string, unknown>; // EIP-712 domain: {name:"USDC",version:"2"}
 };
 
 // S23: settle = ejecutar el pago on-chain vía el facilitador (post-serve).
@@ -67,5 +74,64 @@ export class FacilitatorVerifier implements PaymentVerifier {
     } catch {
       return { success: false };
     }
+  }
+}
+
+// — ADR-0008: facilitador x402 v2 canónico (Monad) —
+// Wire distinto del clásico: POST {x402Version:2, paymentPayload:<objeto
+// decodificado>, paymentRequirements} — el X-PAYMENT header sigue siendo
+// base64(JSON) pero viaja decodificado en el body. SettleResponse usa
+// `transaction` (no txHash) y `payer`.
+type X402V2PaymentPayload = {
+  x402Version: number;
+  accepted?: unknown;
+  payload: Record<string, unknown>;
+  resource?: unknown;
+};
+
+export class EvmFacilitatorVerifier implements PaymentVerifier {
+  private readonly baseUrl: string;
+  private readonly fetchFn: FetchFn;
+
+  constructor(baseUrl = "https://x402-facilitator.molandak.org", fetchFn?: FetchFn) {
+    this.baseUrl = baseUrl;
+    this.fetchFn = fetchFn ?? ((url, init) => fetch(url, init));
+  }
+
+  private decode(header: string): X402V2PaymentPayload | null {
+    try {
+      const p = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as X402V2PaymentPayload;
+      return typeof p === "object" && p !== null && typeof p.payload === "object" ? p : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async call(path: string, header: string, req: PaymentRequirements): Promise<Record<string, unknown> | null> {
+    const paymentPayload = this.decode(header);
+    if (!paymentPayload) return null;
+    try {
+      const res = await this.fetchFn(`${this.baseUrl.replace(/\/$/, "")}/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ x402Version: 2, paymentPayload, paymentRequirements: req }),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  async verify(paymentHeader: string, req: PaymentRequirements): Promise<boolean> {
+    const json = await this.call("verify", paymentHeader, req);
+    return json?.isValid === true;
+  }
+
+  async settle(paymentHeader: string, req: PaymentRequirements): Promise<SettleResult> {
+    const json = await this.call("settle", paymentHeader, req);
+    if (json?.success !== true) return { success: false };
+    const txHash = (json.transaction ?? json.txHash) as string | undefined;
+    return { success: true, ...(txHash ? { txHash } : {}) };
   }
 }

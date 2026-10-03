@@ -2,7 +2,7 @@
 // El adapter real habla HTTP al facilitador; con fetch inyectado no necesita red.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { FakeVerifier, FacilitatorVerifier } from "../src/verifier.ts";
+import { FakeVerifier, FacilitatorVerifier, EvmFacilitatorVerifier } from "../src/verifier.ts";
 import { JOB_PRICE_USDC } from "../src/ports.ts";
 
 const REQS = { scheme: "exact", network: "stellar:testnet", price: "$0.01", payTo: "GTESTPAYTO" } as const;
@@ -56,6 +56,58 @@ describe("S4 FacilitatorVerifier", () => {
       throw new Error("facilitador caído");
     });
     assert.deepEqual(await down.settle("h", REQS), { success: false });
+  });
+});
+
+describe("ADR-0008 EvmFacilitatorVerifier (x402 v2 canónico)", () => {
+  const EVM_REQS = {
+    scheme: "exact",
+    network: "eip155:10143",
+    asset: "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+    amount: "10000",
+    payTo: "0xbaD8908CD47c0A47F31F35a45e5c8Ba14878aF3B",
+    maxTimeoutSeconds: 60,
+    extra: { name: "USDC", version: "2" },
+  } as const;
+  const HEADER = Buffer.from(
+    JSON.stringify({ x402Version: 2, accepted: {}, payload: { signature: "0xab" } }),
+  ).toString("base64");
+
+  it("decodifica el header base64 y POSTea paymentPayload como objeto", async () => {
+    const seen: { url?: string; body?: Record<string, unknown> } = {};
+    const fetchFn = async (url: string, init: RequestInit): Promise<Response> => {
+      seen.url = url;
+      seen.body = JSON.parse(init.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({ isValid: true }), { status: 200 });
+    };
+    const v = new EvmFacilitatorVerifier("https://facilitador.test", fetchFn);
+    assert.equal(await v.verify(HEADER, EVM_REQS), true);
+    assert.equal(seen.url, "https://facilitador.test/verify");
+    const pp = seen.body?.["paymentPayload"] as Record<string, unknown>;
+    assert.equal(typeof pp, "object");
+    assert.equal((pp.payload as Record<string, unknown>).signature, "0xab");
+    assert.equal((seen.body?.["paymentRequirements"] as Record<string, unknown>)?.["network"], "eip155:10143");
+  });
+
+  it("header no-decodificable → false sin llamar al facilitador", async () => {
+    let calls = 0;
+    const v = new EvmFacilitatorVerifier("https://x", async () => {
+      calls++;
+      return new Response("{}");
+    });
+    assert.equal(await v.verify("no-es-base64-json!!!", EVM_REQS), false);
+    assert.equal(calls, 0);
+  });
+
+  it("settle mapea `transaction` (v2) y `txHash` (v1) indistintamente", async () => {
+    const v2 = new EvmFacilitatorVerifier("https://x", async () =>
+      new Response(JSON.stringify({ success: true, transaction: "0xtx" }), { status: 200 }),
+    );
+    assert.deepEqual(await v2.settle(HEADER, EVM_REQS), { success: true, txHash: "0xtx" });
+    const down = new EvmFacilitatorVerifier("https://x", async () => {
+      throw new Error("down");
+    });
+    assert.deepEqual(await down.settle(HEADER, EVM_REQS), { success: false });
   });
 });
 

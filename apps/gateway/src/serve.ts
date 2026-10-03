@@ -31,6 +31,7 @@ import { DepositWatcher, EvmDepositWatcher, InMemoryAccountStore, InMemoryCredit
 import {
   EscrowSettlement,
   EvmEscrowSettlement,
+  EvmFacilitatorVerifier,
   EvmSubmitter,
   FacilitatorVerifier,
   InMemorySettleJournal,
@@ -531,7 +532,33 @@ const app = createApp({
     }
   },
   // S15a: paywall opt-in por env. Sin PAYWALL_PAY_TO, abierto (dev/demo).
-  ...(payTo ? { paywall: { verifier: new FacilitatorVerifier(), payTo } } : {}),
+  // EVM (ADR-0008): x402 v2 canónico — EvmFacilitatorVerifier contra el
+  // facilitador de Monad (paymentPayload decodificado, no string), network
+  // eip155:10143, requirements con asset/amount/extra EIP-3009. El cliente
+  // firma una autorización transferWithAuthorization — gasless para él.
+  ...(payTo
+    ? {
+        paywall:
+          SETTLE_CHAIN === "evm"
+            ? {
+                verifier: new EvmFacilitatorVerifier(process.env.X402_FACILITATOR ?? "https://x402-facilitator.molandak.org"),
+                payTo,
+                network: "eip155:10143" as const,
+                requirements: {
+                  asset: (process.env.EVM_USDC ?? MONAD_USDC) as string,
+                  amount: process.env.X402_AMOUNT ?? "10000", // $0.01 USDC (6 dec)
+                  resource: process.env.X402_RESOURCE ?? "https://weaver.network/v1/chat/completions",
+                  maxTimeoutSeconds: 60,
+                  extra: { name: "USDC", version: "2" },
+                },
+              }
+            : {
+                verifier: new FacilitatorVerifier(process.env.X402_FACILITATOR ?? "https://channels.openzeppelin.com/x402/testnet"),
+                payTo,
+                network: "stellar:testnet" as const,
+              },
+      }
+    : {}),
   // S17b/S42: liquidación opt-in. El operador DERIVA de SETTLEMENT_SECRET (su
   // pubkey — un G... hardcodeado desalineado dejaría toda tx sin auth).
   // SETTLEMENT_CONTRACT es obligatorio: sin default — un contractId stale

@@ -25,7 +25,16 @@ async function parseJson<T>(c: Context): Promise<T | null> {
 }
 const badJson = { error: "json inválido", code: "bad_json" };
 
-export type Paywall = { verifier: PaymentVerifier; payTo: string };
+// network: red del x402 (default stellar:testnet; "eip155:10143" en Monad).
+// requirements: campos extra del paymentRequirements (EVM v2 canónico:
+// asset/amount/maxTimeoutSeconds/extra/resource — sin ellos el facilitador
+// no puede validar la autorización EIP-3009).
+export type Paywall = {
+  verifier: PaymentVerifier;
+  payTo: string;
+  network?: PaymentRequirements["network"];
+  requirements?: Partial<PaymentRequirements>;
+};
 // setDead(forgeId, dead): true = el forge existe y quedó en ese estado;
 // false = el root no controla ese forgeId (404 honesto). forgeId undefined =
 // el default que decida el composition root (serve.ts: el primario).
@@ -206,14 +215,31 @@ export function createApp(deps: Deps) {
         await next();
         return;
       }
-      const requirements: PaymentRequirements = { scheme: "exact", network: "stellar:testnet", price: "$0.01", payTo };
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: deps.paywall!.network ?? "stellar:testnet",
+        price: "$0.01",
+        payTo,
+        ...(deps.paywall!.requirements ?? {}),
+      };
       if (c.get("keyId")) {
         await next(); // key válida: cliente identificado (allowlist dev), el cobro va por otro canal
         return;
       }
       const header = c.req.header("x-payment");
       const ok = header ? await verifier.verify(header, requirements) : false;
-      if (!ok) return c.json({ x402Version: 2, error: "pago requerido", accepts: [requirements] }, 402);
+      // x402 v2: `resource` a nivel top del body (los clients EVM lo exigen).
+      if (!ok) {
+        return c.json(
+          {
+            x402Version: 2,
+            error: "pago requerido",
+            accepts: [requirements],
+            ...(requirements.resource ? { resource: { url: requirements.resource } } : {}),
+          },
+          402,
+        );
+      }
       // S23: verify autoriza; el settle (cobro real) corre post-serve en el handler.
       c.set("paymentHeader", header);
       c.set("paymentReqs", requirements);
