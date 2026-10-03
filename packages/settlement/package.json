@@ -15,5 +15,8 @@
     "@weaver/db": "workspace:^",
     "drizzle-orm": "0.45.2",
     "viem": "2.40.2"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
   }
 }

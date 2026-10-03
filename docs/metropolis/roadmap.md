@@ -96,12 +96,12 @@
 
 **D9 · 11 Oct**
 - [ ] Submission en Devfolio: video, write-up, repo, links de contratos
-- [ ] Bounty applications: Mera, MetaMask Delegation, Envio, Alchemy
+- [ ] Bounty applications (formulario Devfolio): implementación lista — Mera, MetaMask Delegation, Envio, Alchemy
 
-**D10 · 12 Oct**
-- [ ] (Stretch) `acct_` → Mera passkey → EOA (bounty Mera ×2)
-- [ ] (Stretch) Envio indexer escrow+reputation → dashboard live
-- [ ] (Stretch) MetaMask delegation: presupuesto acotado → agente Weaver
+**D10 · 12 Oct (Adelantado & Completado)**
+- [x] (Stretch) `acct_` → Mera passkey → EOA (bounty Mera ×2) ✓
+- [x] (Stretch) Envio indexer escrow+reputation → dashboard live (`indexer/`) ✓
+- [x] (Stretch) MetaMask delegation: presupuesto acotado → agente Weaver (`packages/settlement`) ✓
 
 **D11 · 13 Oct**
 - [ ] SUBMIT. Nada nuevo hoy — solo fixes del formulario.

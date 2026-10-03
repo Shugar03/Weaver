@@ -1,0 +1,2196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Weaver — The New Datacenter Has No Walls | Technical Explainer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <style>
+    :root {
+      --void: #000000;
+      --panel: #070707;
+      --panel-elevated: #0d0d0d;
+      --line: #1c1c1c;
+      --line-bright: #2d2d2d;
+      --fog: #858585;
+      --fog-dim: #444444;
+      --white: #ededed;
+      --lima: #d0ff00;
+      --lima-glow: rgba(208, 255, 0, 0.18);
+      --danger: #ff3b3b;
+      --danger-glow: rgba(255, 59, 59, 0.2);
+      --cyan: #38bdf8;
+      --amber: #f59e0b;
+      --font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border-radius: 0 !important; /* Industrial Brutalism: 90 deg corners strictly */
+    }
+
+    html {
+      background: var(--void);
+      color: var(--white);
+      font-family: var(--font-display);
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: #2a2a2a #000000;
+    }
+
+    body {
+      background: var(--void);
+      line-height: 1.5;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    ::selection {
+      background: var(--lima);
+      color: var(--void);
+    }
+
+    /* CRT scanlines & subtle tactical grid */
+    .bg-scanlines {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 99;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.35) 2px,
+        rgba(0, 0, 0, 0.35) 4px
+      );
+      opacity: 0.7;
+    }
+
+    .bg-grid-dots {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1;
+      background-image: radial-gradient(rgba(208, 255, 0, 0.08) 1px, transparent 1px);
+      background-size: 32px 32px;
+      opacity: 0.6;
+    }
+
+    /* Top telemetry header */
+    .telemetry-bar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.92);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-group {
+      display: flex;
+      align-items: center;
+      gap: 1.2rem;
+      flex-wrap: wrap;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      background: var(--lima);
+      box-shadow: 0 0 8px var(--lima);
+      animation: pulse-dot 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .telemetry-link {
+      color: var(--fog);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+    .telemetry-link:hover {
+      color: var(--lima);
+    }
+
+    /* Container */
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* Section framing */
+    section {
+      padding: 4.5rem 0;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+
+    .section-tag {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.2em;
+      color: var(--fog);
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .section-tag span.slash {
+      color: var(--lima);
+    }
+
+    .section-title {
+      font-size: clamp(2rem, 4.5vw, 3.8rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+      text-transform: uppercase;
+      margin-bottom: 1.25rem;
+    }
+
+    .section-desc {
+      color: var(--fog);
+      font-size: 1.05rem;
+      max-width: 68ch;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+    }
+
+    .lima-text {
+      color: var(--lima);
+    }
+
+    .danger-text {
+      color: var(--danger);
+    }
+
+    .fog-text {
+      color: var(--fog);
+    }
+
+    /* Corner Marks */
+    .corner-box {
+      position: relative;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 1.75rem;
+    }
+
+    .corner-mark {
+      position: absolute;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--lima);
+      line-height: 1;
+      pointer-events: none;
+    }
+    .corner-mark.tl { top: 4px; left: 6px; }
+    .corner-mark.tr { top: 4px; right: 6px; }
+    .corner-mark.bl { bottom: 4px; left: 6px; }
+    .corner-mark.br { bottom: 4px; right: 6px; }
+
+    /* Hero section */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 2.5rem;
+      align-items: center;
+      min-height: 80vh;
+      padding: 3rem 0;
+    }
+
+    @media (max-width: 900px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      border: 1px solid var(--line-bright);
+      background: #000;
+      padding: 0.35rem 0.8rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.15em;
+      color: var(--lima);
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-h1 {
+      font-size: clamp(2.8rem, 6.5vw, 5.2rem);
+      font-weight: 700;
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+      text-transform: uppercase;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .btn-brutal {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.85rem 1.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+
+    .btn-lima {
+      background: var(--lima);
+      color: #000;
+      border-color: var(--lima);
+    }
+    .btn-lima:hover {
+      background: #e2ff40;
+      box-shadow: 0 0 16px var(--lima-glow);
+      transform: translateY(-1px);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--white);
+      border-color: var(--line-bright);
+    }
+    .btn-outline:hover {
+      border-color: var(--lima);
+      color: var(--lima);
+    }
+
+    .btn-danger {
+      background: rgba(255, 59, 59, 0.12);
+      color: var(--danger);
+      border-color: var(--danger);
+    }
+    .btn-danger:hover {
+      background: var(--danger);
+      color: #000;
+      box-shadow: 0 0 16px var(--danger-glow);
+    }
+
+    /* Spider Icon / Visual Card */
+    .hero-visual-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 2rem;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 400px;
+    }
+
+    .spider-art {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 2rem 0;
+    }
+
+    .spider-svg {
+      width: 140px;
+      height: 140px;
+      filter: drop-shadow(0 0 18px var(--lima-glow));
+    }
+
+    /* Thesis comparison table */
+    .thesis-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      .thesis-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .thesis-card {
+      background: var(--panel);
+      padding: 2.2rem;
+      position: relative;
+    }
+
+    .thesis-card.highlight {
+      background: #090e02;
+      border: 1px solid var(--lima);
+      margin: -1px;
+      z-index: 2;
+    }
+
+    .thesis-metric {
+      font-size: clamp(2.2rem, 4vw, 3.4rem);
+      font-family: var(--font-mono);
+      font-weight: 700;
+      line-height: 1;
+      margin: 1rem 0 0.5rem;
+    }
+
+    /* Competitor Pain points */
+    .toll-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-top: 2rem;
+    }
+
+    .toll-cell {
+      background: var(--panel);
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .toll-source {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--fog-dim);
+      margin-top: 1.25rem;
+    }
+
+    /* ==========================================
+       INTERACTIVE PIPELINE SIMULATOR (CORE FEATURE)
+       ========================================= */
+    .simulator-wrapper {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      margin-top: 2rem;
+      position: relative;
+    }
+
+    .simulator-header {
+      border-bottom: 1px solid var(--line);
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      background: #020202;
+    }
+
+    .simulator-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .sim-status-banner {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      padding: 0.35rem 0.8rem;
+      border: 1px solid var(--line);
+      background: #000;
+    }
+
+    /* Pipeline nodes grid */
+    .pipeline-nodes {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    @media (max-width: 1024px) {
+      .pipeline-nodes {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .pipeline-step {
+      background: var(--panel);
+      padding: 1.5rem 1.2rem;
+      position: relative;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .pipeline-step.active {
+      background: #0c1202;
+      box-shadow: inset 0 0 20px var(--lima-glow);
+    }
+
+    .pipeline-step.active .step-num {
+      color: var(--lima);
+    }
+
+    .pipeline-step.failed {
+      background: #180404;
+      box-shadow: inset 0 0 20px var(--danger-glow);
+    }
+
+    .step-num {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--fog);
+      letter-spacing: 0.2em;
+      margin-bottom: 0.5rem;
+      display: block;
+    }
+
+    .step-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.5rem;
+    }
+
+    .step-desc {
+      font-size: 0.82rem;
+      color: var(--fog);
+      line-height: 1.45;
+    }
+
+    .step-indicator {
+      margin-top: 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--fog-dim);
+      padding: 0.3rem 0.5rem;
+      background: #000;
+      border: 1px solid var(--line);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Live Telemetry Monitor under pipeline */
+    .sim-telemetry-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 1px;
+      background: var(--line);
+    }
+
+    @media (max-width: 900px) {
+      .sim-telemetry-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .terminal-pane {
+      background: #000000;
+      padding: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: #b5b5b5;
+      min-height: 260px;
+      max-height: 320px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+
+    .terminal-line {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .t-time {
+      color: var(--fog-dim);
+      flex-shrink: 0;
+    }
+
+    .t-tag {
+      color: var(--lima);
+      flex-shrink: 0;
+    }
+
+    .t-tag.err {
+      color: var(--danger);
+    }
+
+    .t-tag.stellar {
+      color: var(--cyan);
+    }
+
+    /* Forge matrix monitor */
+    .forge-matrix-pane {
+      background: var(--panel-elevated);
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .forge-card {
+      border: 1px solid var(--line);
+      background: #000;
+      padding: 0.9rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.2s ease;
+    }
+
+    .forge-card.selected {
+      border-color: var(--lima);
+      background: #070e00;
+    }
+
+    .forge-card.killed {
+      border-color: var(--danger);
+      background: #140202;
+    }
+
+    .forge-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .forge-name {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 700;
+    }
+
+    .forge-meta {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--fog);
+    }
+
+    .badge-pill {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      padding: 0.2rem 0.5rem;
+      text-transform: uppercase;
+      border: 1px solid;
+    }
+
+    .badge-hot {
+      background: rgba(208, 255, 0, 0.1);
+      color: var(--lima);
+      border-color: var(--lima);
+    }
+
+    .badge-cold {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--fog);
+      border-color: var(--line);
+    }
+
+    .badge-dead {
+      background: rgba(255, 59, 59, 0.15);
+      color: var(--danger);
+      border-color: var(--danger);
+    }
+
+    /* Math formula callout */
+    .formula-box {
+      border-left: 2px solid var(--lima);
+      background: #050800;
+      padding: 1.2rem 1.5rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+    }
+
+    /* Stellar proof cards */
+    .stellar-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 900px) {
+      .stellar-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .stellar-card {
+      background: var(--panel);
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .hash-snippet {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--lima);
+      background: #000;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--line);
+      word-break: break-all;
+      margin: 0.75rem 0;
+    }
+
+    /* Repo architecture explorer */
+    .arch-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-top: 2rem;
+    }
+
+    .arch-cell {
+      background: var(--panel);
+      padding: 1.5rem;
+    }
+
+    .arch-path {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--lima);
+      margin-bottom: 0.5rem;
+      display: block;
+    }
+
+    /* Glossary grid */
+    .glossary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin-top: 2rem;
+    }
+
+    .glossary-item {
+      background: var(--panel);
+      padding: 1.4rem;
+    }
+
+    .glossary-term {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--white);
+      margin-bottom: 0.4rem;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* Footer */
+    footer {
+      padding: 3rem 0;
+      border-top: 1px solid var(--line);
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--fog);
+    }
+
+    .footer-inner {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    /* ==========================================
+       ARCHITECTURE DIAGRAM STYLES
+       ========================================== */
+    .arch-diagram-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 1.5rem;
+      margin-top: 1.5rem;
+      position: relative;
+    }
+
+    .arch-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .arch-modes {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .arch-mode-btn {
+      padding: 0.45rem 0.9rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      background: #000;
+      color: var(--fog);
+      border: 1px solid var(--line);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .arch-mode-btn.active {
+      background: var(--lima);
+      color: #000;
+      border-color: var(--lima);
+      box-shadow: 0 0 12px var(--lima-glow);
+    }
+
+    .arch-mode-btn.active.failover {
+      background: var(--danger);
+      color: #000;
+      border-color: var(--danger);
+      box-shadow: 0 0 12px var(--danger-glow);
+    }
+
+    .arch-mode-btn.active.privacy {
+      background: var(--cyan);
+      color: #000;
+      border-color: var(--cyan);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+    }
+
+    .arch-svg-container {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      background: #020202;
+    }
+
+    .arch-svg {
+      width: 100%;
+      min-width: 960px;
+      height: auto;
+      display: block;
+    }
+
+    .node-box {
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .node-box:hover rect.node-bg {
+      filter: brightness(1.35);
+      stroke-width: 2.2px;
+    }
+
+    .arch-inspector {
+      margin-top: 1.5rem;
+      border: 1px solid var(--line);
+      background: #050505;
+      padding: 1.25rem 1.5rem;
+      font-family: var(--font-mono);
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 768px) {
+      .arch-inspector {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @keyframes dash-pulse {
+      to {
+        stroke-dashoffset: -40;
+      }
+    }
+
+    .flow-line {
+      stroke-dasharray: 6 6;
+      animation: dash-pulse 1.4s linear infinite;
+    }
+
+    .flow-line.failover-line {
+      animation: dash-pulse 0.7s linear infinite;
+    }
+
+    /* Progress bar */
+    #reading-progress {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 2px;
+      background: var(--lima);
+      z-index: 1000;
+      width: 0%;
+      box-shadow: 0 0 10px var(--lima);
+    }
+  </style>
+</head>
+<body>
+  <!-- Reading Progress Bar -->
+  <div id="reading-progress"></div>
+
+  <!-- Background Scanlines & Dithering Overlay -->
+  <div class="bg-scanlines"></div>
+  <div class="bg-grid-dots"></div>
+
+  <!-- Top Tactical Telemetry Header -->
+  <header class="telemetry-bar">
+    <div class="telemetry-group">
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span class="status-dot"></span>
+        <strong style="color: var(--white); letter-spacing: 0.2em;">WEAVER</strong>
+        <span style="color: var(--fog-dim);">//</span>
+        <span style="color: var(--lima);">v3.0.0-PROD</span>
+      </div>
+      <span style="color: var(--fog-dim);">|</span>
+      <span>STELLAR TESTNET: <a href="https://stellar.expert/explorer/testnet/contract/CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB" target="_blank" rel="noreferrer" class="telemetry-link">CDHD...SENB ↗</a></span>
+      <span style="color: var(--fog-dim);">|</span>
+      <span>SETTLEMENT: USDC SAC</span>
+    </div>
+    <div class="telemetry-group">
+      <a href="#diagram" class="telemetry-link">[ DIAGRAMA ]</a>
+      <a href="#simulator" class="telemetry-link">[ SIMULADOR ]</a>
+      <a href="#failover" class="telemetry-link">[ FAILOVER ]</a>
+      <a href="#stellar" class="telemetry-link">[ SOROBAN ESCROW ]</a>
+      <a href="#architecture" class="telemetry-link">[ MÓDULOS REPO ]</a>
+      <span style="color: var(--lima);" id="clock-utc">00:00:00 UTC</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- ==========================================
+         HERO SECTION
+         ========================================== -->
+    <section id="hero" style="border-bottom: 1px solid var(--line);">
+      <div class="hero-grid">
+        <div>
+          <div class="hero-badge">
+            <span>[ 001 ]</span>
+            <span>OPEN COMPUTE PROTOCOL</span>
+            <span style="color: var(--white);">//</span>
+            <span>ARGENTINA BUILDER CHALLENGE</span>
+          </div>
+          <h1 class="hero-h1">
+            THE NEW<br>
+            DATACENTER<br>
+            HAS NO WALLS<span class="lima-text">.</span>
+          </h1>
+          <p class="section-desc">
+            Weaver es una red de cómputo descentralizada para inferencia de modelos de IA abiertos.
+            Enruta cada request al nodo más rápido y barato según <strong style="color: var(--white);">ETR medido</strong>,
+            sobrevive a caídas de servidores mediante <strong style="color: var(--white);">failover en vivo</strong>,
+            y liquida cada job en USDC vía contratos inteligentes de <strong style="color: var(--white);">Soroban sobre Stellar</strong>.
+            Sin suscripciones, sin saldo atrapado, y sin guardar jamás tus prompts.
+          </p>
+
+          <div class="hero-actions">
+            <a href="#simulator" class="btn-brutal btn-lima">Probar Simulador Interactivo →</a>
+            <a href="#failover" class="btn-brutal btn-outline">Ver Demo de Failover</a>
+            <a href="https://github.com/Shugar03/Weaver" target="_blank" rel="noreferrer" class="btn-brutal btn-outline">GitHub Repo ↗</a>
+          </div>
+        </div>
+
+        <div class="hero-visual-card">
+          <span class="corner-mark tl">+</span>
+          <span class="corner-mark tr">+</span>
+          <span class="corner-mark bl">+</span>
+          <span class="corner-mark br">+</span>
+
+          <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.75rem; color: var(--fog);">
+            <span>TELEMETRÍA DE RED</span>
+            <span class="lima-text">STATUS: ACTIVE</span>
+          </div>
+
+          <div class="spider-art">
+            <!-- Custom Stylized Weaver Spider SVG -->
+            <svg class="spider-svg" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="50" cy="50" r="46" stroke="#1c1c1c" stroke-width="1" stroke-dasharray="3 3"/>
+              <circle cx="50" cy="50" r="28" stroke="#2a2a2a" stroke-width="1"/>
+              <!-- Central Body (W) -->
+              <polygon points="50,22 62,38 58,68 50,78 42,68 38,38" stroke="#d0ff00" stroke-width="2" fill="#080f00"/>
+              <!-- Cross lines -->
+              <line x1="50" y1="22" x2="50" y2="78" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="2 2"/>
+              <!-- Legs Left -->
+              <polyline points="40,36 20,24 10,38" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <polyline points="40,46 16,46 8,60" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <polyline points="42,56 22,66 14,82" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <!-- Legs Right -->
+              <polyline points="60,36 80,24 90,38" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <polyline points="60,46 84,46 92,60" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <polyline points="62,56 78,66 86,82" stroke="#d0ff00" stroke-width="1.8" stroke-linecap="square"/>
+              <!-- Target indicators -->
+              <circle cx="50" cy="50" r="4" fill="#d0ff00"/>
+            </svg>
+          </div>
+
+          <div style="border-top: 1px solid var(--line); padding-top: 1rem; font-family: var(--font-mono); font-size: 0.75rem; color: var(--fog); line-height: 1.7;">
+            <div>MODEL: <strong style="color: var(--white);">qwen3:4b (MLX / Metal)</strong></div>
+            <div>VERIFICACIÓN: <span class="lima-text">Proof L0 (ed25519) + Soroban</span></div>
+            <div>LATENCIA BASE (TTFT): <span class="lima-text">~0.18s (HOT state)</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 1: LA TESIS FUNDAMENTAL
+         ========================================== -->
+    <section id="thesis">
+      <div class="section-tag"><span class="slash">//</span> 01 — LA TESIS TÉCNICA</div>
+      <h2 class="section-title">EL SILICIO YA ESTÁ AFUERA<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        Existe un mito en la industria: creer que para servir inteligencia artificial necesitás obligatoriamente los clusters gigantescos de las tres grandes nubes. La física y la computación demuestran lo contrario cuando distinguimos entrenamiento de inferencia.
+      </p>
+
+      <div class="thesis-grid">
+        <div class="thesis-card">
+          <span class="corner-mark tl">+</span>
+          <span class="corner-mark tr">+</span>
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--fog);">[ TAREA 01 ]</div>
+          <h3 style="font-size: 1.6rem; font-weight: 700; margin-top: 0.5rem;">ENTRENAMIENTO (TRAINING)</h3>
+          <p style="color: var(--fog); font-size: 0.9rem; margin-top: 0.75rem;">
+            Requiere comunicación síncrona continua entre miles de GPUs. Necesita interconexiones de hardware extremas (InfiniBand / RDMA a 400–800 Gbps y latencias de microsegundos).
+          </p>
+          <div class="thesis-metric danger-text">NO DESCENTRALIZABLE</div>
+          <p style="color: var(--fog-dim); font-size: 0.8rem; font-family: var(--font-mono);">
+            Amdahl + latencia residencial = imposible sobre conexiones hogareñas.
+          </p>
+        </div>
+
+        <div class="thesis-card highlight">
+          <span class="corner-mark tl">+</span>
+          <span class="corner-mark tr">+</span>
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima);">[ TAREA 02 ] — LO QUE HACE WEAVER</div>
+          <h3 style="font-size: 1.6rem; font-weight: 700; margin-top: 0.5rem;">INFERENCIA (INFERENCE)</h3>
+          <p style="color: var(--white); font-size: 0.9rem; margin-top: 0.75rem;">
+            Es un problema <strong class="lima-text">embarrassingly parallel</strong>. Cada request o prompt es 100% independiente. No requiere cruzar datos entre nodos vecinos en tiempo real.
+          </p>
+          <div class="thesis-metric lima-text">70%–85% SILICIO OCIOSO</div>
+          <p style="color: var(--fog); font-size: 0.8rem; font-family: var(--font-mono);">
+            1.5B PCs + 4.5B dispositivos móviles vs solo 35M servidores en datacenters saturados.
+          </p>
+        </div>
+      </div>
+
+      <div class="corner-box" style="margin-top: 1.5rem; background: #030303;">
+        <span class="corner-mark bl">└</span>
+        <span class="corner-mark br">┘</span>
+        <div style="font-family: var(--font-mono); font-size: 0.85rem; color: var(--lima); margin-bottom: 0.5rem;">
+          [ EVIDENCIA HISTÓRICA: FOLDING@HOME ]
+        </div>
+        <p style="font-size: 0.92rem; color: var(--fog); line-height: 1.6;">
+          En marzo de 2020, durante la pandemia, la red distribuida de voluntarios <em>Folding@home</em> superó los <strong>2.4 ExaFLOPS</strong> combinando GPUs y CPUs hogareñas en desuso, batiendo la potencia de las 500 supercomputadoras más rápidas del planeta juntas. La potencia ya existe; faltaba la capa de orquestación, resiliencia y liquidación económica confiable. Eso es Weaver.
+        </p>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 2: EL PEAJE DE LOS GATEWAYS ACTUALES
+         ========================================== -->
+    <section id="the-toll">
+      <div class="section-tag"><span class="slash">//</span> 02 — EL ENEMIGO ES EL PEAJE</div>
+      <h2 class="section-title">LOS MODELOS ABIERTOS GANARON, PERO TE COBRAN POR PASAR<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        La demanda de tokens explotó (Google multiplicó x300 el volumen en dos años). Sin embargo, para usar modelos de código abierto hoy estás atado a gateways centralizados que añaden fricción artificial.
+      </p>
+
+      <div class="toll-grid">
+        <div class="toll-cell">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--danger); font-weight: 700;">PEAJE #1</div>
+            <h4 style="font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0;">Comisión por Recarga</h4>
+            <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+              Para consumir tokens te obligan a precargar saldo. OpenRouter cobra <strong>5.5% (mínimo $0.80)</strong> y 8% en plan Business solo por ingresar tu propio dinero a la plataforma.
+            </p>
+          </div>
+          <div class="toll-source">Fuente: OpenRouter Docs & Pricing 2025/2026</div>
+        </div>
+
+        <div class="toll-cell">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--danger); font-weight: 700;">PEAJE #2</div>
+            <h4 style="font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0;">Cero Garantías de SLA</h4>
+            <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+              OpenRouter Términos §5.4: disponibilidad bajo esquema "as-available". Fireworks y Together en serverless no otorgan garantías de latencia ni de disponibilidad. Si hay pico, tu request se cuelga.
+            </p>
+          </div>
+          <div class="toll-source">Fuente: Terms of Service / SLAs públicos</div>
+        </div>
+
+        <div class="toll-cell">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--danger); font-weight: 700;">PEAJE #3</div>
+            <h4 style="font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0;">Racionamiento en Suscripciones</h4>
+            <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+              Suscripciones como OpenCode Go ($10/mes) imponen techos arbitrarios (ej. límite de $15 en modelos premium). Estás pagando una membresía fija para que te racionen modelos que son de código abierto.
+            </p>
+          </div>
+          <div class="toll-source">Fuente: OpenCode Go Specs</div>
+        </div>
+
+        <div class="toll-cell" style="background: #081001; border: 1px solid var(--lima);">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima); font-weight: 700;">LA SOLUCIÓN WEAVER</div>
+            <h4 style="font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0; color: var(--white);">Pago Exacto x402 en Stellar</h4>
+            <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+              Sin suscripciones, sin saldo atrapado. Cada request se liquida individualmente en USDC a través de un contrato inteligente Soroban. Pagás solo por lo que computás.
+            </p>
+          </div>
+          <div class="toll-source lima-text">Soroban Smart Contract // Atomic Pay</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 3: DIAGRAMA DE ARQUITECTURA SIMPLIFICADA
+         ========================================== -->
+    <section id="diagram">
+      <div class="section-tag"><span class="slash">//</span> 03 — ARQUITECTURA DEL SISTEMA</div>
+      <h2 class="section-title">DIAGRAMA DE ARQUITECTURA SIMPLIFICADA<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        Weaver desacopla totalmente el cómputo de la plata. Dos planos independientes: cómputo efímero en memoria RAM volátil (Off-Chain) y liquidación económica atómica en Soroban (On-Chain). Hacé clic en cualquier bloque o cambiá de modo para explorar.
+      </p>
+
+      <div class="arch-diagram-card">
+        <span class="corner-mark tl">+</span>
+        <span class="corner-mark tr">+</span>
+        <span class="corner-mark bl">+</span>
+        <span class="corner-mark br">+</span>
+
+        <!-- Selector de modos interactivos -->
+        <div class="arch-toolbar">
+          <div class="arch-modes">
+            <button id="arch-mode-normal" class="arch-mode-btn active" onclick="setArchMode('normal')">
+              [ 01 ] FLUJO ESTÁNDAR (HOT)
+            </button>
+            <button id="arch-mode-failover" class="arch-mode-btn" onclick="setArchMode('failover')">
+              [ 02 ] SIMULAR FAILOVER EN VUELO
+            </button>
+            <button id="arch-mode-privacy" class="arch-mode-btn" onclick="setArchMode('privacy')">
+              [ 03 ] LÍMITES DE PRIVACIDAD (ZERO DATA)
+            </button>
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--fog);">
+            HACÉ CLIC EN CUALQUIER CAJA PARA INSPECCIONAR CONTRATO
+          </div>
+        </div>
+
+        <!-- SVG Architecture Diagram Canvas -->
+        <div class="arch-svg-container">
+          <svg viewBox="0 0 1140 700" class="arch-svg" id="arch-svg-diagram" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="arrow-lima" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 10 5 L 0 9 z" fill="#d0ff00"/>
+              </marker>
+              <marker id="arrow-cyan" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+              </marker>
+              <marker id="arrow-red" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 10 5 L 0 9 z" fill="#ff3b3b"/>
+              </marker>
+              <marker id="arrow-gray" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1 L 10 5 L 0 9 z" fill="#555555"/>
+              </marker>
+            </defs>
+
+            <!-- ==========================================
+                 PLANO 1: CÓMPUTO PRIVADO (OFF-CHAIN)
+                 ========================================== -->
+            <rect id="plane-compute" x="15" y="15" width="760" height="670" fill="#040901" stroke="#d0ff00" stroke-width="1.2" stroke-dasharray="8 6"/>
+            <text x="35" y="42" fill="#d0ff00" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" letter-spacing="1">
+              // PLANO DE CÓMPUTO PRIVADO (OFF-CHAIN) · RAM VOLÁTIL · CERO DISCO
+            </text>
+
+            <!-- ==========================================
+                 PLANO 2: SETTLEMENT ON-CHAIN (STELLAR)
+                 ========================================== -->
+            <rect id="plane-stellar" x="795" y="15" width="330" height="670" fill="#010810" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="8 6"/>
+            <text x="815" y="42" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" letter-spacing="1">
+              // PLANO ECONÓMICO (ON-CHAIN) · SOROBAN
+            </text>
+
+            <!-- ==========================================
+                 CONEXIONES Y RUTAS (PATHS)
+                 ========================================== -->
+            <!-- Client -> Gateway -->
+            <path id="path-client-gateway" d="M 395 130 L 395 175" stroke="#d0ff00" stroke-width="2" class="flow-line" marker-end="url(#arrow-lima)"/>
+            <text x="405" y="155" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="10">SSE Stream</text>
+
+            <!-- Client -> Soroban (x402 fund_job) -->
+            <path id="path-client-stellar" d="M 595 97 L 960 97 L 960 175" stroke="#38bdf8" stroke-width="2" class="flow-line" marker-end="url(#arrow-cyan)"/>
+            <text x="760" y="88" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">x402: fund_job(0.01 USDC)</text>
+
+            <!-- Gateway -> Scheduler -->
+            <path id="path-gateway-scheduler" d="M 395 245 L 395 290" stroke="#d0ff00" stroke-width="2" class="flow-line" marker-end="url(#arrow-lima)"/>
+            <text x="405" y="270" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="10">select(job, forges)</text>
+
+            <!-- Scheduler -> Forge 1 (Primary HOT) -->
+            <path id="path-sched-f1" d="M 275 365 L 275 395 L 205 395 L 205 420" stroke="#d0ff00" stroke-width="2" class="flow-line" marker-end="url(#arrow-lima)"/>
+            <text x="215" y="388" fill="#d0ff00" font-family="'JetBrains Mono', monospace" font-size="10">ETR óptimo (HOT)</text>
+
+            <!-- Scheduler -> Forge 2 (Standby SIM) -->
+            <path id="path-sched-f2" d="M 515 365 L 515 395 L 585 395 L 585 420" stroke="#555555" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow-gray)"/>
+            <text x="595" y="388" fill="#555555" font-family="'JetBrains Mono', monospace" font-size="10" id="svg-text-f2-route">Ruta de contingencia</text>
+
+            <!-- Failover Bridge (Forge 1 -> Forge 2) -->
+            <path id="path-failover-bridge" d="M 365 465 L 425 465" stroke="#ff3b3b" stroke-width="2.5" stroke-dasharray="5 3" class="flow-line failover-line" marker-end="url(#arrow-red)"/>
+            <text x="395" y="455" fill="#ff3b3b" font-family="'JetBrains Mono', monospace" font-size="9" text-anchor="middle" font-weight="700" id="svg-failover-label">
+              FAILOVER EN VUELO (&lt;50ms)
+            </text>
+
+            <!-- Forge 1 -> Proof L0 -->
+            <path id="path-f1-proof" d="M 205 510 L 205 535 L 340 535 L 340 560" stroke="#d0ff00" stroke-width="2" class="flow-line" marker-end="url(#arrow-lima)"/>
+
+            <!-- Forge 2 -> Proof L0 -->
+            <path id="path-f2-proof" d="M 585 510 L 585 535 L 450 535 L 450 560" stroke="#555555" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow-gray)"/>
+
+            <!-- Proof L0 -> Soroban release() -->
+            <path id="path-proof-stellar" d="M 555 597 L 815 597" stroke="#38bdf8" stroke-width="2" class="flow-line" marker-end="url(#arrow-cyan)"/>
+            <text x="685" y="588" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">
+              release(result_hash, sig_ed25519)
+            </text>
+
+            <!-- ==========================================
+                 BLOQUES ARQUITECTÓNICOS (NODES)
+                 ========================================== -->
+            <!-- 1. CLIENTE / AGENTES -->
+            <g id="node-client" class="node-box" transform="translate(195, 65)" onclick="inspectNode('client')">
+              <rect width="400" height="65" fill="#0d0d0d" stroke="#2a2a2a" stroke-width="1.5" class="node-bg" id="svg-client-bg"/>
+              <text x="200" y="28" fill="#ffffff" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="14">
+                [ CLIENTE / AGENTES IA ]
+              </text>
+              <text x="200" y="48" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                Cursor · OpenCode · Web UI · POST /v1/chat/completions (SSE)
+              </text>
+            </g>
+
+            <!-- 2. WEAVER GATEWAY -->
+            <g id="node-gateway" class="node-box" transform="translate(195, 175)" onclick="inspectNode('gateway')">
+              <rect width="400" height="70" fill="#0a0f02" stroke="#d0ff00" stroke-width="1.5" class="node-bg" id="svg-gateway-bg"/>
+              <text x="200" y="28" fill="#d0ff00" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="14">
+                [ 1. WEAVER GATEWAY ] (apps/gateway)
+              </text>
+              <text x="200" y="48" fill="#cccccc" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                Hono Server · SSE Stream Proxy · Verificación x402 · API Keys
+              </text>
+            </g>
+
+            <!-- 3. SCHEDULER ENGINE -->
+            <g id="node-scheduler" class="node-box" transform="translate(155, 290)" onclick="inspectNode('scheduler')">
+              <rect width="480" height="75" fill="#060e01" stroke="#d0ff00" stroke-width="1.5" class="node-bg" id="svg-scheduler-bg"/>
+              <text x="240" y="28" fill="#d0ff00" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="14">
+                [ 2. SCHEDULER ENGINE ] (packages/scheduler)
+              </text>
+              <text x="240" y="48" fill="#ffffff" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                Algoritmo ETR: RTT + queue + load_si_COLD + prefill + gen + verify
+              </text>
+              <text x="240" y="64" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="10">
+                Política Warm-First: prioriza forges HOT (VRAM lista) para aniquilar latencia
+              </text>
+            </g>
+
+            <!-- 4A. FORGE PRIMARIO (HOT) -->
+            <g id="node-forge-1" class="node-box" transform="translate(45, 420)" onclick="inspectNode('forge-1')">
+              <rect width="320" height="90" fill="#061201" stroke="#d0ff00" stroke-width="1.5" class="node-bg" id="svg-forge-1-bg"/>
+              <text x="160" y="26" fill="#d0ff00" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="13" id="svg-forge-1-title">
+                [ 3A. FORGE PRIMARIO (HOT) ]
+              </text>
+              <text x="160" y="46" fill="#ffffff" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11" id="svg-forge-1-model">
+                ollama-local (Apple M5 / MLX / RTX 4090)
+              </text>
+              <text x="160" y="64" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="10">
+                Genera tokens en RAM volátil · TTFT ~0.18s
+              </text>
+              <text x="160" y="80" fill="#d0ff00" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="9" id="svg-forge-1-status">
+                ● ESTADO: ONLINE / HOT
+              </text>
+            </g>
+
+            <!-- 4B. FORGE STANDBY (FAILOVER SIM) -->
+            <g id="node-forge-2" class="node-box" transform="translate(425, 420)" onclick="inspectNode('forge-2')">
+              <rect width="320" height="90" fill="#0c0c0c" stroke="#2f2f2f" stroke-width="1.5" class="node-bg" id="svg-forge-2-bg"/>
+              <text x="160" y="26" fill="#ffffff" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="13" id="svg-forge-2-title">
+                [ 3B. FORGE STANDBY (FAILOVER) ]
+              </text>
+              <text x="160" y="46" fill="#aaaaaa" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                forge-sim-01 (Standby SIM / Cloud Backup)
+              </text>
+              <text x="160" y="64" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="10">
+                Espera activa in-flight. Toma el stream si 3A cae
+              </text>
+              <text x="160" y="80" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="9" id="svg-forge-2-status">
+                ○ ESTADO: STANDBY LISTO
+              </text>
+            </g>
+
+            <!-- 5. PROOF L0 (RECIBO FIRMADO) -->
+            <g id="node-proof" class="node-box" transform="translate(235, 560)" onclick="inspectNode('proof')">
+              <rect width="320" height="75" fill="#081001" stroke="#d0ff00" stroke-width="1.5" class="node-bg" id="svg-proof-bg"/>
+              <text x="160" y="26" fill="#d0ff00" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="13">
+                [ 4. PROOF L0 (RECIBO FIRMADO) ]
+              </text>
+              <text x="160" y="46" fill="#ffffff" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                result_hash = sha256(tokens servidos)
+              </text>
+              <text x="160" y="64" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="10">
+                Firma ed25519 con clave privada del Forge
+              </text>
+            </g>
+
+            <!-- 6. STELLAR SOROBAN CONTRACT (ON-CHAIN) -->
+            <g id="node-stellar" class="node-box" transform="translate(815, 175)" onclick="inspectNode('stellar')">
+              <rect width="290" height="460" fill="#020c15" stroke="#38bdf8" stroke-width="1.5" class="node-bg" id="svg-stellar-bg"/>
+              <text x="145" y="32" fill="#38bdf8" font-family="'Space Grotesk', sans-serif" font-weight="700" text-anchor="middle" font-size="14">
+                [ 5. STELLAR SOROBAN ]
+              </text>
+              <text x="145" y="52" fill="#888888" font-family="'JetBrains Mono', monospace" text-anchor="middle" font-size="11">
+                contracts/weaver-escrow
+              </text>
+              
+              <line x1="20" y1="70" x2="270" y2="70" stroke="#163145"/>
+
+              <text x="30" y="100" fill="#ffffff" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="12">
+                1. fund_job()
+              </text>
+              <text x="30" y="122" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • Cliente bloquea 0.01 USDC
+              </text>
+              <text x="30" y="142" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • Estado de Job pasa a Funded
+              </text>
+
+              <line x1="20" y1="170" x2="270" y2="170" stroke="#163145"/>
+
+              <text x="30" y="200" fill="#ffffff" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="12">
+                2. release()
+              </text>
+              <text x="30" y="222" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • Exige result_hash + firma
+              </text>
+              <text x="30" y="242" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • ed25519_verify() on-chain
+              </text>
+
+              <line x1="20" y1="270" x2="270" y2="270" stroke="#163145"/>
+
+              <text x="30" y="300" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-weight="700" font-size="12">
+                3. Payout Automático
+              </text>
+              <text x="30" y="322" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • USDC SAC transfiere fondos
+              </text>
+              <text x="30" y="342" fill="#888888" font-family="'JetBrains Mono', monospace" font-size="11">
+                • Destino: pubkey del Worker
+              </text>
+
+              <rect x="25" y="385" width="240" height="42" fill="#061c2d" stroke="#38bdf8" stroke-width="1"/>
+              <text x="145" y="411" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="11" text-anchor="middle" font-weight="700">
+                CDHD6QRV...SENB ↗
+              </text>
+            </g>
+          </svg>
+        </div>
+
+        <!-- Inspector interactivo al hacer click en los bloques -->
+        <div class="arch-inspector" id="arch-inspector">
+          <div>
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+              <span id="inspect-tag" class="section-tag" style="margin: 0;">// COMPONENTE</span>
+              <span id="inspect-title" style="font-weight: 700; color: var(--lima); font-size: 1.1rem;">
+                [ 2. SCHEDULER ENGINE ]
+              </span>
+            </div>
+            <div id="inspect-path" style="color: var(--fog); font-size: 0.8rem; margin-bottom: 0.75rem;">
+              packages/scheduler/src/index.ts
+            </div>
+            <p id="inspect-desc" style="color: #ffffff; font-size: 0.88rem; line-height: 1.5;">
+              Deep module de selección matemática. Calcula el ETR empírico considerando RTT de red, cola actual, costo de carga de modelo en VRAM y velocidad de generación. Enruta siempre al Forge HOT más rápido.
+            </p>
+          </div>
+
+          <div style="border-left: 1px solid var(--line); padding-left: 1.5rem;">
+            <div style="font-size: 0.75rem; color: var(--fog); margin-bottom: 0.35rem;">CONTRATO / INTERFAZ:</div>
+            <div id="inspect-contract" style="color: var(--lima); font-size: 0.8rem; background: #000; padding: 0.5rem; border: 1px solid var(--line); word-break: break-all;">
+              select(job: Job, forges: Forge[]): Decision
+            </div>
+            <div style="font-size: 0.75rem; color: var(--fog); margin-top: 0.75rem; margin-bottom: 0.35rem;">GARANTÍA CLAVE:</div>
+            <div id="inspect-invariant" style="color: var(--white); font-size: 0.8rem;">
+              Warm-First: nunca asume la penalidad de cargar pesos en frío (COLD) si existe un nodo HOT con menor tiempo total.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 4: EL PIPELINE INTERACTIVO (SIMULADOR)
+         ========================================== -->
+    <section id="simulator">
+      <div class="section-tag"><span class="slash">//</span> 04 — CÓMO FUNCIONA DE PUNTA A PUNTA (SIMULADOR)</div>
+      <h2 class="section-title">EL CICLO DE VIDA DE UN JOB<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        Hacé clic en los botones para disparar una ejecución interactiva. Observá cómo el Scheduler calcula el ETR en tiempo real, elige el mejor Forge, valida la firma criptográfica y liquida en Stellar.
+      </p>
+
+      <!-- Simulador Interactivo Container -->
+      <div class="simulator-wrapper">
+        <span class="corner-mark tl">+</span>
+        <span class="corner-mark tr">+</span>
+        <span class="corner-mark bl">+</span>
+        <span class="corner-mark br">+</span>
+
+        <!-- Controles Superiores -->
+        <div class="simulator-header">
+          <div class="simulator-controls">
+            <button id="btn-run-job" class="btn-brutal btn-lima">
+              <span>▶</span> DISPARAR JOB LIVE
+            </button>
+            <button id="btn-kill-forge" class="btn-brutal btn-danger">
+              <span>⚡</span> MATAR FORGE PRIMARIO
+            </button>
+            <button id="btn-reset-sim" class="btn-brutal btn-outline">
+              ⟲ RESETEAR
+            </button>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div id="sim-state-badge" class="sim-status-banner">
+              ESTADO: <span class="lima-text">IDLE / ESPERANDO JOB</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fases del Pipeline (5 pasos) -->
+        <div class="pipeline-nodes">
+          <!-- Step 1: Client Request -->
+          <div id="p-step-1" class="pipeline-step">
+            <span class="step-num">[ PASO 01 ]</span>
+            <div class="step-name">1. REQUEST HTTP</div>
+            <p class="step-desc">
+              Usuario o agente pide prompt vía <code>POST /v1/chat/completions</code> compatible con OpenAI en SSE streaming.
+            </p>
+            <div id="step-1-status" class="step-indicator">ESPERANDO TRIGGER...</div>
+          </div>
+
+          <!-- Step 2: Scheduler & ETR -->
+          <div id="p-step-2" class="pipeline-step">
+            <span class="step-num">[ PASO 02 ]</span>
+            <div class="step-name">2. SCHEDULER (ETR)</div>
+            <p class="step-desc">
+              Calcula el Tiempo Esperado a Resultado (ETR). Prioriza instancias <strong>HOT</strong> (pesos ya cargados en VRAM).
+            </p>
+            <div id="step-2-status" class="step-indicator">SCORING INACTIVO</div>
+          </div>
+
+          <!-- Step 3: Forge Execution -->
+          <div id="p-step-3" class="pipeline-step">
+            <span class="step-num">[ PASO 03 ]</span>
+            <div class="step-name">3. EJECUCIÓN FORGE</div>
+            <p class="step-desc">
+              El Forge genera tokens en RAM volátil. Si el nodo primario muere, activa failover automático a nodo standby.
+            </p>
+            <div id="step-3-status" class="step-indicator">GPU STANDBY</div>
+          </div>
+
+          <!-- Step 4: Cryptographic Proof -->
+          <div id="p-step-4" class="pipeline-step">
+            <span class="step-num">[ PASO 04 ]</span>
+            <div class="step-name">4. PROOF L0 (ED25519)</div>
+            <p class="step-desc">
+              Forge calcula <code>sha256(result)</code> y lo firma con su clave privada ed25519. Prueba matemática de entrega.
+            </p>
+            <div id="step-4-status" class="step-indicator">SIN RECIBO</div>
+          </div>
+
+          <!-- Step 5: Stellar Soroban Settlement -->
+          <div id="p-step-5" class="pipeline-step">
+            <span class="step-num">[ PASO 05 ]</span>
+            <div class="step-name">5. STELLAR SETTLE</div>
+            <p class="step-desc">
+              El smart contract Soroban verifica la firma on-chain y libera 0.01 USDC al worker. Sin firma válida, cero pago.
+            </p>
+            <div id="step-5-status" class="step-indicator">ESCROW LISTO</div>
+          </div>
+        </div>
+
+        <!-- Telemetría & Matriz de Nodos en vivo -->
+        <div class="sim-telemetry-grid">
+          <!-- Terminal Log -->
+          <div class="terminal-pane" id="sim-terminal">
+            <div class="terminal-line">
+              <span class="t-time">[INIT]</span>
+              <span class="t-tag">SYSTEM</span>
+              <span>Weaver Gateway listening on :3001. x402 paywall ready.</span>
+            </div>
+            <div class="terminal-line">
+              <span class="t-time">[INIT]</span>
+              <span class="t-tag">SCHEDULER</span>
+              <span>2 forges registrados en flota. Algoritmo ETR warm-first activado.</span>
+            </div>
+            <div class="terminal-line">
+              <span class="t-time">[READY]</span>
+              <span class="t-tag">PROMPT</span>
+              <span style="color: var(--white);">Hacé clic en "[ DISPARAR JOB LIVE ]" arriba para iniciar el flujo.</span>
+            </div>
+          </div>
+
+          <!-- Estado de los Forges -->
+          <div class="forge-matrix-pane">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--fog); letter-spacing: 0.15em;">ESTADO DE LA FLOTA (FORGES)</span>
+              <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--lima);">HEARTBEAT OK</span>
+            </div>
+
+            <!-- Forge 1 (Primary) -->
+            <div id="forge-card-1" class="forge-card selected">
+              <div class="forge-info">
+                <div class="forge-name" id="f1-title">ollama-local (Apple M5 / MLX)</div>
+                <div class="forge-meta" id="f1-meta">Model: qwen3:4b · Load: 0.0s · Queue: 0 · RTT: 12ms</div>
+              </div>
+              <span id="f1-badge" class="badge-pill badge-hot">HOT (VRAM)</span>
+            </div>
+
+            <!-- Forge 2 (Standby) -->
+            <div id="forge-card-2" class="forge-card">
+              <div class="forge-info">
+                <div class="forge-name">forge-sim-01 (Standby Failover SIM)</div>
+                <div class="forge-meta">Model: qwen3:4b · Load: 0.0s · Queue: 0 · RTT: 18ms</div>
+              </div>
+              <span id="f2-badge" class="badge-pill badge-cold">STANDBY</span>
+            </div>
+
+            <!-- ETR Breakdown Box -->
+            <div style="background: #000; border: 1px solid var(--line); padding: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem;">
+              <div style="color: var(--fog); margin-bottom: 0.35rem;">FÓRMULA ETR (ÚNICA MÉTRICA DE ROUTING):</div>
+              <div style="color: var(--lima); font-weight: 700;">ETR = RTT + queue + load_si_COLD + prefill + gen + verify</div>
+              <div id="etr-calc-display" style="color: var(--fog-dim); margin-top: 0.25rem;">
+                Último score: ollama-local = 184ms | forge-sim-01 = 205ms
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 5: DEMO DE FAILOVER EN VIVO
+         ========================================== -->
+    <section id="failover">
+      <div class="section-tag"><span class="slash">//</span> 05 — RESILIENCIA EXTREMA</div>
+      <h2 class="section-title">EN CÓMPUTO DISTRIBUIDO LOS NODOS CAEN. LA RED, NO<span class="danger-text">.</span></h2>
+      <p class="section-desc">
+        En una red descentralizada de silicio abierto, cualquier nodo puede apagarse, saturarse o perder conexión. Weaver fue diseñado desde el día cero bajo la hipótesis de fallo inminente:
+      </p>
+
+      <div class="thesis-grid">
+        <div class="thesis-card">
+          <span class="corner-mark tl">+</span>
+          <span class="corner-mark tr">+</span>
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--danger);">[ QUÉ PASA EN LA NUBE TRADICIONAL ]</div>
+          <h3 style="font-size: 1.4rem; font-weight: 700; margin-top: 0.5rem;">CASCADA DE TIMEOUTS</h3>
+          <p style="color: var(--fog); font-size: 0.9rem; margin-top: 0.75rem;">
+            Si el pod asignado se cae o se agota la memoria, el gateway devuelve un error <code>504 Gateway Timeout</code> o <code>503 Service Unavailable</code> después de 30 a 60 segundos de espera. Tu frontend se rompe y el usuario debe reintentar manualmente.
+          </p>
+        </div>
+
+        <div class="thesis-card" style="border: 1px solid var(--lima); background: #060c00;">
+          <span class="corner-mark tl">+</span>
+          <span class="corner-mark tr">+</span>
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima);">[ QUÉ HACE WEAVER (FAILOVER IN-FLIGHT) ]</div>
+          <h3 style="font-size: 1.4rem; font-weight: 700; margin-top: 0.5rem; color: var(--white);">DESVÍO INVISIBLE AL STANDBY</h3>
+          <p style="color: var(--white); font-size: 0.9rem; margin-top: 0.75rem;">
+            El módulo de ejecución <code>packages/forge-exec</code> captura la falla del socket en milisegundos. Sin cerrar la conexión SSE con el cliente, redirige el stream al siguiente Forge con menor ETR (en nuestra demo, <code>forge-sim-01</code>). El usuario nunca ve un error.
+          </p>
+        </div>
+      </div>
+
+      <div class="formula-box">
+        <strong>SEAM DE AISLAMIENTO:</strong> En el repositorio, el archivo <code>packages/forge-exec/src/adapters/failover.ts</code> encapsula esta transición transparente. Los adaptadores de forges implementan la misma interfaz mínima (<code>run(job) -> AsyncIterable&lt;string&gt;</code>), permitiendo reemplazar el motor en caliente.
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 6: LIQUIDACIÓN EN STELLAR (SOROBAN)
+         ========================================== -->
+    <section id="stellar">
+      <div class="section-tag"><span class="slash">//</span> 06 — LIQUIDACIÓN CRIPTOGRÁFICA ON-CHAIN</div>
+      <h2 class="section-title">EL ESCROW EN SOROBAN: PROOF DE ENTREGA REAL<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        Weaver no utiliza promesas ni contabilidad interna de créditos que expiran. Cada pago está atado matemáticamente a un contrato inteligente en Soroban (Stellar testnet) que verifica la firma del cómputo antes de soltar la plata.
+      </p>
+
+      <div class="stellar-grid">
+        <div class="stellar-card">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--cyan); font-weight: 700;">PASO A: FUND DEL JOB</div>
+            <h4 style="font-size: 1.2rem; font-weight: 700; margin: 0.4rem 0;">Bloqueo del Micropago</h4>
+            <p style="color: var(--fog); font-size: 0.85rem;">
+              El cliente transfiere el monto del job (ej: 0.01 USDC) al contrato <code>WeaverEscrow</code> mediante <code>fund_job()</code>. El contrato guarda el estado en <code>Funded</code>.
+            </p>
+          </div>
+          <div>
+            <div class="hash-snippet">TX: d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7</div>
+            <a href="https://stellar.expert/explorer/testnet/tx/d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7" target="_blank" rel="noreferrer" class="btn-brutal btn-outline" style="font-size: 0.72rem; padding: 0.5rem 0.8rem; width: 100%; justify-content: center;">
+              Ver en Stellar Expert ↗
+            </a>
+          </div>
+        </div>
+
+        <div class="stellar-card">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima); font-weight: 700;">PASO B: PROOF L0 (FIRMA ED25519)</div>
+            <h4 style="font-size: 1.2rem; font-weight: 700; margin: 0.4rem 0;">Hash de Salida Firmado</h4>
+            <p style="color: var(--fog); font-size: 0.85rem;">
+              El Forge calcula <code>sha256(tokens_generados)</code> y lo firma con su clave privada ed25519 registrada en el contrato. Sin esta firma criptográfica exacta, Soroban rechaza la liquidación.
+            </p>
+          </div>
+          <div>
+            <div class="hash-snippet">RESULT HASH: 0x9f8a61...b72e (SHA-256) + SIG: ed25519 (64 bytes)</div>
+            <div style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--fog-dim);">Garantía: el forge no puede cobrar por texto que no produjo.</div>
+          </div>
+        </div>
+
+        <div class="stellar-card">
+          <div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima); font-weight: 700;">PASO C: RELEASE AL WORKER</div>
+            <h4 style="font-size: 1.2rem; font-weight: 700; margin: 0.4rem 0;">Verificación On-Chain</h4>
+            <p style="color: var(--fog); font-size: 0.85rem;">
+              La función <code>release()</code> en Rust ejecuta <code>env.crypto().ed25519_verify()</code> dentro de Soroban. Si la firma concuerda, transfiere los USDC al Forge automáticamente.
+            </p>
+          </div>
+          <div>
+            <div class="hash-snippet">TX: 00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab</div>
+            <a href="https://stellar.expert/explorer/testnet/tx/00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab" target="_blank" rel="noreferrer" class="btn-brutal btn-outline" style="font-size: 0.72rem; padding: 0.5rem 0.8rem; width: 100%; justify-content: center;">
+              Ver en Stellar Expert ↗
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 7: PRIVACIDAD RADICAL (ZERO DATA)
+         ========================================== -->
+    <section id="privacy">
+      <div class="section-tag"><span class="slash">//</span> 07 — MODELO DE PRIVACIDAD</div>
+      <h2 class="section-title">NO PODEMOS VENDER LO QUE NO GUARDAMOS<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        A diferencia de los proveedores de nube que almacenan transcripciones para re-entrenar sus modelos o retener historiales en bases de datos relacionales, la política de Weaver es tajante:
+      </p>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 1.5rem;">
+        <div style="background: var(--panel); padding: 1.75rem;">
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima);">[ PROMPTS & COMPLETIONS ]</div>
+          <h4 style="font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0;">RAM Volátil Exclusiva</h4>
+          <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+            Los prompts entran por streaming HTTP, se procesan en la memoria RAM del Forge y mueren inmediatamente al finalizar el socket. No tocan disco ni base de datos intermedia.
+          </p>
+        </div>
+
+        <div style="background: var(--panel); padding: 1.75rem;">
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima);">[ HISTORIAL DE CHAT ]</div>
+          <h4 style="font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0;">Solo en tu Dispositivo</h4>
+          <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+            Si usás la app web de Weaver, tus conversaciones persisten únicamente en el <code>localStorage</code> de tu navegador y pueden borrarse con un solo clic.
+          </p>
+        </div>
+
+        <div style="background: var(--panel); padding: 1.75rem;">
+          <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--lima);">[ LEDGER PÚBLICO (STELLAR) ]</div>
+          <h4 style="font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0;">Solo Dinero y Hashes</h4>
+          <p style="color: var(--fog); font-size: 0.85rem; line-height: 1.5;">
+            La blockchain solo ve montos en USDC y el hash criptográfico SHA-256 unidireccional. Nadie puede descifrar o reconstruir lo que preguntaste a partir del hash en la cadena.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 8: MAPA DE LA ARQUITECTURA DE CÓDIGO
+         ========================================== -->
+    <section id="architecture">
+      <div class="section-tag"><span class="slash">//</span> 08 — CÓDIGO Y ESTRUCTURA DEL REPO</div>
+      <h2 class="section-title">MONOLITO MODULAR CON BORDES LIVIANOS<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        Diseñado bajo la regla de <em>codebase-design</em>: un solo deploy, módulos profundos con interfaces chicas y adaptadores intercambiables donde realmente varía la infraestructura.
+      </p>
+
+      <div class="arch-grid">
+        <div class="arch-cell">
+          <span class="arch-path">apps/gateway/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">API Gateway Hono</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Punto de entrada compatible con OpenAI (<code>/v1/chat/completions</code>). Maneja la barrera de cobro x402 y despacha hacia el Scheduler.
+          </p>
+        </div>
+
+        <div class="arch-cell">
+          <span class="arch-path">packages/scheduler/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">Motor de Ruteo ETR</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Deep module con contrato conciso: <code>select(job, forges) -&gt; decision</code>. Prioriza forges HOT por sobre COLD para aniquilar la latencia.
+          </p>
+        </div>
+
+        <div class="arch-cell">
+          <span class="arch-path">packages/forge-exec/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">Capa de Ejecución & Failover</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Adapters para Ollama (MLX en Apple Silicon) y Standby SIM. Detecta desconexiones y salta de nodo en caliente sin tirar la conexión.
+          </p>
+        </div>
+
+        <div class="arch-cell">
+          <span class="arch-path">contracts/weaver-escrow/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">Smart Contract Soroban (Rust)</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Contrato nativo en Stellar: <code>init</code>, <code>fund_job</code>, <code>release</code> y <code>refund</code>. Verifica firmas ed25519 on-chain.
+          </p>
+        </div>
+
+        <div class="arch-cell">
+          <span class="arch-path">packages/settlement/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">Adaptador Stellar SDK</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Orquesta las transacciones en Testnet contra el Horizon RPC y el SAC de USDC (<code>CBIELTK...DAMA</code>).
+          </p>
+        </div>
+
+        <div class="arch-cell">
+          <span class="arch-path">apps/web/</span>
+          <div style="font-weight: 700; margin-bottom: 0.35rem;">Frontend Next.js 16</div>
+          <p style="color: var(--fog); font-size: 0.8rem;">
+            Panel de control visual: RUN interactivo, telemetría de flota, botón de failover (Kill Forge) y links al explorador de Stellar.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         SECCIÓN 9: GLOSARIO CRÍTICO (CONTEXT.MD)
+         ========================================== -->
+    <section id="glossary">
+      <div class="section-tag"><span class="slash">//</span> 09 — GLOSARIO DE TÉRMINOS OFICIAL</div>
+      <h2 class="section-title">EL LENGUAJE DE WEAVER (CONTEXT.MD)<span class="lima-text">.</span></h2>
+      <p class="section-desc">
+        La fuente de verdad del dominio. En Weaver no usamos términos vagos como "servidor" o "request":
+      </p>
+
+      <div class="glossary-grid">
+        <div class="glossary-item">
+          <div class="glossary-term"><span>JOB</span> <span class="lima-text">[01]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Pedido de un usuario o agente por un modelo + input determinado. No es un Request HTTP genérico.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>FORGE</span> <span class="lima-text">[02]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Rol económico que ejecuta cómputo (GPU, Apple Silicon, CPU o API externa). No es un "Host" ni un "Nodo".</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>ETR (EXPECTED TIME TO RESULT)</span> <span class="lima-text">[03]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;"><code>RTT + queue + load_si_COLD + prefill + gen + verify</code>. La única métrica que determina el ruteo del scheduler.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>HOT / COLD</span> <span class="lima-text">[04]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;"><strong>HOT:</strong> ModelInstance con los pesos del modelo ya en memoria VRAM (<code>load_time = 0</code>). <strong>COLD:</strong> debe pagar tiempo de carga.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>PROOF L0</span> <span class="lima-text">[05]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Recibo criptográfico firmado con la clave ed25519 del Forge sobre el hash del resultado. Rápido y sin redundancia.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>PROOF L1</span> <span class="lima-text">[06]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Ejecución redundante en 2 Forges distintos sobre benchmark determinístico para comparar hashes normalizados.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>SETTLEMENT</span> <span class="lima-text">[07]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Consecuencia económica irrevocable en Stellar vía Soroban escrow. No es el simple cobro del peaje HTTP.</p>
+        </div>
+
+        <div class="glossary-item">
+          <div class="glossary-term"><span>TAKE</span> <span class="lima-text">[08]</span></div>
+          <p style="color: var(--fog); font-size: 0.85rem;">Comisión fija del protocolo Weaver (5%–15% según el paper), destinada al mantenimiento de la red.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+      <div class="footer-inner">
+        <div>
+          <strong style="color: var(--white); letter-spacing: 0.2em;">WEAVER</strong>
+          <span style="color: var(--fog-dim); margin: 0 0.5rem;">//</span>
+          <span>OPEN INFERENCE ON ANY GPU, SETTLED ON STELLAR</span>
+        </div>
+        <div>
+          <span>ARGENTINA BUILDER CHALLENGE 2026</span>
+          <span style="color: var(--fog-dim); margin: 0 0.5rem;">·</span>
+          <span class="lima-text">+ + +</span>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <!-- ==========================================
+       GSAP & LOGIC SCRIPT
+       ========================================== -->
+  <script>
+    // 1. Clock UTC
+    function updateClock() {
+      const now = new Date();
+      const h = String(now.getUTCHours()).padStart(2, '0');
+      const m = String(now.getUTCMinutes()).padStart(2, '0');
+      const s = String(now.getUTCSeconds()).padStart(2, '0');
+      document.getElementById('clock-utc').textContent = `${h}:${m}:${s} UTC`;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // 2. Reading progress bar with GSAP
+    window.addEventListener('scroll', () => {
+      const winScroll = document.documentElement.scrollTop || document.body.scrollTop;
+      const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      const scrolled = (winScroll / height) * 100;
+      document.getElementById('reading-progress').style.width = scrolled + '%';
+    });
+
+    // 3. GSAP Entry Animations
+    gsap.registerPlugin(ScrollTrigger);
+
+    gsap.from(".hero-h1", {
+      opacity: 0,
+      y: 30,
+      duration: 1,
+      ease: "power3.out"
+    });
+
+    gsap.from(".hero-visual-card", {
+      opacity: 0,
+      scale: 0.95,
+      duration: 1.1,
+      delay: 0.2,
+      ease: "power2.out"
+    });
+
+    // Subtle floating pulse on spider
+    gsap.to(".spider-svg", {
+      y: -6,
+      duration: 2.5,
+      repeat: -1,
+      yoyo: true,
+      ease: "sine.inOut"
+    });
+
+    // Animate sections on scroll
+    gsap.utils.toArray("section").forEach(sec => {
+      gsap.from(sec.querySelectorAll(".section-title, .section-desc, .thesis-grid, .toll-grid, .stellar-grid, .arch-grid"), {
+        scrollTrigger: {
+          trigger: sec,
+          start: "top 80%",
+        },
+        opacity: 0,
+        y: 24,
+        duration: 0.7,
+        stagger: 0.12,
+        ease: "power2.out"
+      });
+    });
+
+    // ==========================================
+    // SIMULATOR INTERACTIVE ENGINE
+    // ==========================================
+    let isForgeKilled = false;
+    let isRunning = false;
+
+    const btnRun = document.getElementById('btn-run-job');
+    const btnKill = document.getElementById('btn-kill-forge');
+    const btnReset = document.getElementById('btn-reset-sim');
+    const stateBadge = document.getElementById('sim-state-badge');
+    const terminal = document.getElementById('sim-terminal');
+
+    const f1Card = document.getElementById('forge-card-1');
+    const f2Card = document.getElementById('forge-card-2');
+    const f1Badge = document.getElementById('f1-badge');
+    const f2Badge = document.getElementById('f2-badge');
+    const f1Title = document.getElementById('f1-title');
+
+    function logTerminal(tag, message, type = 'normal') {
+      const line = document.createElement('div');
+      line.className = 'terminal-line';
+      const now = new Date();
+      const timeStr = `${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}.${String(Math.floor(now.getUTCMilliseconds()/10)).padStart(2,'0')}`;
+
+      let tagClass = 't-tag';
+      if (type === 'err') tagClass = 't-tag err';
+      if (type === 'stellar') tagClass = 't-tag stellar';
+
+      line.innerHTML = `
+        <span class="t-time">[${timeStr}]</span>
+        <span class="${tagClass}">${tag}</span>
+        <span>${message}</span>
+      `;
+      terminal.appendChild(line);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function setStepState(stepNum, statusText, isActive = false, isFailed = false) {
+      const stepEl = document.getElementById(`p-step-${stepNum}`);
+      const statusEl = document.getElementById(`step-${stepNum}-status`);
+
+      if (isActive) {
+        stepEl.classList.add('active');
+        stepEl.classList.remove('failed');
+      } else if (isFailed) {
+        stepEl.classList.remove('active');
+        stepEl.classList.add('failed');
+      } else {
+        stepEl.classList.remove('active');
+        stepEl.classList.remove('failed');
+      }
+
+      if (statusText) statusEl.textContent = statusText;
+    }
+
+    function resetPipeline() {
+      isRunning = false;
+      for (let i = 1; i <= 5; i++) {
+        setStepState(i, ['ESPERANDO TRIGGER...', 'SCORING INACTIVO', 'GPU STANDBY', 'SIN RECIBO', 'ESCROW LISTO'][i-1], false, false);
+      }
+      stateBadge.innerHTML = 'ESTADO: <span class="lima-text">IDLE / ESPERANDO JOB</span>';
+      btnRun.disabled = false;
+    }
+
+    // Toggle Kill Forge
+    btnKill.addEventListener('click', () => {
+      isForgeKilled = !isForgeKilled;
+      if (isForgeKilled) {
+        btnKill.innerHTML = '<span>⚡</span> REVIVIR FORGE PRIMARIO';
+        btnKill.classList.remove('btn-danger');
+        btnKill.classList.add('btn-lima');
+        f1Card.classList.remove('selected');
+        f1Card.classList.add('killed');
+        f1Badge.className = 'badge-pill badge-dead';
+        f1Badge.textContent = 'DEAD / OFFLINE';
+        f1Title.innerHTML = '<del>ollama-local (Apple M5 / MLX)</del>';
+        logTerminal('HEALTH', 'CRITICAL: Forge primario ollama-local NO RESPONDE (socket timeout / connection refused)', 'err');
+      } else {
+        btnKill.innerHTML = '<span>⚡</span> MATAR FORGE PRIMARIO';
+        btnKill.classList.add('btn-danger');
+        btnKill.classList.remove('btn-lima');
+        f1Card.classList.remove('killed');
+        f1Card.classList.add('selected');
+        f1Badge.className = 'badge-pill badge-hot';
+        f1Badge.textContent = 'HOT (VRAM)';
+        f1Title.textContent = 'ollama-local (Apple M5 / MLX)';
+        f2Card.classList.remove('selected');
+        f2Badge.className = 'badge-pill badge-cold';
+        f2Badge.textContent = 'STANDBY';
+        logTerminal('HEALTH', 'Forge primario ollama-local recuperado. Estado HOT.', 'normal');
+      }
+    });
+
+    btnReset.addEventListener('click', () => {
+      resetPipeline();
+      logTerminal('RESET', 'Pipeline y telemetría reiniciados por el operador.', 'normal');
+    });
+
+    // Run Job Workflow
+    btnRun.addEventListener('click', () => {
+      if (isRunning) return;
+      isRunning = true;
+      btnRun.disabled = true;
+
+      // Timeline GSAP
+      const tl = gsap.timeline();
+
+      // Step 1: Request
+      tl.call(() => {
+        stateBadge.innerHTML = 'ESTADO: <span class="lima-text">POST /v1/chat/completions</span>';
+        setStepState(1, 'RECIBIDO HTTP x402', true);
+        logTerminal('API_HTTP', 'POST /v1/chat/completions (model="qwen3:4b", prompt="fibonacci recursive vs memo")');
+      });
+
+      tl.to({}, { duration: 0.6 });
+
+      // Step 2: Scheduler
+      tl.call(() => {
+        setStepState(1, 'ENCOLADO', false);
+        setStepState(2, 'EVALUANDO FORGES', true);
+        logTerminal('SCHEDULER', 'Iniciando cálculo de ETR en flota...');
+
+        if (!isForgeKilled) {
+          logTerminal('SCHEDULER', 'ETR: ollama-local (HOT) = 184ms | forge-sim-01 (SIM) = 210ms');
+          logTerminal('SCHEDULER', 'Decisión: asignado a ollama-local [warm-first / ETR 184ms]');
+          f1Card.classList.add('selected');
+          f2Card.classList.remove('selected');
+          document.getElementById('etr-calc-display').textContent = 'Score: ollama-local (HOT) = 184ms -> GANADOR';
+        } else {
+          logTerminal('SCHEDULER', 'ETR: ollama-local DEAD (∞) -> DESCARTE AUTOMÁTICO');
+          logTerminal('SCHEDULER', 'Decisión: failover inmediato a forge-sim-01 [ETR 210ms]');
+          f1Card.classList.remove('selected');
+          f2Card.classList.add('selected');
+          f2Badge.className = 'badge-pill badge-hot';
+          f2Badge.textContent = 'ACTIVE IN-FLIGHT';
+          document.getElementById('etr-calc-display').textContent = 'Score: forge-sim-01 (Standby) = 210ms -> GANADOR POR FAILOVER';
+        }
+      });
+
+      tl.to({}, { duration: 0.8 });
+
+      // Step 3: Forge Execution
+      tl.call(() => {
+        setStepState(2, 'RUTA RESUELTA', false);
+        setStepState(3, 'GENERANDO TOKENS SSE', true);
+
+        if (!isForgeKilled) {
+          logTerminal('FORGE_EXEC', 'ollama-local: stream inicializado. TTFT = 182ms. Generando 128 tokens...');
+        } else {
+          logTerminal('FORGE_EXEC', 'FAILOVER LIVE: forge-sim-01 tomó el stream sin cortar el socket HTTP!', 'err');
+          logTerminal('FORGE_EXEC', 'forge-sim-01: stream SSE activo. Generando tokens...');
+        }
+      });
+
+      tl.to({}, { duration: 1.1 });
+
+      // Step 4: Proof L0
+      tl.call(() => {
+        setStepState(3, 'COMPLETO (128 TOKENS)', false);
+        setStepState(4, 'CALCULANDO SHA-256 & ED25519', true);
+
+        const mockHash = "0x" + Array.from({length: 8}, () => Math.floor(Math.random()*16).toString(16)).join("") + "...f41c";
+        logTerminal('PROOF_L0', `Calculando result_hash: ${mockHash}`);
+        logTerminal('PROOF_L0', 'Estampando firma ed25519 con worker_privkey (64 bytes)');
+        document.getElementById('step-4-status').textContent = 'FIRMA ED25519 LISTA';
+      });
+
+      tl.to({}, { duration: 0.8 });
+
+      // Step 5: Stellar Soroban
+      tl.call(() => {
+        setStepState(4, 'FIRMA VÁLIDA', false);
+        setStepState(5, 'SOROBAN release()', true);
+        logTerminal('STELLAR', 'Invocando WeaverEscrow::release(job_id=4029, worker, result_hash, sig)', 'stellar');
+        logTerminal('STELLAR', 'Contrato Soroban: ed25519_verify() OK. Transfiriendo 0.01 USDC al Forge...', 'stellar');
+        logTerminal('STELLAR', 'Ledger 649210: Transacción confirmada en 3.8s. Payout liberado.', 'stellar');
+        document.getElementById('step-5-status').textContent = '0.01 USDC LIBERADO';
+        stateBadge.innerHTML = 'ESTADO: <span class="lima-text">JOB COMPLETADO & SETTLED</span>';
+      });
+
+      tl.to({}, { duration: 0.8 });
+
+      tl.call(() => {
+        btnRun.disabled = false;
+        isRunning = false;
+        logTerminal('CYCLE', 'Ciclo finalizado con éxito. Los prompts fueron purgados de la RAM.', 'normal');
+      });
+    });
+
+    // ==========================================
+    // ARCHITECTURE DIAGRAM INTERACTION ENGINE
+    // ==========================================
+    const nodeDetails = {
+      client: {
+        tag: "// ACTOR // ORIGEN",
+        title: "[ CLIENTE / AGENTES IA ]",
+        path: "apps/web/ o agentes (Cursor, OpenCode, Hermes)",
+        desc: "El consumidor del cómputo. Emite una llamada estándar compatible con OpenAI (POST /v1/chat/completions) y autoriza el micropago por request vía cabecera o handshake x402 en USDC.",
+        contract: "POST /v1/chat/completions (model, messages, stream=true)",
+        invariant: "Cero top-ups ni suscripciones obligatorias: el cliente solo paga por el cómputo que efectivamente se consume."
+      },
+      gateway: {
+        tag: "// ENTRYPOINT // REPO",
+        title: "[ 1. WEAVER GATEWAY ]",
+        path: "apps/gateway/src/serve.ts",
+        desc: "Servidor Hono liviano y de ultra baja latencia. Valida la clave de API (wvr_...), verifica la barrera de pago x402 en USDC, delega el ruteo al Scheduler y gestiona el streaming SSE hacia el cliente.",
+        contract: "HTTP SSE stream + paywall middleware x402",
+        invariant: "Zero-Disk: el gateway jamás persiste prompts en disco ni en base de datos. Solo maneja buffers en memoria durante el stream."
+      },
+      scheduler: {
+        tag: "// NÚCLEO DE DECISIÓN",
+        title: "[ 2. SCHEDULER ENGINE ]",
+        path: "packages/scheduler/src/index.ts",
+        desc: "Deep module que evalúa toda la flota de Forges disponibles mediante la métrica única ETR: RTT de red + cola local + carga de pesos (si está COLD) + prefill + generación. Prioriza siempre instancias HOT.",
+        contract: "select(job: Job, forges: ForgeView[]): Decision",
+        invariant: "Warm-First: el Scheduler jamás despachará a un nodo COLD si existe una alternativa HOT con menor tiempo esperado."
+      },
+      'forge-1': {
+        tag: "// EJECUCIÓN // PRIMARIO",
+        title: "[ 3A. FORGE PRIMARIO (HOT) ]",
+        path: "packages/forge-exec/src/adapters/ollama.ts",
+        desc: "Instancia de cómputo local o dedicada (ej. Mac M5 con MLX o PC con RTX 4090). Tiene los pesos del modelo ya en VRAM (load_time = 0), permitiendo un Time-to-First-Token (TTFT) inferior a 200ms.",
+        contract: "run(job: Job): AsyncIterable<string>",
+        invariant: "RAM Volátil: genera tokens en streaming continuo y destruye los datos de contexto en memoria tan pronto se cierra el socket."
+      },
+      'forge-2': {
+        tag: "// RESILIENCIA // STANDBY",
+        title: "[ 3B. FORGE STANDBY (FAILOVER SIM) ]",
+        path: "packages/forge-exec/src/adapters/fake.ts",
+        desc: "Nodo de respaldo en espera activa. Si el nodo primario se desconecta, se cuelga o se le corta la energía, el adaptador de failover conmuta automáticamente a este standby sin interrumpir el stream al cliente.",
+        contract: "run(job: Job): AsyncIterable<string> (standby in-flight)",
+        invariant: "Los nodos se caen, la red no: el failover opera de manera sub-segundo sin arrojar error 503 al cliente."
+      },
+      proof: {
+        tag: "// CRIPTOGRAFÍA // PROOF L0",
+        title: "[ 4. PROOF L0 (RECIBO FIRMADO) ]",
+        path: "packages/forge-exec/src/proof.ts",
+        desc: "Prueba matemática irrefutable de trabajo. Al concluir la generación, el Forge calcula el hash SHA-256 de todos los tokens emitidos y estampa una firma ed25519 con su clave privada registrada.",
+        contract: "sign(result_hash: BytesN<32>, worker_privkey) -> BytesN<64>",
+        invariant: "Imposible de falsificar: ningún Forge puede reclamar pago por una inferencia que no haya ejecutado y firmado."
+      },
+      stellar: {
+        tag: "// BLOCKCHAIN // SOROBAN ESCROW",
+        title: "[ 5. STELLAR SOROBAN ESCROW ]",
+        path: "contracts/weaver-escrow/src/lib.rs",
+        desc: "Smart Contract auditado en Soroban (Stellar testnet). Maneja fund_job (depósito de $0.01 USDC) y release. La función release ejecuta ed25519_verify() on-chain: solo si la firma del Forge es válida, transfiere el USDC al worker.",
+        contract: "fund_job(client, amount) / release(caller, job_id, worker, hash, sig)",
+        invariant: "Sin firma válida no hay pago. El ledger solo ve plata y hashes, garantizando privacidad total de los prompts."
+      }
+    };
+
+    function inspectNode(nodeKey) {
+      const data = nodeDetails[nodeKey];
+      if (!data) return;
+
+      document.getElementById('inspect-tag').textContent = data.tag;
+      document.getElementById('inspect-title').textContent = data.title;
+      document.getElementById('inspect-path').textContent = data.path;
+      document.getElementById('inspect-desc').textContent = data.desc;
+      document.getElementById('inspect-contract').textContent = data.contract;
+      document.getElementById('inspect-invariant').textContent = data.invariant;
+
+      // Animate inspector with GSAP
+      gsap.fromTo('#arch-inspector', 
+        { borderColor: 'var(--lima)', backgroundColor: '#0c1602' },
+        { borderColor: 'var(--line)', backgroundColor: '#050505', duration: 0.8, ease: 'power2.out' }
+      );
+    }
+
+    function setArchMode(mode) {
+      // Toggle button active states
+      document.getElementById('arch-mode-normal').className = 'arch-mode-btn' + (mode === 'normal' ? ' active' : '');
+      document.getElementById('arch-mode-failover').className = 'arch-mode-btn' + (mode === 'failover' ? ' active failover' : '');
+      document.getElementById('arch-mode-privacy').className = 'arch-mode-btn' + (mode === 'privacy' ? ' active privacy' : '');
+
+      const f1Bg = document.getElementById('svg-forge-1-bg');
+      const f1Title = document.getElementById('svg-forge-1-title');
+      const f1Status = document.getElementById('svg-forge-1-status');
+      const f2Bg = document.getElementById('svg-forge-2-bg');
+      const f2Title = document.getElementById('svg-forge-2-title');
+      const f2Status = document.getElementById('svg-forge-2-status');
+      const failoverBridge = document.getElementById('path-failover-bridge');
+      const failoverLabel = document.getElementById('svg-failover-label');
+      const planeCompute = document.getElementById('plane-compute');
+      const planeStellar = document.getElementById('plane-stellar');
+
+      if (mode === 'normal') {
+        f1Bg.setAttribute('fill', '#061201');
+        f1Bg.setAttribute('stroke', '#d0ff00');
+        f1Title.setAttribute('fill', '#d0ff00');
+        f1Title.textContent = '[ 3A. FORGE PRIMARIO (HOT) ]';
+        f1Status.setAttribute('fill', '#d0ff00');
+        f1Status.textContent = '● ESTADO: ONLINE / HOT';
+
+        f2Bg.setAttribute('fill', '#0c0c0c');
+        f2Bg.setAttribute('stroke', '#2f2f2f');
+        f2Title.setAttribute('fill', '#ffffff');
+        f2Status.setAttribute('fill', '#888888');
+        f2Status.textContent = '○ ESTADO: STANDBY LISTO';
+
+        failoverBridge.setAttribute('stroke', '#552222');
+        failoverLabel.setAttribute('fill', '#773333');
+
+        planeCompute.setAttribute('stroke', '#d0ff00');
+        planeCompute.setAttribute('fill', '#040901');
+        planeStellar.setAttribute('stroke', '#38bdf8');
+
+        inspectNode('scheduler');
+      } else if (mode === 'failover') {
+        // Crash Forge 1
+        f1Bg.setAttribute('fill', '#1a0404');
+        f1Bg.setAttribute('stroke', '#ff3b3b');
+        f1Title.setAttribute('fill', '#ff3b3b');
+        f1Title.textContent = '[ 3A. FORGE PRIMARIO (CRASHED) ]';
+        f1Status.setAttribute('fill', '#ff3b3b');
+        f1Status.textContent = '✖ CAÍDO (TIMEOUT / APAGADO)';
+
+        // Activate Forge 2
+        f2Bg.setAttribute('fill', '#061201');
+        f2Bg.setAttribute('stroke', '#d0ff00');
+        f2Title.setAttribute('fill', '#d0ff00');
+        f2Status.setAttribute('fill', '#d0ff00');
+        f2Status.textContent = '● ACTIVO EN VUELO (FAILOVER OK)';
+
+        failoverBridge.setAttribute('stroke', '#ff3b3b');
+        failoverLabel.setAttribute('fill', '#ff3b3b');
+
+        inspectNode('forge-2');
+      } else if (mode === 'privacy') {
+        // Highlight planes
+        planeCompute.setAttribute('stroke', '#d0ff00');
+        planeCompute.setAttribute('stroke-width', '2.5');
+        planeCompute.setAttribute('fill', '#0a1a03');
+
+        planeStellar.setAttribute('stroke', '#38bdf8');
+        planeStellar.setAttribute('stroke-width', '2.5');
+        planeStellar.setAttribute('fill', '#041624');
+
+        document.getElementById('inspect-tag').textContent = "// POLÍTICA // PRIVACIDAD RADICAL";
+        document.getElementById('inspect-title').textContent = "[ LÍMITE ESTRICTO DE PRIVACIDAD ]";
+        document.getElementById('inspect-path').textContent = "apps/gateway · packages/forge-exec · RAM volátil";
+        document.getElementById('inspect-desc').textContent = "EL CÓMPUTO VIVE EN RAM Y MUERE CON EL SOCKET. La caja verde a la izquierda es efímera: ningún dato de prompts se escribe en disco. La caja azul a la derecha es el ledger público: solo ve cantidades en USDC y el hash criptográfico SHA-256 opaco.";
+        document.getElementById('inspect-contract').textContent = "Zero Data Retention (ZDR) garantizado por diseño hexagonal";
+        document.getElementById('inspect-invariant').textContent = "La blockchain solo ve dinero y hashes matemáticos; jamás texto en claro.";
+      }
+    }
+  </script>
+</body>
+</html>

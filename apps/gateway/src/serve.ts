@@ -620,7 +620,7 @@ const app = createApp({
   ledger: creditLedger,
   pricing,
   meChallenges,
-  verifyWalletSig: stellarVerify,
+  verifyWalletSig: dualVerify,
   catalog: modelCatalog,
   // Pública — el panel la muestra en Overview para fondear.
   // EVM: es el contrato WeaverCredits (deposit(bytes32 acct, amount)).

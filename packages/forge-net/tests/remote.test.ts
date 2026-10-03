@@ -150,6 +150,59 @@ describe("S31 RemoteForgeExec", () => {
     ch.close();
     assert.equal(await ex.probe(), false);
   });
+
+  it("chunks y done con jobId ajeno son ignorados por completo (anti-spoof)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const it = ex.execute(req({ jobId: "target-job" }));
+    const realHash = createHash("sha256").update("contenido legitimo").digest("hex");
+    setTimeout(() => {
+      // frames de otro job
+      ch.emit({ type: "job.ack", jobId: "alien-job" });
+      ch.emit({ type: "job.chunk", jobId: "alien-job", token: "intruso" });
+      ch.emit({ type: "job.done", jobId: "alien-job", resultHash: "00".repeat(32), signature: "11".repeat(32) });
+
+      // frames del job legítimo
+      ch.emit({ type: "job.ack", jobId: "target-job" });
+      ch.emit({ type: "job.chunk", jobId: "target-job", token: "contenido legitimo" });
+      ch.emit({ type: "job.done", jobId: "target-job", resultHash: realHash, signature: "22".repeat(32) });
+    }, 10);
+    const chunks = await drain(it);
+    assert.equal(chunks.map((c) => c.token).join(""), "contenido legitimo");
+    assert.equal(chunks.at(-1)?.done, true);
+  });
+
+  it("chunks recibidos post-done no alteran el stream ni reabren la ejecución", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const it = ex.execute(req({ jobId: "j-post-done" }));
+    const h = createHash("sha256").update("hola").digest("hex");
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j-post-done" });
+      ch.emit({ type: "job.chunk", jobId: "j-post-done", token: "hola" });
+      ch.emit({ type: "job.done", jobId: "j-post-done", resultHash: h, signature: "33".repeat(32) });
+      // chunk tardío post-done
+      ch.emit({ type: "job.chunk", jobId: "j-post-done", token: "tardio" });
+    }, 10);
+    const chunks = await drain(it);
+    assert.equal(chunks.map((c) => c.token).join(""), "hola");
+    assert.equal(chunks.length, 2); // 1 token chunk + 1 done chunk
+    assert.equal(chunks[1].done, true);
+  });
+
+  it("job sin chunks (output vacío / preimagen vacía) rechaza y no emite proof", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    let proof: unknown = null;
+    const it = ex.execute(req({ onProof: (p) => (proof = p) }));
+    const emptyHash = createHash("sha256").digest("hex");
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: emptyHash, signature: "dd".repeat(32) });
+    }, 10);
+    await assert.rejects(() => drain(it), /output vacío/);
+    assert.equal(proof, null);
+  });
 });
 
 describe("S31 RemoteImageExec", () => {

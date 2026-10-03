@@ -37,7 +37,15 @@ export interface Telemetry {
 export class InMemoryTelemetry implements Telemetry {
   private samples: Sample[] = [];
   async record(s: Sample): Promise<void> {
-    this.samples.push(s);
+    // Sanitiza NaN/negativos/clock drift — un ttftMs=NaN corrompe el p50 de
+    // TODO el forge (sort con NaN = orden indefinido → ETR mentiroso).
+    const sanitized: Sample = {
+      ...s,
+      ttftMs: Number.isFinite(s.ttftMs) ? Math.max(0, s.ttftMs) : 0,
+      ...(s.decodeMs !== undefined ? { decodeMs: Number.isFinite(s.decodeMs) ? Math.max(0, s.decodeMs) : 0 } : {}),
+      ts: Number.isFinite(s.ts) ? s.ts : Date.now(),
+    };
+    this.samples.push(sanitized);
     if (this.samples.length > MAX_SAMPLES) {
       this.samples.splice(0, this.samples.length - MAX_SAMPLES);
     }

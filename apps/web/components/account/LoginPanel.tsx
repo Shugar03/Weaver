@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { Key, Wallet, Lightning, Copy, Check } from "@phosphor-icons/react";
 import { createAccount, saveAccountToken, walletChallenge, walletSession } from "../../lib/account";
+import { PasskeyAuth } from "./PasskeyAuth";
 
 // Freighter (browser ext): firma el nonce en un click — el camino sin fricción.
 // La firma llega como Buffer o base64 según la versión del ext; el endpoint
@@ -169,6 +170,7 @@ export function LoginPanel({ base, onLogin }: { base: string; onLogin: (token: s
               <span className="block text-sm text-fog">un click, sin email ni password — te llevas un token</span>
             </span>
           </button>
+          <PasskeyAuth base={base} onLogin={onLogin} />
           <button
             onClick={() => setMode("token")}
             className="flex w-full items-center gap-4 border border-line bg-panel p-5 text-left transition-colors hover:border-fog"

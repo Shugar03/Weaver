@@ -45,3 +45,30 @@ export {
   jobSettledFeedback,
 } from "./erc8004.ts";
 export type { FeedbackInput } from "./erc8004.ts";
+// — MetaMask Delegation Toolkit (ERC-7710/7715, canonical v1.3.0) —
+export {
+  DelegationEngine,
+  buildWeaverAgentDelegation,
+  verifyDelegationSignature,
+  hashDelegation,
+  encodeErc20TransferAmountTerms,
+  decodeErc20TransferAmountTerms,
+  encodeAllowedTargetsTerms,
+  decodeAllowedTargetsTerms,
+  encodeAllowedMethodsTerms,
+  decodeAllowedMethodsTerms,
+  encodeTimestampTerms,
+  decodeTimestampTerms,
+  encodeLimitedCallsTerms,
+  decodeLimitedCallsTerms,
+  DELEGATION_DOMAIN,
+  DELEGATION_TYPES,
+  DELEGATION_MANAGER,
+  ENFORCER_ERC20_TRANSFER_AMOUNT,
+  ENFORCER_ALLOWED_TARGETS,
+  ENFORCER_ALLOWED_METHODS,
+  ENFORCER_TIMESTAMP,
+  ENFORCER_LIMITED_CALLS,
+  ROOT_AUTHORITY,
+} from "./delegation.ts";
+export type { Caveat, Delegation, ExecutionRequest } from "./delegation.ts";

@@ -188,4 +188,65 @@ contract WeaverEscrowTest is Test {
         vm.prank(admin);
         escrow.release(1, HASH, proof(skA, HASH, 1));
     }
+
+    function test_release_post_refund_falla() public {
+        fund(workerA);
+        vm.warp(block.timestamp + 86_401);
+        vm.prank(client);
+        escrow.refund(1);
+        assertTrue(escrow.getJob(1).state == WeaverEscrow.JobState.Refunded);
+
+        // Intento de release posterior debe revertir con BadState
+        vm.expectRevert(WeaverEscrow.BadState.selector);
+        vm.prank(admin);
+        escrow.release(1, HASH, proof(skA, HASH, 1));
+    }
+
+    function test_refund_post_release_falla() public {
+        fund(workerA);
+        vm.prank(admin);
+        escrow.release(1, HASH, proof(skA, HASH, 1));
+        assertTrue(escrow.getJob(1).state == WeaverEscrow.JobState.Released);
+
+        // Intento de refund posterior (aún transcurrida la ventana de 24h) debe revertir con BadState
+        vm.warp(block.timestamp + 86_401);
+        vm.expectRevert(WeaverEscrow.BadState.selector);
+        vm.prank(client);
+        escrow.refund(1);
+    }
+
+    function test_fund_amount_cero_falla() public {
+        vm.prank(client);
+        vm.expectRevert(WeaverEscrow.BadAmount.selector);
+        escrow.fundJob(0, workerA);
+    }
+
+    function test_fund_worker_address_zero_falla() public {
+        vm.prank(client);
+        vm.expectRevert(WeaverEscrow.ForgeNotFound.selector);
+        escrow.fundJob(PAYOUT, address(0));
+    }
+
+    function test_register_forge_address_zero_revert() public {
+        vm.prank(workerA);
+        vm.expectRevert("signer=0");
+        escrow.registerForge(address(0));
+    }
+
+    function test_firma_malleable_high_s_revert() public {
+        fund(workerA);
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(HASH);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(skA, digest);
+
+        // SECP256K1 order n
+        uint256 n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 malleableS = bytes32(n - uint256(s));
+        uint8 malleableV = v == 27 ? 28 : 27;
+        bytes memory malleableProof = abi.encodePacked(r, malleableS, malleableV);
+
+        // OpenZeppelin ECDSA revierte ante s > n/2 para prevenir maleabilidad
+        vm.expectRevert();
+        vm.prank(admin);
+        escrow.release(1, HASH, malleableProof);
+    }
 }

@@ -103,7 +103,7 @@ export class ForgeRegistry {
 
   setRtt(pubkey: string, rttMs: number): void {
     const s = this.sessions.get(pubkey);
-    if (s) s.rttMs = rttMs;
+    if (s) s.rttMs = Number.isFinite(rttMs) ? Math.max(0, rttMs) : DEFAULT_REMOTE_RTT_MS;
   }
 
   // Attestation: el gateway marca la instance tras el benchmark OK.

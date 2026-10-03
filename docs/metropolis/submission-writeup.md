@@ -60,3 +60,10 @@ We implemented Track 04's exact requirements without synthetic abstractions:
 1. **Per-Job Feedback Scaling:** Publishing on-chain feedback per job works reliably on Monad testnet, but production rollouts will batch feedback reports via Merkle roots to optimize RPC load.
 2. **Upstream ValidationRegistry:** Slashing will integrate once the official ERC-8004 `ValidationRegistry` deploys upstream on Monad.
 3. **Multi-Model Redundancy:** Extending cryptographic proof verification from L0 hash matching to L1 majority-voting attestation across heterogeneous GPU clusters.
+
+## 9. Sponsor Bounties Integration
+- **Envio HyperIndex ($1,000):** Real-time GraphQL event indexing for `Deposited`, `Funded`, `Released`, and `NewFeedback` on Monad Testnet Chain ID 10143 (package `indexer/`, 6/6 TDD tests passing).
+- **MetaMask Delegation Toolkit — Best Agent Wallet ($2,500):** Forges and autonomous inference agents operate as self-custodial agent wallets. End-users delegate scoped micro-allowances via ERC-7710/ERC-7715 with caveats (canonical Delegation Framework v1.3.0 enforcers — `ERC20TransferAmount`, `AllowedTargets`, `AllowedMethods`, `Timestamp`, `LimitedCalls` — real EIP-712 domain + packed terms) in `@weaver/settlement` (10/10 TDD tests passing).
+- **Monad Foundation & Category Labs — Mera Passkeys ($5,000):** Zero-seed-phrase onboarding using WebAuthn PRF extension to derive deterministic BIP-44 Monad EOAs via the official `@category-labs/mera` SDK (mnemonic-exportable, MetaMask-compatible). Implements **"One Passkey, Many Keys"** deriving isolated user, agent, and operator wallets from a single passkey (`apps/web/lib/passkey.ts`, `apps/web/components/account/PasskeyAuth.tsx`, and gateway dual auth).
+- **Alchemy:** Monad RPC configuration via `MONAD_RPC_URL`.
+

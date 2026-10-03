@@ -88,4 +88,14 @@ describe("S28 ETR size-aware", () => {
     assert.equal(d.forgeId, "sin-tok");
     assert.equal(d.etrMs, 10);
   });
+
+  it("forge con métricas corruptas (NaN) no gana frente a forge válido", () => {
+    const s = new EtrScheduler();
+    const d = s.select({ id: "j", model: "m" }, [
+      { ...base, forgeId: "corrupto", rttMs: Number.NaN, hot: true },
+      { ...base, forgeId: "valido", rttMs: 50, hot: true },
+    ]);
+    assert.equal(d.forgeId, "valido");
+    assert.equal(d.etrMs, 50);
+  });
 });

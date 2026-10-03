@@ -44,4 +44,13 @@ describe("S9a telemetry", () => {
     for (let i = 0; i < 40; i++) await t2.record({ forgeId: "deg", model: "m", ttftMs: 9000, ok: true, ts: 100 + i });
     assert.equal(await t2.p50("m", "deg"), 9000);
   });
+
+  it("valores negativos o corruptos (clock drift / NTP) se clampean a >= 0", async () => {
+    const t = new InMemoryTelemetry();
+    await t.record({ forgeId: "drift", model: "m", ttftMs: -50, ok: true, ts: 1, decodeMs: -100 });
+    const samples = await t.recent(1);
+    assert.equal(samples[0].ttftMs, 0);
+    assert.equal(samples[0].decodeMs, 0);
+    assert.equal(await t.p50("m", "drift"), 0);
+  });
 });

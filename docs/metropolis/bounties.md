@@ -14,12 +14,12 @@ This document evaluates eligible sponsor bounties for Weaver in the Monad Metrop
 
 ## Bounty Evaluation Matrix
 
-| Sponsor / Bounty | Prize | Relevancy & Mapping | Missing Scope | Effort | Action Plan |
+| Sponsor / Bounty | Prize | Relevancy & Mapping | Status | Effort | Action Plan |
 |---|---|---|---|---|---|
-| **MetaMask Delegation** (Agent Wallet) | $2,500 | Autonomous forge wallets signing proofs & payments | Scoped user allowance delegation caveats | S/M | **Apply** (highlight agent architecture in writeup) |
-| **Monad / Mera** (Passkey UX) | $5,000 ($2.5k × 2) | Anonymous `acct_` layer ready for EOA passkeys | Mera WebAuthn SDK frontend integration | M | **Evaluate** (build if UI polish allows) |
-| **Envio** (HyperIndex) | $1,000 | Event indexing for `Deposited`, `Released`, `NewFeedback` | `config.yaml` schema + GraphQL consumer | S | **Apply** if low-friction indexing template ready |
-| **Alchemy** (Developer Credits) | Credits | Standard RPC endpoint configuration | Set `MONAD_RPC_URL` to Alchemy endpoint | S (Trivial) | **Claim** immediately |
+| **MetaMask Delegation** (Agent Wallet) | $2,500 | Autonomous forge wallets signing proofs & payments + scoped ERC-7715 caveats | **Completed (✓)** | S/M | Fully implemented in `@weaver/settlement` (`DelegationEngine`, caveats, EIP-712) |
+| **Monad / Mera** (Passkey UX) | $5,000 ($2.5k × 2) | Anonymous account layer with WebAuthn PRF deterministic Monad EOAs | **Completed (✓)** | M | Implemented in `apps/web` (`lib/passkey.ts`, `PasskeyAuth.tsx`) & dual gateway auth |
+| **Envio** (HyperIndex) | $1,000 | Event indexing for `Deposited`, `Released`, `NewFeedback` | **Completed (✓)** | S | Standalone indexer in `indexer/`, 6/6 tests passing |
+| **Alchemy** (Developer Credits) | Credits | Standard RPC endpoint configuration | **Completed (✓)** | S (Trivial) | Configured via `MONAD_RPC_URL` / `EVM_RPC_URL` |
 
 ---
 
@@ -28,13 +28,17 @@ This document evaluates eligible sponsor bounties for Weaver in the Monad Metrop
 ### 1. MetaMask Delegation Toolkit — Best Agent Wallet / Plugin ($2,500)
 
 - **What it asks:** Creative application of the MetaMask Delegation Toolkit (ERC-7710 / ERC-7715) enabling autonomous agent wallets, session-key capabilities, or scoped delegation caveats.
-- **How Weaver maps today:**
+- **How Weaver maps:**
   - In Weaver, **the forge is an autonomous agent wallet**. Every worker runs an independent EOA identity that signs network heartbeats, attests model availability, computes cryptographic delivery proofs (`personal_sign` on output hashes), and claims earnings on-chain.
   - The Weaver gateway also operates as an automated agent managing escrow releases and reputation feedback.
-- **What is missing for the bounty:**
-  - Allowing the end-user to delegate a bounded micro-spending allowance (e.g., maximum $5.00 USDC for 24 hours, restricted to `WeaverEscrow` or x402 calls) using ERC-7715 caveats, so their agent can run batch prompts without requiring interactive wallet confirmations per request.
-- **Effort:** **Small/Medium (S/M)**. The conceptual architecture is 100% natural; implementing the caveat contract or client wrapper takes ~1 day.
-- **Verdict:** **High priority bounty.** Present Weaver’s forge architecture as a premier example of autonomous agent wallets serving real computational workloads.
+- **What was implemented:**
+  - Full ERC-7710 / ERC-7715 delegation engine (`packages/settlement/src/delegation.ts`):
+    - Canonical Delegation Framework v1.3.0 enforcers on Monad testnet: `ERC20TransferAmountEnforcer` (USDC budget), `AllowedTargetsEnforcer`, `AllowedMethodsEnforcer`, `TimestampEnforcer`, `LimitedCallsEnforcer`.
+    - Correct `encodePacked` caveat terms matching on-chain Solidity decoding.
+    - Real EIP-712 domain (`DelegationManager`, v1, verifyingContract `0xdb9B1e94…`) — signatures verify against the actual deployment.
+    - `DelegationEngine`: off-chain enforcer mirror — parses `transfer` calldata for spending, enforces targets/methods/time/call-count before on-chain submission.
+    - 10/10 unit tests passing in `packages/settlement/tests/delegation.test.ts`.
+- **Verdict:** **COMPLETED (✓).** Submit for the $2,500 Best Agent Wallet bounty.
 
 ---
 
@@ -42,13 +46,20 @@ This document evaluates eligible sponsor bounties for Weaver in the Monad Metrop
 *Bounties: "Mera: One Passkey, Many Keys" ($2,500) and "Best Mera-Powered UX" ($2,500)*
 
 - **What it asks:** Seamless user onboarding using Mera passkeys (WebAuthn PRF generating deterministic BIP-44 EOAs on Monad without seed phrases, centralized custody, or smart account overhead).
-- **How Weaver maps today:**
-  - Weaver's `packages/accounts` already provides an anonymous, self-custodial account model (`acct_` tokens linked to EVM wallet addresses).
+- **How Weaver maps:**
+  - Weaver's `packages/accounts` provides an anonymous, self-custodial account model (`acct_` tokens linked to EVM wallet addresses).
   - The web interface (`apps/web`) is deliberately designed around zero-friction onboarding: users can test models immediately.
-- **What is missing for the bounty:**
-  - Integrating Mera’s SDK (`@mera/core` or browser provider) in `apps/web` to replace the raw session token with a "Sign in with Touch ID / Face ID" button that derives the user’s Monad EOA on the fly.
-- **Effort:** **Medium (M)**. Straightforward UI integration, but requires careful testing to ensure no regressions in the demo flow.
-- **Verdict:** **Secondary priority.** Implement if core video and testing are locked in ahead of schedule. Even without full SDK wiring, the UX design pattern directly reflects the Mera thesis.
+- **What was implemented:**
+  - WebAuthn PRF deterministic EOA derivation (`apps/web/lib/passkey.ts`):
+    - Official `@category-labs/mera` SDK (`createPasskeyWithPrfOutput` / `getPasskeyPrfOutput`) with canonical BIP-44 derivation (`m/44'/60'/0'/0/index`) — the mnemonic exports and imports identically into MetaMask/Rabby.
+    - Implements **"One Passkey, Many Keys"**: single passkey seed derives separate isolated roles:
+      - Role 0 (`user`): Main wallet for balance and deposits.
+      - Role 1 (`agent`): Autonomous inference runner wallet.
+      - Role 2 (`operator`): Staking and forge management wallet.
+    - Interactive UI component `apps/web/components/account/PasskeyAuth.tsx` integrated into `LoginPanel.tsx`.
+    - Gateway `dualVerify` integration: supports challenge-response signing for both EVM addresses (`0x...`) and Stellar (`G...`).
+    - 4/4 tests passing in `apps/web/tests/passkey.test.ts` + EVM login test in `apps/gateway/tests/accounts.test.ts`.
+- **Verdict:** **COMPLETED (✓).** Submit for both Mera bounties ($5,000 total).
 
 ---
 
@@ -58,13 +69,15 @@ This document evaluates eligible sponsor bounties for Weaver in the Monad Metrop
 - **How Weaver maps today:**
   - Weaver produces clean on-chain events across its contract suite:
     - `WeaverCredits`: `Deposited(bytes32 indexed account, address indexed sender, uint256 amount)`
-    - `WeaverEscrow`: `Funded(uint256 indexed jobId, ...)`, `Released(uint256 indexed jobId, bytes32 resultHash)`, `Refunded(uint256 indexed jobId)`
+    - `WeaverEscrow`: `Funded(uint256 indexed jobId, ...)`, `Released(uint256 indexed jobId, bytes32 resultHash)`, `Refunded(uint256 indexed jobId)`, `ForgeRegistered(...)`
     - ERC-8004: `NewFeedback(uint256 indexed agentId, string tag, ...)`
-  - Currently, `EvmDepositWatcher` ingests these via paginated `eth_getLogs`.
-- **What is missing for the bounty:**
-  - An Envio indexer directory (`config.yaml`, `schema.graphql`, `src/EventHandlers.ts`) listening to the `WeaverCredits` and `WeaverEscrow` contracts on testnet, providing a GraphQL query endpoint for the web dashboard.
-- **Effort:** **Small (S)** (~4 hours of configuration).
-- **Verdict:** **Quick win if time permits.** If not fully wired to the UI before the deadline, our existing `eth_getLogs` watcher with reorg deduplication already functions reliably in production.
+  - Self-contained indexer package in `indexer/` targeting Monad Testnet (`10143`).
+- **What is delivered:**
+  - Standalone Envio HyperIndex package (`indexer/`) with `config.yaml`, `schema.graphql`, `abis/`, `src/EventHandlers.ts`, and `tests/handlers.test.ts`.
+  - In-memory TDD test suite (6/6 passing) verifying pure event transformations and aggregate metrics.
+  - GraphQL schema exposing `Job`, `Deposit`, `Forge` (with earnings aggregates), `Agent`, `Feedback`, and `ProtocolMetric` entities with sample queries in `indexer/README.md`.
+- **Effort:** **Small (S)**.
+- **Verdict:** **COMPLETED (✓).** Ready for hosted service deployment (`envio deploy`) and submission for the $1,000 bounty.
 
 ---
 

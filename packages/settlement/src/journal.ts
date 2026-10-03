@@ -74,6 +74,9 @@ export class InMemoryIntentJournal implements IntentJournal {
   private rows = new Map<string, SettleIntent & { state: string }>();
 
   async recordIntent(i: Omit<SettleIntent, "jobId" | "fundTx">): Promise<void> {
+    // PK semantics idénticas a Postgres: jobKey duplicado es bug del caller
+    // (keys únicos por llamada) — fail loud, nunca clobber silencioso.
+    if (this.rows.has(i.jobKey)) throw new Error(`intent duplicado: ${i.jobKey}`);
     this.rows.set(i.jobKey, { ...i, state: "intent" });
   }
   async attachJob(jobKey: string, jobId: number, fundTx: string): Promise<void> {

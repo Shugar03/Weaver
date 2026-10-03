@@ -113,12 +113,14 @@ export class ForgeDaemon {
     const vramUsed = maxVram !== undefined ? await this.probes.vramUsedGb() : null;
     const instances: InstanceReport[] = [];
     for (const i of this.instances.values()) {
-      // hot = residencia real del modelo en el engine (texto). Imagen no
-      // tiene resident() → probe() del runner (vivo = servible).
+      // Liveness probe del engine local: si el proceso backend crasheó (OOM/ECONNREFUSED),
+      // la instance no está viva ni hot, y se marca saturated para que el gateway no le asigne tráfico.
+      const alive = (await i.exec.probe?.().catch(() => false)) ?? true;
       const hot =
-        i.capability === "image"
-          ? ((await i.exec.probe?.().catch(() => false)) ?? true)
-          : ((await (i.exec as ForgeExec).resident?.().catch(() => false)) ?? true);
+        alive &&
+        (i.capability === "image"
+          ? true
+          : ((await (i.exec as ForgeExec).resident?.().catch(() => false)) ?? true));
       const n = (i.exec as unknown as { inFlight?: number }).inFlight ?? 0;
       const xs = this.tok.get(i.instanceId) ?? [];
       const tok = xs.reduce((a, s) => a + s.tok, 0);
@@ -132,7 +134,7 @@ export class ForgeDaemon {
         capability: i.capability,
         hot,
         inFlight: n,
-        saturated: busyUser || overVram || n >= i.maxConcurrent,
+        saturated: !alive || busyUser || overVram || n >= i.maxConcurrent,
         ...(ms > 0 ? { tokPerSec: (tok / ms) * 1000 } : {}),
         loadTimeMs: i.loadTimeMs,
       });

@@ -110,8 +110,9 @@ export class RemoteForgeExec implements ForgeExec {
     // declarado. Un forge que firma el hash de otro output no cobra.
     const served = createHash("sha256");
     let servedChunks = 0; // tokens medidos gateway-side — el forge no declara su pago
+    let completed = false;
     const un = this.channel.onMessage((m) => {
-      if (!("jobId" in m) || m.jobId !== jobId) return;
+      if (completed || !("jobId" in m) || m.jobId !== jobId) return;
       switch (m.type) {
         case "job.ack":
           ackResolve();
@@ -123,6 +124,12 @@ export class RemoteForgeExec implements ForgeExec {
           wakeUp();
           break;
         case "job.done": {
+          completed = true;
+          const hasContent = servedChunks > 0 || Boolean(m.toolCalls && m.toolCalls.length > 0);
+          if (!hasContent) {
+            fail(new Error(`forge ${this.forgeId}: output vacío — cero chunks servidos no generan proof`));
+            break;
+          }
           // Proof L0 del wire — el gateway NO re-firma; el recibo es del forge.
           const declared = Buffer.from(m.resultHash, "hex");
           if (!served.digest().equals(declared)) {

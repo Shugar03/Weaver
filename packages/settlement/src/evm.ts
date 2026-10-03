@@ -16,7 +16,7 @@ import {
   type PublicClient,
 } from "viem";
 import { randomBytes } from "node:crypto";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { SerialQueue } from "./queue.ts";
 import { payoutFor, type SettleReceipt } from "./escrow.ts";
@@ -553,9 +553,15 @@ export async function evmVerify(signer: Address, resultHash: Buffer, sig: Buffer
 
 // Keypair de forge (secp256k1) — mismo rol que stellarKeypair() en el Soroban:
 // devuelve la address (identidad) y el signer para el proof.
-export function evmForgeKeypair(privateKey: Hex): { address: Address; sign(r: Buffer): Promise<Buffer> } {
-  const account = privateKeyToAccount(privateKey);
-  return { address: account.address, sign: evmSigner(privateKey) };
+export function evmForgeKeypair(privateKey?: Hex): {
+  address: Address;
+  pubkey: Address;
+  secret: Hex;
+  sign(r: Buffer): Promise<Buffer>;
+} {
+  const pk = privateKey ?? generatePrivateKey();
+  const account = privateKeyToAccount(pk);
+  return { address: account.address, pubkey: account.address, secret: pk, sign: evmSigner(pk) };
 }
 
 // keccak256 del resultado servido — el resultHash que ata pago a output.

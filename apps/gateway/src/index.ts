@@ -86,7 +86,7 @@ type Deps = {
   // Challenges de login wallet (firma de "weaver-login:<nonce>") — instancia
   // separada del NonceStore de forges. Ausente = login por mgmt token solo.
   meChallenges?: { issue(): { nonce: string; expiresAt: number }; consume(nonce: string): boolean };
-  verifyWalletSig?: (pubkey: string, msg: Buffer, sig: Buffer) => boolean;
+  verifyWalletSig?: (pubkey: string, msg: Buffer, sig: Buffer) => boolean | Promise<boolean>;
   // Deposit address pública del operador — la muestra el panel (Overview).
   depositAddress?: string;
   // S48: metadata declarada por modelo para el marketplace (env MODEL_CATALOG).
@@ -335,7 +335,7 @@ export function createApp(deps: Deps) {
       const verifyLogin = async (pubkey: string, nonce: string, sigHex: string): Promise<boolean> => {
         if (!challenges.consume(nonce)) return false;
         try {
-          return verify(pubkey, Buffer.from(`weaver-login:${nonce}`), Buffer.from(sigHex, "hex"));
+          return await verify(pubkey, Buffer.from(`weaver-login:${nonce}`), Buffer.from(sigHex, "hex"));
         } catch {
           return false;
         }

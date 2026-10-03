@@ -17,7 +17,8 @@ export function etrMs(forge: ForgeView, job: Job): number {
     job.estOutTokens !== undefined && forge.tokPerSec !== undefined && forge.tokPerSec > 0
       ? (job.estOutTokens / forge.tokPerSec) * 1000
       : 0;
-  return base + gen;
+  const total = base + gen;
+  return Number.isFinite(total) && total >= 0 ? total : Number.POSITIVE_INFINITY;
 }
 
 export class EtrScheduler implements Scheduler {

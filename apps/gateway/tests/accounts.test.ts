@@ -5,7 +5,7 @@ import { createApp } from "../src/index.ts";
 import { InMemoryApiKeys } from "@weaver/api-keys";
 import { InMemoryAccountStore, InMemoryCreditLedger, PricingBook } from "@weaver/accounts";
 import { NonceStore } from "@weaver/forge-net";
-import { stellarKeypair, stellarVerify } from "@weaver/settlement";
+import { dualVerify, evmForgeKeypair, stellarKeypair } from "@weaver/settlement";
 
 const forges = () => [
   { forgeId: "f", model: "qwen3:4b", hot: true, rttMs: 1, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 },
@@ -22,7 +22,7 @@ const setup = () => {
     ledger,
     pricing: new PricingBook({ "qwen3:4b": { prompt: 1_000_000n, completion: 3_000_000n, image: 0n } }),
     meChallenges: new NonceStore(),
-    verifyWalletSig: stellarVerify,
+    verifyWalletSig: dualVerify,
   });
   return { app, accounts, ledger, keys };
 };
@@ -100,6 +100,30 @@ describe("S47 rutas de cuenta", () => {
       body: JSON.stringify({ pubkey, nonce: ch2.nonce, signature: sign(Buffer.from("otro")).toString("hex") }),
     });
     assert.equal(bad.status, 401);
+  });
+
+  it("EVM wallet (Monad passkey / MetaMask): challenge → firma personal_sign → sesión", async () => {
+    const { app, accounts } = setup();
+    const kp = evmForgeKeypair();
+    const pubkey = kp.pubkey; // 0x...
+    const sign = kp.sign;
+
+    const ch = (await (await app.request("/v1/me/challenge", { method: "POST" })).json()) as {
+      nonce: string;
+    };
+    const sig = (await sign(Buffer.from(`weaver-login:${ch.nonce}`))).toString("hex");
+    const ses = await app.request("/v1/me/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pubkey, nonce: ch.nonce, signature: sig }),
+    });
+    assert.equal(ses.status, 200);
+    const { sessionToken, accountId } = (await ses.json()) as { sessionToken: string; accountId: string };
+    assert.match(sessionToken, /^wvr_sess_/);
+    assert.equal((await accounts.byWallet(pubkey))?.id, accountId);
+
+    const me = await app.request("/v1/me", { headers: { authorization: `Bearer ${sessionToken}` } });
+    assert.equal(me.status, 200);
   });
 
   it("keys self-serve: create/list/revoke propias; ajenas → 404; sin auth → 401", async () => {

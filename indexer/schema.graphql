@@ -1,10 +1,24 @@
-"Un forge registrado on-chain (worker → signer de proofs)."
+"Un forge registrado on-chain (worker → signer de proofs) + stats agregadas."
 type Forge {
   id: ID!
   worker: String!
   signer: String!
   registeredTx: String!
   registeredAtBlock: BigInt!
+  totalEarnedUsdc: BigInt!
+  completedJobsCount: Int!
+  refundedJobsCount: Int!
+}
+
+"Contadores globales del protocolo — una sola fila (id: global)."
+type ProtocolMetric {
+  id: ID!
+  totalJobsFunded: Int!
+  totalJobsReleased: Int!
+  totalJobsRefunded: Int!
+  totalVolumeUsdc: BigInt!
+  totalDepositedUsdc: BigInt!
+  totalFeedbacks: Int!
 }
 
 "Un job escroizado: Funded lo crea, Released/Refunded lo cierran."

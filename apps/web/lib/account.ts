@@ -59,12 +59,13 @@ async function req<T>(base: string, path: string, token: string, init?: RequestI
 }
 
 export class AccountError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-  ) {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
