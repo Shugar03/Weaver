@@ -38,6 +38,7 @@ export type EvmLog = {
   transactionHash?: string;
   blockNumber?: string | bigint;
   logIndex?: number | string;
+  removed?: boolean; // log huérfano por reorg — jamás acreditarlo
 };
 
 // Seam de transporte — en prod: publicClient.getLogs de viem; en tests: fake.
@@ -85,6 +86,7 @@ export class EvmDepositWatcher {
     let max = this.cursor;
     for (const l of logs) {
       if (l.topics[0] !== DEPOSITED_TOPIC) continue;
+      if (l.removed === true) continue; // reorg: el log se fue, no se acredita
       const bn = typeof l.blockNumber === "string" ? BigInt(l.blockNumber) : l.blockNumber;
       if (bn !== undefined && bn < this.cursor) continue; // ya procesado
       await this.apply(l);

@@ -649,7 +649,7 @@ if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
     pollMs: Number(process.env.DEPOSIT_POLL_MS ?? 15_000),
     fetcher: async ({ address, topics, fromBlock }) => {
       const head = BigInt((await client.request({ method: "eth_blockNumber" })) as string);
-      const out: { topics: string[]; data: string; transactionHash: string; blockNumber: string; logIndex: string }[] = [];
+      const out: { topics: string[]; data: string; transactionHash: string; blockNumber: string; logIndex: string; removed?: boolean }[] = [];
       for (let from = fromBlock; from <= head; from += LOG_WINDOW + 1n) {
         const to = from + LOG_WINDOW > head ? head : from + LOG_WINDOW;
         const logs = (await client.request({
@@ -664,6 +664,7 @@ if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
         transactionHash: l.transactionHash,
         blockNumber: l.blockNumber,
         logIndex: l.logIndex,
+        ...(l.removed !== undefined ? { removed: l.removed } : {}),
       }));
     },
     ...(process.env.EVM_DEPOSIT_FROM_BLOCK ? { fromBlock: BigInt(process.env.EVM_DEPOSIT_FROM_BLOCK) } : {}),
