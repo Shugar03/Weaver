@@ -126,7 +126,7 @@ export function attachForgeWS(
           if (c.done) break;
         }
         const pk = v.forgePubkey;
-        if (tokens > 0 && pk && box.p && deps.verify(pk, box.p.resultHash, box.p.signature)) {
+        if (tokens > 0 && pk && box.p && (await deps.verify(pk, box.p.resultHash, box.p.signature))) {
           deps.registry.attest(pk, v.forgeId);
         }
       } catch {

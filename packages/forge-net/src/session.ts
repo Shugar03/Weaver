@@ -12,7 +12,9 @@ import type { ForgeRegistry } from "./registry.ts";
 import type { ForgeChannel } from "./remote.ts";
 
 // Firma del forge sobre el nonce (bytes utf8 del nonce, firma hex).
-export type VerifyFn = (pubkey: string, msg: Buffer, sig: Buffer) => boolean;
+// Async-safe: el verify EVM (ecrecover via viem) devuelve Promise — el auth
+// lo espera; un verify sync (ed25519) sigue sirviendo sin cambios.
+export type VerifyFn = (pubkey: string, msg: Buffer, sig: Buffer) => boolean | Promise<boolean>;
 
 export class ForgeSession implements ForgeChannel {
   private readonly msgListeners = new Set<(m: ForgeMsg) => void>();
@@ -72,7 +74,7 @@ export class ForgeSession implements ForgeChannel {
       // Firma inválida consume el nonce igual — el forge reintenta con otro.
       const ok =
         this.consumeNonce(m.nonce) &&
-        this.verify(m.pubkey, Buffer.from(m.nonce, "utf8"), Buffer.from(m.signature, "hex"));
+        (await this.verify(m.pubkey, Buffer.from(m.nonce, "utf8"), Buffer.from(m.signature, "hex")));
       if (!ok) {
         this.send({ type: "auth.fail", error: "firma o nonce inválido" });
         return this.kill("auth fail");

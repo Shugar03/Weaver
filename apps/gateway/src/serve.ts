@@ -8,9 +8,13 @@
 //   OPERATOR_KEY (fija el admin entre reinicios; ausente = efímera impresa),
 //   PAYWALL_PAY_TO (presente = paywall x402 ON; ausente = off),
 //   RATE_LIMIT_RPM (default 120; 0 = off),
-//   SETTLEMENT_SECRET (presente = escrow operador→worker ON),
-//   WORKER_SECRET (clave ed25519 del forge — firma el proof L0 de cada output;
-//   requerida para que el contrato v3 verifique el release).
+//   SETTLE_CHAIN (stellar|evm — default stellar; evm = Monad testnet ADR-0008),
+//   SETTLEMENT_SECRET (presente = escrow operador→worker ON; S… o 0x… según chain),
+//   EVM_RPC_URL (default https://testnet-rpc.monad.xyz),
+//   EVM_USDC (default USDC oficial Circle de Monad testnet),
+//   ERC8004_AGENTS (JSON {"0xWorker":agentId} — feedback ERC-8004 post-release),
+//   WORKER_SECRET (clave del forge — firma el proof L0 de cada output;
+//   S… ed25519 en stellar, 0x… secp256k1 en evm).
 //   OLLAMA_TIMEOUT_MS (default 300000; deadline del fetch a Ollama).
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { fileURLToPath } from "node:url";
@@ -23,7 +27,29 @@ import { FakeForgeExec, FluxKleinForge, OllamaMLXAdapter, ProvenForgeExec, Route
 import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
 import { DepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
-import { EscrowSettlement, FacilitatorVerifier, InMemorySettleJournal, PostgresSettleJournal, registerForge, RpcSubmitter, stellarPubkey, stellarSigner, stellarVerify, sweepPendingSettles } from "@weaver/settlement";
+import {
+  EscrowSettlement,
+  EvmEscrowSettlement,
+  EvmSubmitter,
+  FacilitatorVerifier,
+  InMemorySettleJournal,
+  MONAD_USDC,
+  PostgresSettleJournal,
+  evmForgeKeypair,
+  evmSigner,
+  evmVerify,
+  giveFeedback,
+  jobSettledFeedback,
+  registerForge,
+  registerForgeEvm,
+  RpcSubmitter,
+  stellarPubkey,
+  stellarSigner,
+  stellarVerify,
+  sweepPendingEvm,
+  sweepPendingSettles,
+} from "@weaver/settlement";
+import type { Address as EvmAddress, Hex } from "viem";
 import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
 import { applyBreaker, CircuitBreaker, etrMs, queueMsFor, type ForgeView } from "@weaver/scheduler";
@@ -41,6 +67,16 @@ const MAX_INFLIGHT_IMAGE = 1;
 // La fleet nace entera de los heartbeats WS de forges remotos (dial-out desde
 // las máquinas con GPU); con el flag los embedded ni se construyen.
 const REMOTE_ONLY = process.env.REMOTE_ONLY === "1";
+
+// SETTLE_CHAIN (ADR-0008): "stellar" (default, Soroban escrow v3) o "evm"
+// (Monad testnet — WeaverEscrow.sol + ERC-8004). La chain del escrow la
+// decide el OPERADOR; la de cada forge se detecta por pubkey (G… vs 0x…).
+const SETTLE_CHAIN = (process.env.SETTLE_CHAIN ?? "stellar") as "stellar" | "evm";
+const isEvmAddr = (pk: string): pk is EvmAddress => /^0x[0-9a-fA-F]{40}$/.test(pk);
+// Verify dual: forges EVM firman personal_sign (ecrecover async), forges
+// Stellar ed25519 (sync). Ambas fleets conviven sobre el mismo wire.
+const forgeVerify = (pk: string, msg: Buffer, sig: Buffer): boolean | Promise<boolean> =>
+  isEvmAddr(pk) ? evmVerify(pk, msg, sig) : stellarVerify(pk, msg, sig);
 
 // Switchable (chaos kill por forge) → Proven (firma L0) → Tracked (in-flight).
 // Las refs "Sw" quedan para el chaos; el registry lleva la capa externa.
@@ -137,7 +173,12 @@ let forgeWS: ReturnType<typeof attachForgeWS> | null = null;
 // S23: los execs firman el sha256 de su propio output (Proof L0) cuando hay
 // WORKER_SECRET. El contrato verifica la firma en release — sin proof, no paga.
 // Sin secret: execs sin firmar → settle queda "failed" honesto (no se fabrica).
-const sign = process.env.WORKER_SECRET ? stellarSigner(process.env.WORKER_SECRET) : undefined;
+// WORKER_SECRET: S… (stellar) o 0x… (evm) — el signer matchea SETTLE_CHAIN.
+const sign = process.env.WORKER_SECRET
+  ? SETTLE_CHAIN === "evm"
+    ? evmSigner(process.env.WORKER_SECRET as Hex)
+    : stellarSigner(process.env.WORKER_SECRET)
+  : undefined;
 
 // S19: registry forgeId→exec. El router ordena la fleet por ETR en cada request
 // y el failover corre sobre ESE orden — la decisión del scheduler ES el dispatch.
@@ -382,6 +423,46 @@ const liveImageExecs = new Proxy(imageExecs, {
 // Artefactos de media: in-memory, cap 50, expiran con el proceso.
 const media = new Map<string, { buf: Buffer; mime: string }>();
 
+// — Settlement EVM (Monad, ADR-0008) —
+// evmSubmitter = operador (admin: fondea y libera). evmSettlement repite el
+// loop fund→release+journal del Soroban. Se construye afuera del deps porque
+// el onPending referencia forgeWS (creado después del http server).
+const evmRpc = process.env.EVM_RPC_URL ?? "https://testnet-rpc.monad.xyz";
+const evmSubmitter =
+  SETTLE_CHAIN === "evm" && process.env.SETTLEMENT_SECRET
+    ? new EvmSubmitter({ rpcUrl: evmRpc, privateKey: process.env.SETTLEMENT_SECRET as Hex })
+    : null;
+// Worker fallback (embedded): WORKER_ADDRESS o el operador mismo (self-pay).
+const evmFallbackWorker = (process.env.WORKER_ADDRESS ?? evmSubmitter?.address) as EvmAddress | undefined;
+const evmSettlement =
+  evmSubmitter && process.env.SETTLEMENT_CONTRACT && evmFallbackWorker
+    ? new EvmEscrowSettlement(
+        evmSubmitter,
+        {
+          escrow: process.env.SETTLEMENT_CONTRACT as EvmAddress,
+          token: (process.env.EVM_USDC ?? MONAD_USDC) as EvmAddress,
+          payout: Number(process.env.PAYOUT_BASE ?? 10000), // $0.01 USDC (6 dec)
+          ...(process.env.PAYOUT_PER_TOKEN ? { perToken: Number(process.env.PAYOUT_PER_TOKEN) } : {}),
+        },
+        settleJournal,
+        (p) => {
+          forgeWS?.sessions.get(p.worker)?.send({ type: "job.funded", chainJobId: p.jobId, resultHash: p.resultHash });
+        },
+      )
+    : null;
+
+// ERC8004_AGENTS='{"0xWorkerAddr":1990}' — agentId ERC-8004 por forge worker.
+// El gateway emite feedback tras cada release (el evaluador es el operador;
+// el registry rechaza self-feedback — worker ≠ operador).
+const erc8004Agents = (() => {
+  try {
+    return JSON.parse(process.env.ERC8004_AGENTS ?? "{}") as Record<string, number>;
+  } catch {
+    console.warn("ERC8004_AGENTS JSON inválido — feedback off");
+    return {};
+  }
+})();
+
 const app = createApp({
   forges,
   exec,
@@ -415,7 +496,7 @@ const app = createApp({
   // S34: payout per-forge — la pubkey del registry ES la cuenta que cobra.
   forgePubkeyOf: (forgeId) => registry.pubkeyOf(forgeId),
     // S37: toda firma de forge remoto se verifica antes del release.
-  verifyProof: stellarVerify,
+  verifyProof: forgeVerify,
   // S38: audit replay — con probabilidad AUDIT_RATE re-ejecutamos el prompt
   // canónico (temp 0) en el forge que sirvió Y en una referencia del mismo
   // modelo; hash distinto = strike. 2 strikes seguidos → breaker (miente el
@@ -452,7 +533,25 @@ const app = createApp({
   // pubkey — un G... hardcodeado desalineado dejaría toda tx sin auth).
   // SETTLEMENT_CONTRACT es obligatorio: sin default — un contractId stale
   // contra un contrato de ABI vieja rompería cada settle silenciosamente.
-  ...(process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT
+  ...(SETTLE_CHAIN === "evm" && evmSettlement
+    ? {
+        // EVM: worker por job (forgePubkeyOf = address del forge remoto);
+        // embedded sin pubkey cae al fallback (operador = self-pay).
+        settlement: {
+          settleJob: (h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }) =>
+            evmSettlement.settleJob(h, sig, (worker ?? evmFallbackWorker) as EvmAddress, stats),
+        },
+        // ERC-8004: tras cada release el operador califica al forge con la
+        // evidencia on-chain (jobId + fundTx + releaseTx + resultHash).
+        onSettled: (r, worker, model) => {
+          const agentId = worker ? (erc8004Agents[worker] ?? erc8004Agents[worker.toLowerCase()]) : undefined;
+          if (agentId === undefined || !evmSubmitter) return;
+          void giveFeedback(evmSubmitter, jobSettledFeedback(r, { agentId: BigInt(agentId), ...(model ? { model } : {}) }))
+            .then((tx) => console.log(`erc-8004 feedback agent ${agentId} ✓ tx ${tx}`))
+            .catch((e) => console.warn(`erc-8004 feedback agent ${agentId} falló:`, e));
+        },
+      }
+    : process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT
     ? {
         settlement: new EscrowSettlement(
           new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET),
@@ -513,7 +612,7 @@ const hostname = process.env.HOST ?? "127.0.0.1";
 const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`weaver-gateway en http://${info.address}:${info.port}`);
   console.log(
-    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"} settle=${process.env.SETTLEMENT_SECRET ? "ON" : "OFF"} db=${process.env.DATABASE_URL ? "pg" : "mem"}`,
+    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"} settle=${process.env.SETTLEMENT_SECRET ? `ON(${SETTLE_CHAIN})` : "OFF"} db=${process.env.DATABASE_URL ? "pg" : "mem"}`,
   );
 });
 
@@ -522,13 +621,32 @@ const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
 forgeWS = attachForgeWS(server as HttpServer, {
   registry,
   nonces,
-  verify: stellarVerify,
+  verify: forgeVerify,
 });
 
 // S44 (I3): sweep de escrows pending — un crash entre fund y release deja
 // el job en el journal; al boot reintentamos el release (el proof sigue
 // válido). Si la tx revierte queda failed y visible — jamás huérfano.
-if (process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT) {
+if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
+  const escrow = process.env.SETTLEMENT_CONTRACT as EvmAddress;
+  // Fallback worker: solo auto-registrable si ES el operador (registerForge
+  // liga msg.sender=worker — un worker remoto se registra con su propia key).
+  if (evmFallbackWorker && evmFallbackWorker.toLowerCase() === evmSubmitter.address.toLowerCase()) {
+    const signer = (process.env.WORKER_SECRET && isEvmAddr(process.env.WORKER_SECRET)
+      ? evmForgeKeypair(process.env.WORKER_SECRET as Hex).address
+      : evmFallbackWorker) as EvmAddress;
+    void registerForgeEvm(evmSubmitter, escrow, signer)
+      .then((tx) => console.log(`worker fallback registrado on-chain (signer ${signer.slice(0, 10)}…) — tx ${tx}`))
+      .catch((e) => console.warn("registerForge del worker fallback falló:", e));
+  } else if (evmFallbackWorker) {
+    console.log(`worker ${evmFallbackWorker.slice(0, 10)}… remoto: se registra solo (weaver-forge register)`);
+  }
+  void sweepPendingEvm(evmSubmitter, settleJournal, escrow)
+    .then((r) => {
+      if (r.released + r.failed > 0) console.log(`settle sweep EVM: ${r.released} released, ${r.failed} failed`);
+    })
+    .catch((e) => console.warn("settle sweep EVM no corrió:", e));
+} else if (process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT) {
   const contractId = process.env.SETTLEMENT_CONTRACT;
   const submitter = new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET);
   const operatorAddr = stellarPubkey(process.env.SETTLEMENT_SECRET);

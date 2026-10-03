@@ -7,7 +7,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Address, Keypair, nativeToScVal } from "@stellar/stellar-sdk";
-import { RpcSubmitter } from "@weaver/settlement";
+import type { Address as EvmAddress, Hex } from "viem";
+import {
+  ESCROW_ABI,
+  EvmSubmitter,
+  evmForgeKeypair,
+  registerForgeEvm,
+  RpcSubmitter,
+} from "@weaver/settlement";
 import { FluxKleinForge, OllamaMLXAdapter, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
 import { initConfig, loadConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
@@ -60,7 +67,16 @@ function makeInstances(cfg: ForgeConfig): DaemonInstance[] {
 
 // S41/S42: sin register_forge on-chain el forge no es fondeable — el escrow
 // rechaza el fund (ForgeNotFound). Re-registrar renueva el TTL de la key.
+// EVM (Monad): msg.sender = worker — el forge se registra a sí mismo con su
+// propia key; el signer de proofs es su misma address (hot key única v1).
 async function registerForge(cfg: ForgeConfig, contractId: string): Promise<string> {
+  if (cfg.chain === "evm") {
+    const sub = new EvmSubmitter({
+      rpcUrl: arg("--rpc") ?? process.env.EVM_RPC_URL ?? "https://testnet-rpc.monad.xyz",
+      privateKey: cfg.secret as Hex,
+    });
+    return registerForgeEvm(sub, contractId as EvmAddress, sub.address);
+  }
   const kp = Keypair.fromSecret(cfg.secret);
   const rpc = arg("--rpc") ?? process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org";
   const submitter = new RpcSubmitter(rpc, cfg.secret);
@@ -81,7 +97,22 @@ async function registerForge(cfg: ForgeConfig, contractId: string): Promise<stri
 
 // S42 (I4): release como caller=worker — la misma fn para el comando `claim`
 // manual y el seam `Claimer` del daemon (auto-claim ante job.funded).
+// EVM: release(jobId, resultHash, forgeSig) — caller=worker (su propia key).
 function makeClaimer(cfg: ForgeConfig, contractId: string) {
+  if (cfg.chain === "evm") {
+    const sub = new EvmSubmitter({
+      rpcUrl: arg("--rpc") ?? process.env.EVM_RPC_URL ?? "https://testnet-rpc.monad.xyz",
+      privateKey: cfg.secret as Hex,
+    });
+    return async (chainJobId: number, resultHash: Buffer, forgeSig: Buffer): Promise<string> => {
+      const { txHash } = await sub.invoke(contractId as EvmAddress, ESCROW_ABI, "release", [
+        BigInt(chainJobId),
+        `0x${resultHash.toString("hex")}`,
+        `0x${forgeSig.toString("hex")}`,
+      ]);
+      return txHash;
+    };
+  }
   const rpc = arg("--rpc") ?? process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org";
   const submitter = new RpcSubmitter(rpc, cfg.secret);
   return async (chainJobId: number, resultHash: Buffer, forgeSig: Buffer): Promise<string> => {
@@ -122,12 +153,20 @@ if (cmd === "init") {
     ...(process.argv.includes("--idle-only") ? { idleOnly: true } : {}),
     ...(arg("--max-vram-gb") ? { maxVramGb: Number(arg("--max-vram-gb")) } : {}),
   };
+  // --chain evm (Monad, ADR-0008) | stellar (default) — la chain la fija
+  // init y el resto de los comandos la respetan desde el config.
+  const chainArg = arg("--chain") ?? "stellar";
+  if (chainArg !== "stellar" && chainArg !== "evm") {
+    console.error(`--chain inválido: ${chainArg} (stellar|evm)`);
+    process.exit(1);
+  }
   const cfg = initConfig(cfgPath, {
     gateway,
     instances,
+    chain: chainArg,
     ...(Object.keys(budgets).length ? { budgets } : {}),
   });
-  console.log(`forge inicializado:
+  console.log(`forge inicializado [${cfg.chain}]:
   pubkey (identidad + payout): ${cfg.pubkey}
   config: ${cfgPath} (0600 — el secreto no se muestra)
   instances: ${instances.map((i) => `${i.instanceId}→${i.model}(${i.capability})`).join(", ")}
@@ -144,7 +183,9 @@ siguiente paso: weaver-forge up`);
     console.error("claim necesita --contract ID --job N --hash HEX --sig HEX");
     process.exit(1);
   }
-  const txHash = await makeClaimer(cfg, contractId)(jobId, Buffer.from(hash, "hex"), Buffer.from(sig, "hex"));
+  // hex con o sin prefijo 0x (EVM lo emite así; Stellar no — strip neutro).
+  const strip = (h: string) => Buffer.from(h.replace(/^0x/, ""), "hex");
+  const txHash = await makeClaimer(cfg, contractId)(jobId, strip(hash), strip(sig));
   console.log(`claim del job ${jobId} confirmado — tx ${txHash}`);
 } else if (cmd === "register") {
   const cfg = loadConfig(cfgPath);
@@ -157,9 +198,12 @@ siguiente paso: weaver-forge up`);
   console.log(`forge registrado on-chain — pubkey ${cfg.pubkey.slice(0, 16)}… tx ${tx}`);
 } else if (cmd === "up") {
   const cfg = loadConfig(cfgPath);
-  const kp = Keypair.fromSecret(cfg.secret);
   const instances = makeInstances(cfg);
-  const sign = (hash: Buffer) => Buffer.from(kp.sign(hash));
+  // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
+  const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
+    cfg.chain === "evm"
+      ? evmForgeKeypair(cfg.secret as Hex).sign
+      : ((hash) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(hash)));
   const contractId = arg("--contract") ?? process.env.SETTLEMENT_CONTRACT;
   if (contractId) {
     try {
@@ -188,11 +232,12 @@ siguiente paso: weaver-forge up`);
   });
 } else {
   console.log(`weaver-forge — daemon de forge remoto (ADR-0005)
-  init      genera keypair + config (auto-detecta modelos Ollama)
+  init      genera keypair + config (auto-detecta modelos Ollama) [--chain stellar|evm]
   register  registra la pubkey en el contrato escrow (habilita cobro)
   claim     cobra un job fondeado sin el operador (--job --hash --sig)
   up        conecta al gateway y sirve jobs (--contract auto-registra)
 flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:image]
+       --chain stellar|evm  solo en init — el resto lee la chain del config
        --idle-only        solo computar cuando la máquina está idle (>60s sin input)
        --max-vram-gb N    instances COLD solo se ofrecen si su carga entra en N GB`);
 }

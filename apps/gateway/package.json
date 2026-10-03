@@ -24,6 +24,7 @@
     "hono": "^4.0.0",
     "mammoth": "^1.12.3",
     "unpdf": "^1.8.1",
+    "viem": "^2.40.2",
     "ws": "8.18.3"
   },
   "devDependencies": {

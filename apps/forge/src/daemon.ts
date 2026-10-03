@@ -4,8 +4,9 @@
 // inFlight, resident() del adapter, tok/s de stats reales) y dispatch de
 // jobs a los execs locales — los mismos adapters que hoy viven embedded.
 //
-// El secreto Stellar jamás sale de este proceso: solo se usa para firmar
-// (nonce de auth + proof L0 por job). sign() llega inyectado.
+// El secreto jamás sale de este proceso (Stellar ed25519 o EVM secp256k1
+// según cfg.chain): solo se usa para firmar — nonce de auth + proof L0.
+// sign() llega inyectado.
 import { createHash } from "node:crypto";
 import type { DaemonChannel, GatewayMsg, InstanceReport } from "@weaver/forge-net";
 import type { ForgeExec, ImageExec } from "@weaver/forge-exec";
@@ -39,12 +40,16 @@ export type DaemonBudgets = {
 // Ausente (sin --contract) → job.funded se loguea y nada más.
 export type Claimer = (chainJobId: number, resultHash: Buffer, forgeSig: Buffer) => Promise<string>;
 
+// Signer del proof L0: sync (ed25519 Stellar) o async (personal_sign EVM —
+// viem devuelve Promise). El daemon espera ambos igual.
+export type ProofSigner = (hash: Buffer) => Buffer | Promise<Buffer>;
+
 const TOK_WINDOW = 50; // últimas N ejecuciones para tok/s medido
 
 export class ForgeDaemon {
   private readonly channel: DaemonChannel;
   private readonly instances: Map<string, DaemonInstance>;
-  private readonly sign: (hash: Buffer) => Buffer;
+  private readonly sign: ProofSigner;
   private readonly heartbeatMs: number;
   private readonly budgets?: DaemonBudgets;
   private readonly claim?: Claimer;
@@ -56,7 +61,7 @@ export class ForgeDaemon {
   constructor(deps: {
     channel: DaemonChannel;
     instances: DaemonInstance[];
-    sign: (hash: Buffer) => Buffer;
+    sign: ProofSigner;
     heartbeatMs?: number;
     budgets?: DaemonBudgets;
     claim?: Claimer;
@@ -161,7 +166,8 @@ export class ForgeDaemon {
       return;
     }
     const hash = Buffer.from(m.resultHash, "hex");
-    void this.claim(m.chainJobId, hash, this.sign(hash))
+    void Promise.resolve(this.sign(hash))
+      .then((sig) => this.claim!(m.chainJobId, hash, sig))
       .then((tx) => console.log(`self-claim job ${m.chainJobId} ✓ tx ${tx}`))
       .catch((e) => {
         if (/BadState/i.test(String(e))) return; // ya released por el sweep
@@ -206,7 +212,7 @@ export class ForgeDaemon {
             type: "job.done",
             jobId: m.jobId,
             resultHash: hash.toString("hex"),
-            signature: this.sign(hash).toString("hex"),
+            signature: (await this.sign(hash)).toString("hex"),
             ...(c.stats ? { stats: c.stats } : {}),
             ...(c.toolCalls ? { toolCalls: c.toolCalls } : {}),
           });

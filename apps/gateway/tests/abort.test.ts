@@ -31,7 +31,7 @@ describe("S18 cancel → abort upstream", () => {
     const exec = new HangingExec();
     // El routing resuelve el modelo contra la vista de forges — la vista lo
     // expone aunque el exec real sea el mock colgado.
-    const app = createApp({ forges: () => [{ forgeId: "hanging", model: "qwen3:4b", hot: true }], exec });
+    const app = createApp({ forges: () => [{ forgeId: "hanging", model: "qwen3:4b", hot: true, rttMs: 1, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1 }], exec });
     const res = await app.request("/v1/chat/completions", chat());
     assert.equal(res.status, 200);
     const reader = res.body!.getReader();

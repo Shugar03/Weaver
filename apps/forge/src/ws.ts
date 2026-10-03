@@ -3,6 +3,8 @@
 // del lado gateway, el daemon se re-registra solo (mining-pool semantics).
 import WebSocket from "ws";
 import { Keypair } from "@stellar/stellar-sdk";
+import { evmForgeKeypair } from "@weaver/settlement";
+import type { Hex } from "viem";
 import { decodeGateway, encode, type DaemonChannel, type ForgeMsg, type GatewayMsg } from "@weaver/forge-net";
 import type { ForgeConfig } from "./config.ts";
 
@@ -46,7 +48,12 @@ class WsDaemonChannel implements DaemonChannel {
 // Una conexión autenticada. Falla (throw) si challenge/auth/ws fallan —
 // el caller (connectLoop) decide el backoff.
 export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
-  const keypair = Keypair.fromSecret(cfg.secret);
+  // Nonce-signer por chain: ed25519 (stellar) o personal_sign (evm, ADR-0008).
+  // El gateway distingue por formato de pubkey (G… vs 0x…) — mismo wire.
+  const signNonce: (msg: Buffer) => Promise<Buffer> =
+    cfg.chain === "evm"
+      ? evmForgeKeypair(cfg.secret as Hex).sign
+      : async (msg) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(msg));
   const ch = await fetch(`${cfg.gateway}/v1/forges/challenge`, { method: "POST" });
   if (!ch.ok) throw new Error(`challenge ${ch.status}`);
   const { nonce } = (await ch.json()) as { nonce: string };
@@ -59,7 +66,8 @@ export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
   });
   // Keypair.sign devuelve Uint8Array — Buffer.from antes de hex (sin eso
   // toString da "123,45,..." decimal, no hex: auth.fail silencioso).
-  const signature = Buffer.from(keypair.sign(Buffer.from(nonce, "utf8"))).toString("hex");
+  // EVM firma el mismo nonce utf8 como personal_sign (65 bytes).
+  const signature = (await signNonce(Buffer.from(nonce, "utf8"))).toString("hex");
   const channel = new WsDaemonChannel(ws);
   ws.send(encode({ type: "auth", pubkey: cfg.pubkey, nonce, signature }));
 

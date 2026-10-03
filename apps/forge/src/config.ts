@@ -1,8 +1,11 @@
-// S33 — identidad del forge: keypair Stellar en forge.json (0600).
+// S33 — identidad del forge: keypair en forge.json (0600).
 // El secreto NUNCA sale del archivo ni viaja por la red — solo firma local.
+// chain: "stellar" (ed25519, pubkey G…/secret S…) o "evm" (secp256k1,
+// pubkey 0x address / secret 0x privkey) — Monad ADR-0008.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { Keypair } from "@stellar/stellar-sdk";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 export type InstanceCfg = {
   instanceId: string;
@@ -13,9 +16,12 @@ export type InstanceCfg = {
   vramGb?: number; // footprint estimado — init lo llena desde /api/tags size
 };
 
+export type ForgeChain = "stellar" | "evm";
+
 export type ForgeConfig = {
   pubkey: string;
-  secret: string; // S... — identidad = payout address = este pubkey
+  secret: string; // identidad = payout address = este pubkey (S… u 0x…)
+  chain?: ForgeChain; // ausente = "stellar" (configs viejas)
   gateway: string; // base http del gateway, ej http://127.0.0.1:3001
   instances: InstanceCfg[];
   // Budgets del operador (ADR-0005, Fase 7): el daemon los respeta local.
@@ -26,12 +32,25 @@ export type ForgeConfig = {
 // acumulado queda en la pubkey vieja (se advierte en cli).
 export function initConfig(
   path: string,
-  opts: { gateway: string; instances: InstanceCfg[]; budgets?: ForgeConfig["budgets"] },
+  opts: { gateway: string; instances: InstanceCfg[]; budgets?: ForgeConfig["budgets"]; chain?: ForgeChain },
 ): ForgeConfig {
-  const kp = Keypair.random();
+  const chain = opts.chain ?? "stellar";
+  // EVM: identidad = address del secp256k1 (el mismo key firma proofs y cobra).
+  // Stellar: keypair ed25519 clásico.
+  const { pubkey, secret } =
+    chain === "evm"
+      ? (() => {
+          const pk = generatePrivateKey();
+          return { pubkey: privateKeyToAccount(pk).address, secret: pk };
+        })()
+      : (() => {
+          const kp = Keypair.random();
+          return { pubkey: kp.publicKey(), secret: kp.secret() };
+        })();
   const cfg: ForgeConfig = {
-    pubkey: kp.publicKey(),
-    secret: kp.secret(),
+    pubkey,
+    secret,
+    chain,
     gateway: opts.gateway,
     instances: opts.instances,
     ...(opts.budgets ? { budgets: opts.budgets } : {}),

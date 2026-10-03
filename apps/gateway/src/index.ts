@@ -51,7 +51,10 @@ type Deps = {
   // Forges remotos: TODA firma se verifica antes de pagar — la attestation
   // prueba una vez, esto prueba siempre. Embedded: la verificación on-chain
   // del contrato alcanza (firma con WORKER_SECRET local, misma entidad).
-  verifyProof?: (pubkey: string, hash: Buffer, sig: Buffer) => boolean;
+  verifyProof?: (pubkey: string, hash: Buffer, sig: Buffer) => boolean | Promise<boolean>;
+  // Post-release hook (ERC-8004 feedback, EVM): fire-and-forget después de un
+  // settle OK — jamás bloquea la telemetría ni el stream. worker = pubkey/address.
+  onSettled?: (receipt: SettleReceipt, worker: string | undefined, model?: string) => void;
   // S38: audit probabilístico post-job — re-attestation del forge que sirvió.
   // Fire-and-forget: la implementación decide rate y consecuencias.
   audit?: (forgeId: string, model: string) => void;
@@ -727,7 +730,9 @@ export function createApp(deps: Deps) {
     let lastStats: ExecStats | null = null;
     // S23: el forge firma su output (Proof L0) — el contrato lo exige en release.
     let proof: Proof | null = null;
-    const telRecord = (ok: boolean) => {
+    // Async: el verifyProof EVM (ecrecover) es Promise — los call sites la
+    // llaman fire-and-forget, igual que antes (jamás frenan el stream).
+    const telRecord = async (ok: boolean) => {
       const base = {
         forgeId: servedForgeId ?? exec.forgeId,
         model: body.model,
@@ -762,9 +767,11 @@ export function createApp(deps: Deps) {
       // breaker + settle:failed. Embedded (sin pubkey en registry) salta
       // esto: firma local, la verifica el contrato en release.
       const worker = servedProof ? deps.forgePubkeyOf?.(servedProof.forgeId) : undefined;
-      if (ok && servedProof && worker && deps.verifyProof &&
-          !deps.verifyProof(worker, servedProof.resultHash, servedProof.signature)) {
-        deps.breaker?.fail(servedProof.forgeId);
+      const proofOk =
+        !(ok && servedProof && worker && deps.verifyProof) ||
+        (await Promise.resolve(deps.verifyProof!(worker!, servedProof!.resultHash, servedProof!.signature)).catch(() => false));
+      if (!proofOk) {
+        deps.breaker?.fail(servedProof!.forgeId);
         deps.telemetry?.record({ ...base, settle: { status: "failed" } }).catch(() => {});
         return;
       }
@@ -813,6 +820,10 @@ export function createApp(deps: Deps) {
             ...base,
             settle: { payerTx, fundTx: r.fundTx, releaseTx: r.releaseTx, status: payerOk ? "settled" : "failed" },
           });
+          // ERC-8004 feedback (EVM): el release on-chain ES la evidencia.
+          try {
+            if (r.releaseTx) deps.onSettled?.(r, worker, body.model);
+          } catch {}
         } catch {
           await deps.telemetry
             ?.record({ ...base, settle: { payerTx, status: "failed" } })

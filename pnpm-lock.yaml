@@ -35,6 +35,9 @@ importers:
       '@weaver/settlement':
         specifier: workspace:*
         version: link:../../packages/settlement
+      viem:
+        specifier: ^2.40.2
+        version: 2.40.2(typescript@5.9.3)(zod@4.6.5)
       ws:
         specifier: 8.18.3
         version: 8.18.3
@@ -90,6 +93,9 @@ importers:
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
+      viem:
+        specifier: ^2.40.2
+        version: 2.40.2(typescript@5.9.3)(zod@4.6.5)
       ws:
         specifier: 8.18.3
         version: 8.18.3
