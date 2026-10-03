@@ -1,0 +1,64 @@
+"Un forge registrado on-chain (worker → signer de proofs)."
+type Forge {
+  id: ID!
+  worker: String!
+  signer: String!
+  registeredTx: String!
+  registeredAtBlock: BigInt!
+}
+
+"Un job escroizado: Funded lo crea, Released/Refunded lo cierran."
+type Job {
+  id: ID!
+  jobId: BigInt!
+  client: String!
+  worker: String!
+  amount: BigInt!
+  state: String!
+  fundTx: String!
+  fundedAtBlock: BigInt!
+  fundedAtTs: BigInt!
+  releaseTx: String
+  releasedAtBlock: BigInt
+  resultHash: Bytes
+  refundTx: String
+}
+
+"Depósito USDC a una cuenta del gateway (WeaverCredits)."
+type Deposit {
+  id: ID!
+  account: Bytes!
+  payer: String!
+  amount: BigInt!
+  txHash: String!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+}
+
+"Agente ERC-8004 registrado en el Identity Registry."
+type Agent {
+  id: ID!
+  agentId: BigInt!
+  owner: String!
+  agentURI: String!
+  registeredTx: String!
+  registeredAtBlock: BigInt!
+}
+
+"Feedback de reputación ERC-8004 — la evidencia es el recibo del escrow."
+type Feedback {
+  id: ID!
+  agentId: BigInt!
+  clientAddress: String!
+  feedbackIndex: BigInt!
+  value: BigInt!
+  valueDecimals: Int!
+  tag1: String!
+  tag2: String!
+  endpoint: String!
+  feedbackURI: String!
+  feedbackHash: Bytes!
+  txHash: String!
+  blockNumber: BigInt!
+  revoked: Boolean!
+}

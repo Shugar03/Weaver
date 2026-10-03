@@ -1,0 +1,30 @@
+[
+  {
+    "type": "event",
+    "name": "NewFeedback",
+    "inputs": [
+      { "name": "agentId", "type": "uint256", "indexed": true },
+      { "name": "clientAddress", "type": "address", "indexed": true },
+      { "name": "feedbackIndex", "type": "uint64", "indexed": false },
+      { "name": "value", "type": "int128", "indexed": false },
+      { "name": "valueDecimals", "type": "uint8", "indexed": false },
+      { "name": "indexedTag1", "type": "string", "indexed": true },
+      { "name": "tag1", "type": "string", "indexed": false },
+      { "name": "tag2", "type": "string", "indexed": false },
+      { "name": "endpoint", "type": "string", "indexed": false },
+      { "name": "feedbackURI", "type": "string", "indexed": false },
+      { "name": "feedbackHash", "type": "bytes32", "indexed": false }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeedbackRevoked",
+    "inputs": [
+      { "name": "agentId", "type": "uint256", "indexed": true },
+      { "name": "clientAddress", "type": "address", "indexed": true },
+      { "name": "feedbackIndex", "type": "uint64", "indexed": true }
+    ],
+    "anonymous": false
+  }
+]

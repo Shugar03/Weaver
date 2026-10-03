@@ -1,0 +1,22 @@
+[
+  {
+    "type": "event",
+    "name": "Registered",
+    "inputs": [
+      { "name": "agentId", "type": "uint256", "indexed": true },
+      { "name": "agentURI", "type": "string", "indexed": false },
+      { "name": "owner", "type": "address", "indexed": true }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "URIUpdated",
+    "inputs": [
+      { "name": "agentId", "type": "uint256", "indexed": true },
+      { "name": "newURI", "type": "string", "indexed": false },
+      { "name": "updatedBy", "type": "address", "indexed": true }
+    ],
+    "anonymous": false
+  }
+]

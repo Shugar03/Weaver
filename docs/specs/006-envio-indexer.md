@@ -43,3 +43,26 @@ handlers sin errores (typecheck del indexer), y la config queda lista para
 - Frontend del dashboard — GraphQL queryable es la interfaz; la web Weaver
   puede linkear queries de ejemplo pero no se acopla.
 - Re-index de Stellar — el indexer es solo Monad (donde viven los eventos).
+
+## Status — VERIFIED con sync real (2025-10-03)
+
+`indexer/` en el monorepo — envio **3.12.1** pinned (≥7d). Mejor que el
+plan original: no solo codegen — **sync real contra testnet en Postgres
+local** (sin docker: `ENVIO_PG_*` + `envio local db-migrate` + `envio start`,
+RPC-only con `for: sync` — sin token HyperSync).
+
+**Evidencia on-chain decodificada** (tabla `Job`, `Forge` en weaver_indexer):
+
+- Job 1: `state=released`, `amount=10000` (0.01 USDC),
+  `fundTx=0x0069b8c8…` — matchea `fund_job_1` de
+  `contracts/weaver-escrow-evm/deployments/testnet.json` byte-exacto.
+- Forge: `0xbaD8908C…` → signer `0x7c41eb42…` (= `proof_signer` registrado).
+- `codegen` + `tsc` verdes. Sync sigue en background (rate-limit público).
+
+**Quirks documentados**: el RPC de Monad limita `eth_getLogs` a 100 bloques
+(el splitter de envio converge solo); ERC-8004 `NewFeedback` usa ABI
+canónico v1.1.1 verificado contra el topic real `0x6a4a6174…` (11 params —
+la variante de un solo tag NO es la deployada).
+
+**Queda para hosted**: `envio deploy` con cuenta Envio (GraphQL Hasura
+público) — paso del operador, documentado en `indexer/README.md`.

@@ -1,0 +1,43 @@
+name: weaver-indexer
+description: Weaver escrow + USDC deposits + ERC-8004 identity/reputation on Monad testnet — actividad on-chain real del protocolo, queryable por GraphQL.
+contracts:
+  - name: WeaverEscrow
+    abi_file_path: abis/WeaverEscrow.json
+    handler: src/EventHandlers.ts
+    events:
+      - event: ForgeRegistered
+      - event: Funded
+      - event: Released
+      - event: Refunded
+  - name: WeaverCredits
+    abi_file_path: abis/WeaverCredits.json
+    handler: src/EventHandlers.ts
+    events:
+      - event: Deposited
+  - name: IdentityRegistry
+    abi_file_path: abis/IdentityRegistry.json
+    handler: src/EventHandlers.ts
+    events:
+      - event: Registered
+      - event: URIUpdated
+  - name: ReputationRegistry
+    abi_file_path: abis/ReputationRegistry.json
+    handler: src/EventHandlers.ts
+    events:
+      - event: NewFeedback
+      - event: FeedbackRevoked
+chains:
+  - id: 10143
+    rpc:
+      - url: https://testnet-rpc.monad.xyz
+        for: sync # RPC como fuente principal — corre sin ENVIO_API_TOKEN (HyperSync opcional)
+    start_block: 67890000 # deploy escrow @67890179 — margen
+    contracts:
+      - name: WeaverEscrow
+        address: "0x51acE4858652D942dC7b320870e4CDbc5c989cD6"
+      - name: WeaverCredits
+        address: "0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498"
+      - name: IdentityRegistry
+        address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+      - name: ReputationRegistry
+        address: "0x8004B663056A597Dffe9eCcC1965A193B7388713"
