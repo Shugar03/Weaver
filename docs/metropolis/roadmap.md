@@ -11,24 +11,27 @@
 **D0 · 2 Oct (hoy)**
 - [x] Investigación + ADR-0008 + este plan + tag `stellar-submission` + `LICENSE` MIT
 - [x] Foundry 1.8.4 instalado (official; `network="monad"` va en foundry.toml por proyecto)
-- [ ] Registro en hackathon.monad.xyz (admin del equipo) ✓
-- [ ] MON de `faucet.monad.xyz` + USDC testnet de `faucet.circle.com` (`0x534b…43A3`)
-  en la wallet operadora
+- [x] Registro en hackathon.monad.xyz (admin del equipo) ✓
+- [x] MON de `faucet.monad.xyz` + USDC testnet de `faucet.circle.com` (`0x534b…43A3`)
+  en la wallet operadora ✓
 
 **D1 · 3 Oct** *(activación Buenos Aires — ir, hablar con mentores)*
-- [ ] `contracts/weaver-escrow-evm/` — `forge init --template monad-developers/foundry-monad`
-- [ ] `WeaverEscrow.sol`: port de `lib.rs` (init/registerForge/fundJob/release/
-  refund/getJob + eventos `Funded/Released/Refunded`)
-- [ ] ecrecover del proof L0: `keccak256(resultHash, jobId)` personal-sign
-- [ ] Tests Foundry (mismos casos que el Soroban: doble init, bad state,
-  self-claim del worker, refund)
+- [x] `contracts/weaver-escrow-evm/` — `forge init --template monad-developers/foundry-monad` ✓
+- [x] `WeaverEscrow.sol`: port de `lib.rs` (init/registerForge/fundJob/release/
+  refund/getJob + eventos `Funded/Released/Refunded`) ✓
+- [x] ecrecover del proof L0: personal-sign sobre `resultHash` (32b) —
+  fiel al Soroban (el forge firma al servir, sin conocer jobId) ✓
+- [x] Tests Foundry (mismos casos que el Soroban) — **18/18 verdes** ✓
+- [x] Deploy + Sourcify + **flow live**: registerForge→approve→fundJob→release
+  con proof real on-chain (ver `contracts/weaver-escrow-evm/README.md`) ✓
 
-**D2 · 4 Oct**
-- [ ] `WeaverCredits.sol`: `deposit(bytes32 account)` + evento `Deposited`
-- [ ] Deploy escrow + credits a testnet, verificar en monadscan
-- [ ] `packages/settlement`: `EvmSubmitter implements ChainSubmitter` (viem,
-  mismo shape `invoke(contractId, fn, args)`), `evmSigner/evmVerify`,
-  env switch `SETTLE_CHAIN=evm|stellar`
+**D2 · 4 Oct** *(adelantado al 3 Oct)*
+- [x] `WeaverCredits.sol`: `deposit(bytes32 account)` + evento `Deposited` ✓
+- [x] `packages/settlement/src/evm.ts`: `EvmSubmitter` (viem, simulate→write→
+  receipt, SerialQueue), `EvmEscrowSettlement`, `evmSigner/evmVerify` ✓
+- [x] `erc8004.ts`: `registerAgent`/`giveFeedback`/`forgeAgentURI` contra los
+  singletons canónicos — **live verificado**: agentId 1990 + NewFeedback ✓
+- [ ] env switch `SETTLE_CHAIN=evm|stellar` en el gateway
 
 **D3 · 5 Oct**
 - [ ] Forge identity EVM: handshake del daemon firma con secp256k1;

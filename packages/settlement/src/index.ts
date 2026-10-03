@@ -22,4 +22,16 @@ export {
   registerForgeEvm,
   sweepPendingEvm,
 } from "./evm.ts";
-export type { EvmSubmitterConfig, EvmEscrowConfig } from "./evm.ts";
+export type { EvmSubmitterConfig, EvmEscrowConfig, EvmEscrowTransport } from "./evm.ts";
+// — ERC-8004 identidad/reputación canónica (Monad) —
+export {
+  ERC8004_IDENTITY,
+  ERC8004_REPUTATION,
+  IDENTITY_ABI,
+  REPUTATION_ABI,
+  forgeAgentURI,
+  registerAgent,
+  giveFeedback,
+  jobSettledFeedback,
+} from "./erc8004.ts";
+export type { FeedbackInput } from "./erc8004.ts";

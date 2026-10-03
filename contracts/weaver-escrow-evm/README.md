@@ -54,16 +54,29 @@ forge verify-contract <addr> src/WeaverEscrow.sol:WeaverEscrow \
 | Contrato | Dirección | Deploy tx |
 |---|---|---|
 | USDC (Circle) | [`0x534b2f3A21130d7a60830c2Df862319e593943A3`](https://testnet.monadvision.com/address/0x534b2f3A21130d7a60830c2Df862319e593943A3) | — |
-| WeaverEscrow | [`0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C`](https://testnet.monadvision.com/address/0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C) | `0x570e835d…cebb0` |
+| WeaverEscrow | [`0x51acE4858652D942dC7b320870e4CDbc5c989cD6`](https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6) | `0xb6da173e…5150` |
 | WeaverCredits | [`0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498`](https://testnet.monadvision.com/address/0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498) | `0x29737f3a…589c` |
 
-Ambos verificados en Sourcify (`match`). Operador/admin: `0xbaD8…aF3B`.
+Verificados en Sourcify (`match`). Operador/admin: `0xbaD8…aF3B`.
+(v1 anterior `0x743C…fc2C` — proof ataba `resultHash‖jobId`; corregido a `resultHash`
+solo, payload idéntico al escrow Soroban: el forge firma al servir, antes de que
+exista el jobId.)
 
 ## Flow live verificado (job #1, 2026-10-03)
 
 | Paso | tx |
 |---|---|
-| `registerForge` (worker=operador → signer `0x7c41…bebc`) | `0x820a97fc5be9b97a0ddf3b61bd1853828d91d065a7980423d8d370712b41ecb3` |
-| `USDC.approve` (10_000) | `0x3bedd6a94f41b8c7dcfd6c065ce8a32ba77e2e78e86d0aad0b64d98247f9e225` |
-| `fundJob` (0.01 USDC) | `0xe93b744e71db47240375d21cf3549571d61e7a38c587ccf679c2b5ac902de3a4` |
-| `release` — firma del forge sobre `keccak256(resultHash‖jobId)` verificada, evento `Released` + pago | `0xb0cefb64477a89444cb614a28311c24b1aa256c0097f31b92155f836b1b81c9d` |
+| `registerForge` (worker=operador → signer `0x7c41…bebc`) | `0x703c12eb6f138cdf6be95f1137df8548f5a3cb8ac5696015a7b02e36ce924fcf` |
+| `USDC.approve` (10_000) | `0xe8b521d50d83ac40e076e71fa7f140294b2f265b90b066b9fa08d8e66884924e` |
+| `fundJob` (0.01 USDC) | `0x0069b8c83da9d3deff81701577600c4e062b675f6bcad3ea56815d5b702aba90` |
+| `release` — firma del forge sobre `resultHash` verificada on-chain, evento `Released` + pago | `0xa5d830a9a08a25afacd3c1d9a949f3f94788a8df48bae40621f2c29a28decdc0` |
+
+## ERC-8004 live (singletons oficiales, 2026-10-03)
+
+| Paso | Resultado |
+|---|---|
+| Identidad del forge | agentId **1990** — owner `0x7c41…bebc` (el forge se registra a sí mismo) |
+| `register()` tx | `0x1d34302d90320139d7df69a8a7e66537bb80915192958f92989eddb07f84268a` |
+| `setAgentURI` (registration file data URI on-chain) | `0x127fa32c3b0dc8419727388c1a0d37718c32478791de77f722a3abd48653ef8b` |
+| `giveFeedback` del operador sobre job #1 (`tag1=jobSettled`, evidencia = recibo del escrow) | `0x5992e246af0d1d25bb81b85b3626a6bf0593059bb31ead81f85bbb10ee0662bb` |
+| `getSummary(1990, [operador], "jobSettled")` | count=1, value=1 ✓ |

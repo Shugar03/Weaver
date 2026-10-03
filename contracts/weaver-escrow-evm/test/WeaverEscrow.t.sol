@@ -44,11 +44,10 @@ contract WeaverEscrowTest is Test {
         escrow.registerForge(signerA);
     }
 
-    /// digest que firma el forge: personal-sign de keccak256(resultHash ‖ jobId)
-    function proof(uint256 sk, bytes32 resultHash, uint256 jobId) internal pure returns (bytes memory) {
-        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(
-            keccak256(abi.encodePacked(resultHash, jobId))
-        );
+    /// digest que firma el forge: personal-sign de resultHash (32 bytes) —
+    /// el forge firma al servir, sin conocer el jobId (port fiel del Soroban)
+    function proof(uint256 sk, bytes32 resultHash, uint256 /* jobId */) internal pure returns (bytes memory) {
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(resultHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(sk, digest);
         return abi.encodePacked(r, s, v);
     }
@@ -135,12 +134,12 @@ contract WeaverEscrowTest is Test {
         escrow.release(2, HASH, proof(skA, HASH, 2));
     }
 
-    function test_sig_sobre_otro_job_no_verifica() public {
+    function test_sig_sobre_otro_hash_no_verifica() public {
         fund(workerA);
-        // firma válida pero ligada al jobId 2 — el proof va ligado al job
+        // firma válida pero sobre otro resultado — el proof ata hash servido
         vm.expectRevert(WeaverEscrow.BadSignature.selector);
         vm.prank(admin);
-        escrow.release(1, HASH, proof(skA, HASH, 2));
+        escrow.release(1, HASH, proof(skA, bytes32(uint256(9)), 1));
     }
 
     function test_doble_release_falla() public {

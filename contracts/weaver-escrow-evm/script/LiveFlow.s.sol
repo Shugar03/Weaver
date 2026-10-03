@@ -11,7 +11,7 @@ import {WeaverEscrow} from "../src/WeaverEscrow.sol";
 /// el job #1. El release va por `cast send` con la firma del forge.
 ///   forge script script/LiveFlow.s.sol --broadcast --account monad-operator -vvv
 contract LiveFlow is Script {
-    address constant ESCROW = 0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C;
+    address constant ESCROW = 0x51acE4858652D942dC7b320870e4CDbc5c989cD6;
     address constant USDC = 0x534b2f3A21130d7a60830c2Df862319e593943A3;
     /// operador (deployer del escrow; también client+worker del job demo)
     address constant OPERATOR = 0xbaD8908CD47c0A47F31F35a45e5c8Ba14878aF3B;

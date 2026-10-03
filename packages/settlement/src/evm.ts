@@ -121,7 +121,7 @@ export class EvmSubmitter {
     this.address = this.account.address;
   }
 
-  invoke(contract: Address, abi: typeof ESCROW_ABI | typeof ERC20_ABI, fn: string, args: unknown[]): Promise<{
+  invoke(contract: Address, abi: readonly unknown[], fn: string, args: unknown[]): Promise<{
     txHash: Hex;
     retval?: bigint;
   }> {
@@ -130,7 +130,7 @@ export class EvmSubmitter {
 
   private async doInvoke(
     contract: Address,
-    abi: typeof ESCROW_ABI | typeof ERC20_ABI,
+    abi: readonly unknown[],
     fn: string,
     args: unknown[],
   ): Promise<{ txHash: Hex; retval?: bigint }> {

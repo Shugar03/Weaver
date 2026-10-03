@@ -93,8 +93,10 @@ contract WeaverEscrow is ReentrancyGuard {
 
     /// @notice Paga el escrow al worker del job, atado al sha256 del resultado.
     ///         Proof L0: `forge_sig` es firma personal-sign del forge sobre
-    ///         keccak256(resultHash ‖ jobId). caller ∈ {admin, job.worker} —
-    ///         el forge puede self-claim si el operador no liquida.
+    ///         `resultHash` — el forge firma al servir, antes de que exista el
+    ///         jobId on-chain (mismo payload que el escrow Soroban).
+    ///         caller ∈ {admin, job.worker} — el forge puede self-claim si el
+    ///         operador no liquida.
     function release(uint256 jobId, bytes32 resultHash, bytes calldata forgeSig) external nonReentrant {
         Job storage job = _jobs[jobId];
         if (job.client == address(0)) revert JobNotFound();
@@ -102,9 +104,7 @@ contract WeaverEscrow is ReentrancyGuard {
         if (job.state != JobState.Funded) revert BadState();
         address signer = forges[job.worker];
         if (signer == address(0)) revert ForgeNotFound();
-        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(
-            keccak256(abi.encodePacked(resultHash, jobId))
-        );
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(resultHash);
         if (digest.recover(forgeSig) != signer) revert BadSignature();
         job.state = JobState.Released;
         job.resultHash = resultHash;
