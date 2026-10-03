@@ -157,7 +157,13 @@ const cfgPath = arg("--config") ?? CONFIG_PATH;
 if (cmd === "init") {
   const gateway = arg("--gateway") ?? "http://127.0.0.1:3001";
   let instances: InstanceCfg[] = args("--instance").map((s) => {
-    const [instanceId, model, cap] = s.split(":");
+    // id:model[:image] — el modelo puede llevar ':' (tags Ollama: qwen3:4b).
+    // Split en el primer ':' solamente; ":image" solo cuenta como sufijo.
+    const idx = s.indexOf(":");
+    const instanceId = idx > 0 ? s.slice(0, idx) : "";
+    const rest = s.slice(idx + 1);
+    const cap = rest.endsWith(":image") ? "image" : undefined;
+    const model = cap ? rest.slice(0, -":image".length) : rest;
     if (!instanceId || !model) throw new Error(`--instance inválido: ${s} (formato id:model[:image])`);
     return {
       instanceId,
