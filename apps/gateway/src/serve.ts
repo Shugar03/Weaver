@@ -35,11 +35,12 @@ import {
   EvmSubmitter,
   FacilitatorVerifier,
   InMemorySettleJournal,
+  isEvmAddr,
   MONAD_USDC,
   PostgresSettleJournal,
+  dualVerify,
   evmForgeKeypair,
   evmSigner,
-  evmVerify,
   giveFeedback,
   jobSettledFeedback,
   registerForge,
@@ -75,11 +76,10 @@ const REMOTE_ONLY = process.env.REMOTE_ONLY === "1";
 // (Monad testnet — WeaverEscrow.sol + ERC-8004). La chain del escrow la
 // decide el OPERADOR; la de cada forge se detecta por pubkey (G… vs 0x…).
 const SETTLE_CHAIN = (process.env.SETTLE_CHAIN ?? "stellar") as "stellar" | "evm";
-const isEvmAddr = (pk: string): pk is EvmAddress => /^0x[0-9a-fA-F]{40}$/.test(pk);
-// Verify dual: forges EVM firman personal_sign (ecrecover async), forges
-// Stellar ed25519 (sync). Ambas fleets conviven sobre el mismo wire.
-const forgeVerify = (pk: string, msg: Buffer, sig: Buffer): boolean | Promise<boolean> =>
-  isEvmAddr(pk) ? evmVerify(pk, msg, sig) : stellarVerify(pk, msg, sig);
+// Verify dual (@weaver/settlement): forges EVM firman personal_sign (ecrecover
+// async), forges Stellar ed25519 (sync). Ambas fleets conviven sobre el mismo
+// wire — la pubkey decide el esquema, unknown = fail-closed.
+const forgeVerify = dualVerify;
 
 // Switchable (chaos kill por forge) → Proven (firma L0) → Tracked (in-flight).
 // Las refs "Sw" quedan para el chaos; el registry lleva la capa externa.
@@ -568,8 +568,12 @@ const app = createApp({
         // EVM: worker por job (forgePubkeyOf = address del forge remoto);
         // embedded sin pubkey cae al fallback (operador = self-pay).
         settlement: {
-          settleJob: (h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }) =>
-            evmSettlement.settleJob(h, sig, (worker ?? evmFallbackWorker) as EvmAddress, stats),
+          settleJob: (h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }) => {
+            // Mixed fleet: un forge G… sirvió pero su identidad no es pagable en
+            // este escrow — failed explícito, no un throw opaco dentro de viem.
+            if (worker !== undefined && !isEvmAddr(worker)) throw new Error(`worker no-EVM ${worker}: no pagable en escrow Monad`);
+            return evmSettlement.settleJob(h, sig, (worker ?? evmFallbackWorker) as EvmAddress, stats);
+          },
         },
         // ERC-8004: tras cada release el operador califica al forge con la
         // evidencia on-chain (jobId + fundTx + releaseTx + resultHash).

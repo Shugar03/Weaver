@@ -793,9 +793,11 @@ export function createApp(deps: Deps) {
       // breaker + settle:failed. Embedded (sin pubkey en registry) salta
       // esto: firma local, la verifica el contrato en release.
       const worker = servedProof ? deps.forgePubkeyOf?.(servedProof.forgeId) : undefined;
+      // El wrapper async convierte un throw sync del verifier en rechazo —
+      // fail-closed completo: verifier caído = proof inválido = breaker.
       const proofOk =
         !(ok && servedProof && worker && deps.verifyProof) ||
-        (await Promise.resolve(deps.verifyProof!(worker!, servedProof!.resultHash, servedProof!.signature)).catch(() => false));
+        (await (async () => deps.verifyProof!(worker!, servedProof!.resultHash, servedProof!.signature))().catch(() => false));
       if (!proofOk) {
         deps.breaker?.fail(servedProof!.forgeId);
         deps.telemetry?.record({ ...base, settle: { status: "failed" } }).catch(() => {});
