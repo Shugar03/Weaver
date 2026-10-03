@@ -426,7 +426,7 @@
         <h2 class="st">Un mercado de inferencia<br><span class="dim">donde</span> <span class="lm">cualquiera</span><br><span class="dim">sirve y cobra.</span></h2>
         <p class="sub st">El gateway rutea por TTFT y tok/s <b style="color:var(--ink)">medidos</b> — no declarados.
         Los forges aportan GPUs por WebSocket autenticado.
-        Stellar liquida cada job en escrow verificable.</p>
+        Monad liquida cada job en escrow verificable y los forges llevan identidad ERC-8004.</p>
       </div>
       <svg class="mesh st" viewBox="0 0 560 400" fill="none">
         <defs>
@@ -483,7 +483,7 @@
       <div class="pillar st"><div>
         <div class="tag">03 / PAID</div>
         <h3>Escrow on-chain, self-claim</h3>
-        <p>Contrato Soroban: <code>fund_job</code> ata el pago al worker, <code>release</code> exige el proof — sin firma válida no hay pago. Ventana de 24h anti-refund-rug: el forge cobra aunque el operador desaparezca.</p>
+        <p>Contrato EVM en Monad: <code>fundJob</code> ata el pago al worker, <code>release</code> exige ecrecover del proof secp256k1 — sin firma válida no hay pago. Ventana de 24h anti-refund-rug: el forge cobra aunque el operador desaparezca. Reputación ERC-8004 post-settle.</p>
       </div></div>
     </div>
   </div>
@@ -528,7 +528,7 @@
       <div class="cell st"><div><div class="v">WS</div><div class="k">forges remotos: attestation, heartbeats, rate-limit, failover</div></div></div>
       <div class="cell st"><div><div class="v">e2e</div><div class="k">smoke live: cuenta → depósito USDC → stream → debit → settle</div></div></div>
       <div class="cell st"><div><div class="v">/v1</div><div class="k">OpenAI-compatible: chat, images, catalog, usage, keys</div></div></div>
-      <div class="cell st"><div><div class="k" style="color:var(--lima);font-family:VT323;font-size:clamp(18px,1.8vw,26px)">testnet</div><div class="k">pagos reales verificables en stellar.expert</div></div></div>
+      <div class="cell st"><div><div class="k" style="color:var(--lima);font-family:VT323;font-size:clamp(18px,1.8vw,26px)">testnet</div><div class="k">pagos reales verificables en MonadVision</div></div></div>
       <div class="cell st"><div><div class="v">0</div><div class="k">prompts guardados — viven en RAM y mueren con el request</div></div></div>
       <div class="cell st"><div><div class="v">1</div><div class="k">repo · pnpm monorepo · TS + Rust · ADRs documentados</div></div></div>
     </div>
@@ -544,7 +544,7 @@
     <ul class="demolist st" style="display:inline-flex;text-align:left">
       <li>job real → forge remoto → stream de tokens</li>
       <li>TTFT medido en vivo, failover si el nodo cae</li>
-      <li>escrow: fund → proof → release en stellar.expert</li>
+      <li>escrow: fund → proof → release en MonadVision + feedback ERC-8004</li>
       <li>debit medido en /v1/me · marketplace actualizando</li>
     </ul>
     <div class="chips st" style="justify-content:center;margin-top:5vh">
