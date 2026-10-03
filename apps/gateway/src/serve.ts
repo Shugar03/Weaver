@@ -30,20 +30,26 @@ import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
 import { DepositWatcher, EvmDepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
 import {
   EscrowSettlement,
+  ESCROW_ABI,
   EvmEscrowSettlement,
   EvmFacilitatorVerifier,
   EvmSubmitter,
   FacilitatorVerifier,
+  FUNDED_TOPIC,
+  InMemoryIntentJournal,
   InMemorySettleJournal,
   isEvmAddr,
   MONAD_USDC,
+  PostgresIntentJournal,
   PostgresSettleJournal,
+  type IntentJournal,
   dualVerify,
   readAgentOwner,
   evmForgeKeypair,
   evmSigner,
   giveFeedback,
   jobSettledFeedback,
+  reconcileEvmOrphans,
   registerForge,
   registerForgeEvm,
   RpcSubmitter,
@@ -167,9 +173,16 @@ const registry = new ForgeRegistry(forgeStore);
 const nonces = new NonceStore();
 // S44 (I3): journal de escrows — toda plata fondeada queda referenciada;
 // el sweep de boot re-liquida o reembolsa lo que quedó pending.
-const settleJournal = process.env.DATABASE_URL
-  ? new PostgresSettleJournal(dbFromUrl(process.env.DATABASE_URL))
-  : new InMemorySettleJournal();
+// S50 (EVM): intent-first — el proof se persiste ANTES de fundJob; un crash
+// entre fund y attach lo cierra reconcileEvmOrphans por match worker→Funded.
+const settleJournal =
+  SETTLE_CHAIN === "evm"
+    ? process.env.DATABASE_URL
+      ? new PostgresIntentJournal(dbFromUrl(process.env.DATABASE_URL))
+      : new InMemoryIntentJournal()
+    : process.env.DATABASE_URL
+      ? new PostgresSettleJournal(dbFromUrl(process.env.DATABASE_URL))
+      : new InMemorySettleJournal();
 // Los mapas los crea attachForgeWS al levantar el server; antes de eso el
 // registry simplemente no tiene remotos (probeAll/forges los ignoran).
 let forgeWS: ReturnType<typeof attachForgeWS> | null = null;
@@ -448,7 +461,7 @@ const evmSettlement =
           payout: Number(process.env.PAYOUT_BASE ?? 10000), // $0.01 USDC (6 dec)
           ...(process.env.PAYOUT_PER_TOKEN ? { perToken: Number(process.env.PAYOUT_PER_TOKEN) } : {}),
         },
-        settleJournal,
+        settleJournal as IntentJournal,
         (p) => {
           forgeWS?.sessions.get(p.worker)?.send({ type: "job.funded", chainJobId: p.jobId, resultHash: p.resultHash });
         },
@@ -761,6 +774,58 @@ if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
       if (r.released + r.failed > 0) console.log(`settle sweep EVM: ${r.released} released, ${r.failed} failed`);
     })
     .catch((e) => console.warn("settle sweep EVM no corrió:", e));
+
+  // S50: reconciler de huérfanos — intents sin jobId vs Funded on-chain.
+  // Boot + cada 60s: el caso feliz (journal vacío de intents) solo consulta
+  // Funded del operador en la ventana reciente — barato en testnet.
+  const reconcileReader = createPublicClient({ chain: { ...monadTestnet }, transport: http(evmRpc) });
+  const pad32 = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}` as Hex;
+  const RECONCILE_WINDOW = 99n;
+  const fetchFunded = async (worker?: EvmAddress) => {
+    const head = BigInt((await reconcileReader.request({ method: "eth_blockNumber" })) as string);
+    // EVM_ESCROW_FROM_BLOCK: deploy block = historia completa. Default: lookback
+    // reciente — un scan desde génesis son ~700k RPCs (mismo límite del watcher).
+    const lookback = BigInt(process.env.EVM_RECONCILE_LOOKBACK ?? 500_000);
+    const from0 = process.env.EVM_ESCROW_FROM_BLOCK ? BigInt(process.env.EVM_ESCROW_FROM_BLOCK) : head - lookback;
+    const topics: (Hex | null)[] = [
+      FUNDED_TOPIC,
+      null, // jobId cualquiera
+      pad32(evmSubmitter.address), // client = operador (solo SUS escrows)
+      worker ? pad32(worker) : null,
+    ];
+    const out: { jobId: number; worker: EvmAddress; txHash: string }[] = [];
+    for (let from = from0 < 0n ? 0n : from0; from <= head; from += RECONCILE_WINDOW + 1n) {
+      const to = from + RECONCILE_WINDOW > head ? head : from + RECONCILE_WINDOW;
+      const logs = (await reconcileReader.request({
+        method: "eth_getLogs",
+        params: [{ address: escrow, topics, fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }],
+      })) as { topics: string[]; transactionHash: string; removed?: boolean }[];
+      for (const l of logs) {
+        if (l.removed === true) continue; // reorg — ADR-0009
+        out.push({
+          jobId: Number(BigInt(l.topics[1])),
+          worker: `0x${l.topics[3].slice(26)}` as EvmAddress,
+          txHash: l.transactionHash,
+        });
+      }
+    }
+    return out;
+  };
+  const readJob = (jobId: number) =>
+    reconcileReader
+      .readContract({ address: escrow, abi: ESCROW_ABI, functionName: "getJob", args: [BigInt(jobId)] })
+      .then((j) => ({ state: Number((j as { state: number }).state), worker: (j as { worker: EvmAddress }).worker }))
+      .catch(() => null);
+  const reconcile = () =>
+    reconcileEvmOrphans({ submitter: evmSubmitter, journal: settleJournal as IntentJournal, escrow, fetchFunded, readJob })
+      .then((r) => {
+        if (r.recovered + r.orphans + r.staleIntents > 0) {
+          console.log(`settle reconcile EVM: ${r.recovered} recuperados, ${r.orphans} huérfanos, ${r.staleIntents} intents stale`);
+        }
+      })
+      .catch((e) => console.warn("settle reconcile EVM no corrió:", e));
+  void reconcile();
+  setInterval(() => void reconcile(), 60_000).unref();
 } else if (process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT) {
   const contractId = process.env.SETTLEMENT_CONTRACT;
   const submitter = new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET);

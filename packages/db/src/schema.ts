@@ -42,6 +42,22 @@ export const settleJobs = pgTable("settle_jobs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// S50 (I3, EVM): settle_intents — intent-first. El proof queda durable antes
+// de fundJob; attachJob liga el jobId cuando la tx mina. Un crash entre medio
+// deja 'intent' + Funded on-chain → reconcileEvmOrphans los empareja.
+export const settleIntents = pgTable("settle_intents", {
+  jobKey: text("job_key").primaryKey(),
+  worker: text("worker").notNull(),
+  resultHash: text("result_hash").notNull(),
+  forgeSig: text("forge_sig").notNull(),
+  jobId: bigint("job_id", { mode: "number" }),
+  fundTx: text("fund_tx"),
+  releaseTx: text("release_tx"),
+  state: text("state").notNull().default("intent"), // intent|funded|released|failed
+  failReason: text("fail_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // S30: identidades de forges remotos (ADR-0005). El estado vivo (capacidad,
 // inFlight) es efímero por heartbeat — acá solo persiste la identidad.
 export const forges = pgTable("forges", {

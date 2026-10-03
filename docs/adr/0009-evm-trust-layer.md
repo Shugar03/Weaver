@@ -50,6 +50,13 @@ Al implementar el pipeline completo en código (`contracts/weaver-escrow-evm/`, 
 - **Decisión:** Por defecto, una única clave privada secp256k1 cubre la autenticación WebSocket, la firma de proofs criptográficos y el cobro del escrow (`msg.sender == worker == signer`).
 - **Segregación soportada:** Para forges institucionales que deseen mantener sus fondos en cold storage, el contrato `WeaverEscrow` incluye la función `registerForge(address signer)`, permitiendo que una cold wallet registre una hot key secundaria autorizada exclusivamente para firmar inferencias en RAM.
 
+### 8. Recovery de escrows: Journal intent-first + reconciler por eventos
+
+- **Decisión:** `settleJob` persiste el proof (`recordIntent`, keyed por `keccak256(forgeSig)`) **antes** de invocar `fundJob`. Si el journal falla, el settle aborta sin fondear — invariante fail-closed: jamás existe plata on-chain sin proof durable.
+- **Post-fund:** `attachJob` liga el `jobId` al intent cuando la tx mina. Un crash en la ventana `fund→attach` deja un `intent` sin `jobId` + un `Funded` on-chain sin liberar.
+- **Reconciler** (`reconcileEvmOrphans`, boot + cada 60s): escanea eventos `Funded` del escrow filtrados por `client=operator` (topics indexados, ventanas de ≤100 bloques — misma restricción RPC que §5), lee `getJob(jobId)`, y empareja intents huérfanos con jobs `state=Funded` del mismo worker. El match es exacto porque `release` solo exige `ecrecover(resultHash,sig)==worker.signer` — cualquier proof válido del worker libera su escrow (§1).
+- **Casos límite cubiertos:** intents sin `Funded` (fund nunca minó) se descartan con audit trail — nunca se auto-fondea trabajo a destiempo; `Funded` sin ninguna fila journal (pérdida total) se reporta ruidosamente — la recuperación cae al `refund` del operador a las 24h o al self-claim del forge.
+
 ---
 
 ## Consecuencias y estado del sistema

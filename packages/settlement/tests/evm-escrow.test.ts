@@ -12,7 +12,7 @@ import {
   sweepPendingEvm,
   type EvmEscrowTransport,
 } from "../src/evm.ts";
-import { InMemorySettleJournal } from "../src/journal.ts";
+import { InMemoryIntentJournal, InMemorySettleJournal } from "../src/journal.ts";
 import type { Address, Hex } from "viem";
 
 const ESCROW = "0x51acE4858652D942dC7b320870e4CDbc5c989cD6" as Address;
@@ -76,7 +76,7 @@ describe("EVM escrow — settleJob", () => {
   });
 
   it("release falla post-fund → job queda pending en el journal", async () => {
-    const journal = new InMemorySettleJournal();
+    const journal = new InMemoryIntentJournal();
     let pendingNotified = 0;
     const flaky: EvmEscrowTransport = {
       async ensureAllowance() {

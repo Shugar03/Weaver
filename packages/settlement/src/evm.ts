@@ -9,6 +9,7 @@ import {
   createWalletClient,
   http,
   keccak256,
+  stringToHex,
   verifyMessage,
   type Address,
   type Hex,
@@ -18,7 +19,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { SerialQueue } from "./queue.ts";
 import { payoutFor, type SettleReceipt } from "./escrow.ts";
-import type { PendingSettle, SettleJournal } from "./journal.ts";
+import type { IntentJournal, PendingSettle, SettleJournal } from "./journal.ts";
 
 export const MONAD_TESTNET_CHAIN_ID = 10143;
 /// USDC oficial de Circle en Monad testnet (6 dec)
@@ -85,6 +86,26 @@ export const ESCROW_ABI = [
     outputs: [],
   },
   {
+    type: "function",
+    name: "getJob",
+    stateMutability: "view",
+    inputs: [{ name: "jobId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "client", type: "address" },
+          { name: "worker", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "state", type: "uint8" },
+          { name: "fundedAt", type: "uint64" },
+          { name: "resultHash", type: "bytes32" },
+        ],
+      },
+    ],
+  },
+  {
     type: "event",
     name: "Funded",
     inputs: [
@@ -95,6 +116,9 @@ export const ESCROW_ABI = [
     ],
   },
 ] as const;
+
+// topic0 Funded(uint256,address,address,uint256) — para eth_getLogs directo.
+export const FUNDED_TOPIC = keccak256(stringToHex("Funded(uint256,address,address,uint256)"));
 
 export type EvmSubmitterConfig = {
   rpcUrl: string;
@@ -181,13 +205,13 @@ export type EvmEscrowTransport = Pick<EvmSubmitter, "invoke" | "ensureAllowance"
 export class EvmEscrowSettlement {
   private submitter: EvmEscrowTransport;
   private cfg: EvmEscrowConfig;
-  private journal?: SettleJournal;
+  private journal?: IntentJournal;
   private onPending?: (p: PendingSettle) => void;
 
   constructor(
     submitter: EvmEscrowTransport,
     cfg: EvmEscrowConfig,
-    journal?: SettleJournal,
+    journal?: IntentJournal,
     onPending?: (p: PendingSettle) => void,
   ) {
     this.submitter = submitter;
@@ -202,6 +226,10 @@ export class EvmEscrowSettlement {
   // resultHash/forgeSig: mismo contrato que settleJob Soroban (Buffers de 32/65b;
   // la sig EVM es r‖s‖v = 65 bytes, el Soroban era 64 — la validación lo deja
   // explícito). workerAddr es la address EVM del forge (payout).
+  //
+  // Intent-first (S50): el proof se persiste ANTES de fondear. Si el journal
+  // falla → throw → nada on-chain sin proof durable. Un crash entre fund y
+  // attach deja 'intent'+Funded → reconcileEvmOrphans los cierra.
   async settleJob(
     resultHash: Buffer,
     forgeSig: Buffer,
@@ -214,6 +242,14 @@ export class EvmEscrowSettlement {
     if (forgeSig.length !== 65) {
       throw new Error(`forge_sig debe ser 65 bytes (r‖s‖v), vino ${forgeSig.length}`);
     }
+    const jobKey = keccak256(`0x${forgeSig.toString("hex")}` as Hex);
+    await this.journal?.recordIntent({
+      jobKey,
+      worker: workerAddr,
+      resultHash: resultHash.toString("hex"),
+      forgeSig: forgeSig.toString("hex"),
+      createdAt: Date.now(),
+    });
     const payout = payoutFor(stats, { base: this.cfg.payout, perToken: this.cfg.perToken ?? 0 });
     await this.submitter.ensureAllowance(this.cfg.token, this.cfg.escrow, BigInt(payout));
     const funded = await this.submitter.invoke(this.cfg.escrow, ESCROW_ABI, "fundJob", [
@@ -222,15 +258,8 @@ export class EvmEscrowSettlement {
     ]);
     const jobId = Number(funded.retval);
     await this.journal
-      ?.record({
-        jobId,
-        worker: workerAddr,
-        resultHash: resultHash.toString("hex"),
-        forgeSig: forgeSig.toString("hex"),
-        fundTx: funded.txHash,
-        createdAt: Date.now(),
-      })
-      .catch((e) => console.warn(`settle journal record falló (job ${jobId}):`, e));
+      ?.attachJob(jobKey, jobId, funded.txHash)
+      .catch((e) => console.warn(`settle journal attach falló (job ${jobId}, el reconciler lo retoma):`, e));
     try {
       const released = await this.submitter.invoke(this.cfg.escrow, ESCROW_ABI, "release", [
         BigInt(jobId),
@@ -295,6 +324,99 @@ export async function sweepPendingEvm(
     }
   }
   return { released, failed };
+}
+
+// — S50: reconciler de escrows huérfanos —
+// Cierra la última ventana de crash: fundJob minó pero attachJob no escribió
+// (o el journal perdió la fila). El proof sigue como 'intent' sin jobId;
+// on-chain existe un Funded sin liberar.
+// Match por worker: el contrato solo exige ecrecover(resultHash,sig)==
+// worker.signer en release — cualquier proof válido del worker libera el
+// escrow, así que emparejar intent↔Funded por worker es exacto.
+// Huérfanos sin intent (journal perdió TODO): no se puede liberar — el
+// refund del operador a las 24h los recupera; se reportan ruidosamente.
+export type FundedJob = { jobId: number; worker: Address; txHash: string };
+export type ReconcileEvmDeps = {
+  submitter: Pick<EvmSubmitter, "invoke">;
+  journal: IntentJournal;
+  escrow: Address;
+  // Funded events del escrow con client=operator (eth_getLogs paginado en
+  // serve.ts; array en tests). worker opcional filtra por topic indexado.
+  fetchFunded: (worker?: Address) => Promise<FundedJob[]>;
+  // getJob(jobId) → {state(0=Funded), worker} — null si no existe.
+  readJob: (jobId: number) => Promise<{ state: number; worker: Address } | null>;
+};
+export async function reconcileEvmOrphans(deps: {
+  submitter: Pick<EvmSubmitter, "invoke">;
+  journal: IntentJournal;
+  escrow: Address;
+  fetchFunded: (worker?: Address) => Promise<FundedJob[]>;
+  readJob: (jobId: number) => Promise<{ state: number; worker: Address } | null>;
+}): Promise<{ recovered: number; orphans: number; staleIntents: number }> {
+  const { submitter, journal, escrow, fetchFunded, readJob } = deps;
+  const known = new Set(await journal.knownJobIds());
+  let recovered = 0;
+  let staleIntents = 0;
+
+  // Fase 1: intents sin jobId → ¿hay un Funded on-chain del mismo worker que
+  // el journal no conoce? attach + release con el proof del intent.
+  for (const intent of await journal.intentsWithoutJob()) {
+    const candidates = await fetchFunded(intent.worker as Address).catch(() => [] as FundedJob[]);
+    let matched = false;
+    for (const c of candidates) {
+      if (known.has(c.jobId)) continue;
+      const job = await readJob(c.jobId).catch(() => null);
+      if (job?.state !== 0 || job.worker.toLowerCase() !== intent.worker.toLowerCase()) continue;
+      try {
+        const released = await submitter.invoke(escrow, ESCROW_ABI, "release", [
+          BigInt(c.jobId),
+          `0x${intent.resultHash}`,
+          `0x${intent.forgeSig}`,
+        ]);
+        await journal.attachJob(intent.jobKey, c.jobId, c.txHash).catch(() => {});
+        await journal.markReleased(c.jobId, released.txHash).catch(() => {});
+        known.add(c.jobId);
+        recovered++;
+        matched = true;
+        console.log(`settle reconcile: intent ${intent.jobKey.slice(0, 12)}… → job ${c.jobId} released (${released.txHash})`);
+        break;
+      } catch (e) {
+        if (isTerminalEvmError(e)) {
+          // La sig no valida para ESTE job (edge: reorg/registro distinto) —
+          // el intent no sirve acá; sigue al próximo candidato.
+          continue;
+        }
+        console.warn(`settle reconcile: release transitorio falló (job ${c.jobId}):`, e);
+        matched = true; // transitorio: reintenta en el próximo ciclo
+        break;
+      }
+    }
+    if (!matched) {
+      staleIntents++;
+      // El proof existe pero no hay Funded on-chain → fundJob nunca minó
+      // (receipt perdido incluye el caso tx-droppeado). No se auto-fondea:
+      // pagar trabajo ya entregado a destiempo es decisión del operador.
+      // discard cierra el intent (audit trail, deja de re-advertir).
+      await journal.discardIntent(intent.jobKey, "sin Funded on-chain").catch(() => {});
+      console.warn(
+        `settle reconcile: intent ${intent.jobKey.slice(0, 12)}… sin Funded on-chain (worker ${intent.worker.slice(0, 10)}…) → descartado. Trabajo no escroizado — decisión manual.`,
+      );
+    }
+  }
+
+  // Fase 2: huérfanos puros — Funded on-chain del operador que el journal no
+  // conoce ni como pending ni como intent (pérdida total de la fila).
+  let orphans = 0;
+  for (const f of await fetchFunded().catch(() => [] as FundedJob[])) {
+    if (known.has(f.jobId)) continue;
+    const job = await readJob(f.jobId).catch(() => null);
+    if (job?.state !== 0) continue; // ya Released/Refunded — no es huérfano
+    orphans++;
+    console.warn(
+      `settle reconcile: HUÉRFANO job ${f.jobId} → worker ${job.worker} — sin proof en journal. Recupera por forge self-claim o refund del operador a las 24h.`,
+    );
+  }
+  return { recovered, orphans, staleIntents };
 }
 
 // registerForge on-chain — el WORKER manda la tx (msg.sender = worker, su
