@@ -18,9 +18,19 @@
     "register_forge": "0x703c12eb6f138cdf6be95f1137df8548f5a3cb8ac5696015a7b02e36ce924fcf",
     "approve_usdc": "0xe8b521d50d83ac40e076e71fa7f140294b2f265b90b066b9fa08d8e66884924e",
     "fund_job_1": "0x0069b8c83da9d3deff81701577600c4e062b675f6bcad3ea56815d5b702aba90",
-    "release_job_1": "0xa5d830a9a08a25afacd3c1d9a949f3f94788a8df48bae40621f2c29a28decdc0"
+    "release_job_1": "0xa5d830a9a08a25afacd3c1d9a949f3f94788a8df48bae40621f2c29a28decdc0",
+    "live_forge_register": "0xdfec48f921b5eae3dc748341243723536b265c09c3976bfd0e07525038c4aff3",
+    "live_fund_job_2": "0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932",
+    "live_release_job_2": "0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58",
+    "live_feedback_1991": "0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd"
   },
   "result_hash_job_1": "0x6948cc5c41ac8d31762de5d69f40405e701adafb38c219d7c6b7cf77344e6561",
+  "live_e2e": {
+    "note": "Forge remoto real (weaver-forge up, chain=evm) → attestation con proof secp256k1 → POST /v1/chat/completions (qwen3:4b) → verify ecrecover → fundJob+release on-chain (forge cobró 0.01 USDC) → giveFeedback ERC-8004 agent 1991.",
+    "forge": "0x784E0a01c683df116fA5bb5A91180d6Fc06BF5CB",
+    "agent_id": 1991,
+    "result_hash_job_2": "0x9f9f03227dd1af68d0b71b214336cb3d84162aff5365be7e9567706be4f12695"
+  },
   "previous": {
     "contract_id": "0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C",
     "note": "v1: la firma se ataba a keccak256(resultHash||jobId) — incompatible con el proveedor que firma result_hash al servir, antes de que exista el jobId. Redeployado con la semántica correcta (firma sobre result_hash solo)."

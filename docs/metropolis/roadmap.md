@@ -63,8 +63,10 @@
 - [x] `GET /v1/forges` expone `forgeAgentId` (fluye por heartbeat) ✓
 
 **D6 · 8 Oct**
-- [ ] End-to-end live: forge remoto → job → proof → release → feedback,
-  todo verificable en monadvision + erc-8004.quicknode.com
+- [x] End-to-end live: forge remoto real (`weaver-forge up --chain evm`) →
+  attestation con proof secp256k1 → job qwen3:4b → ecrecover → fundJob+
+  release (0.01 USDC al forge `0x784E…`) → `giveFeedback` agent 1991 —
+  trail en `contracts/weaver-escrow-evm/deployments/testnet.json` ✓
 - [ ] Deploy gateway con `SETTLE_CHAIN=evm` (Railway)
 - [x] Web dual-chain: `EXPLORERS{stellar,evm}` + links por formato de hash,
   `/network` badge MONAD TESTNET, ProofSection al explorer del deploy,
