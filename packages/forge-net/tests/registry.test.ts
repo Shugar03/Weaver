@@ -113,4 +113,27 @@ describe("S30 ForgeRegistry", () => {
     r.setRtt("GPUB1", 12);
     assert.equal(r.views()[0].rttMs, 12); // medido
   });
+
+  it("erc-8004 claim: declarado → verificado → nuevo claim resetea", async () => {
+    const r = new ForgeRegistry();
+    await r.register("0xFORGE");
+    r.heartbeat("0xFORGE", [inst()], 1990);
+    // Declarado pero no verificado: entra en agentClaims, no en verifiedAgentId.
+    assert.deepEqual(r.agentClaims(), [{ pubkey: "0xFORGE", agentId: 1990 }]);
+    assert.equal(r.verifiedAgentId("0xFORGE"), undefined);
+    assert.equal(r.views()[0].forgeAgentId, 1990);
+    assert.equal(r.views()[0].forgeAgentVerified, false);
+    // ownerOf confirmó → verified; el claim sale de la cola.
+    assert.equal(r.markAgentVerified("0xFORGE", 1990), true);
+    assert.deepEqual(r.agentClaims(), []);
+    assert.equal(r.verifiedAgentId("0xFORGE"), 1990);
+    assert.equal(r.views()[0].forgeAgentVerified, true);
+    // Un heartbeat con OTRO agentId invalida la verificación anterior.
+    r.heartbeat("0xFORGE", [inst()], 4242);
+    assert.equal(r.verifiedAgentId("0xFORGE"), undefined);
+    assert.deepEqual(r.agentClaims(), [{ pubkey: "0xFORGE", agentId: 4242 }]);
+    // Mark stale (de un ownerOf que tardó) no verifica el claim nuevo.
+    assert.equal(r.markAgentVerified("0xFORGE", 1990), false);
+    assert.equal(r.verifiedAgentId("0xFORGE"), undefined);
+  });
 });

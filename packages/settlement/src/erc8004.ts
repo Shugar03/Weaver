@@ -38,6 +38,13 @@ export const IDENTITY_ABI = [
   },
   {
     type: "function",
+    name: "ownerOf",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
     name: "setMetadata",
     stateMutability: "nonpayable",
     inputs: [
@@ -106,6 +113,32 @@ export function forgeAgentURI(forge: {
     weaver: { worker: forge.worker, model: forge.model, escrow: forge.escrow },
   };
   return `data:application/json;base64,${Buffer.from(JSON.stringify(doc)).toString("base64")}`;
+}
+
+// ownerOf(agentId) — verificación del claim de un forge: el heartbeat declara
+// agentId (self-declared), el gateway confirma que el owner on-chain ES la
+// address autenticada del forge. null = agente inexistente o RPC caído.
+export type ContractReader = {
+  readContract(args: {
+    address: Address;
+    abi: readonly unknown[];
+    functionName: string;
+    args: readonly unknown[];
+  }): Promise<unknown>;
+};
+
+export async function readAgentOwner(client: ContractReader, agentId: bigint): Promise<Address | null> {
+  try {
+    const owner = await client.readContract({
+      address: ERC8004_IDENTITY,
+      abi: IDENTITY_ABI,
+      functionName: "ownerOf",
+      args: [agentId],
+    });
+    return typeof owner === "string" ? (owner as Address) : null;
+  } catch {
+    return null;
+  }
 }
 
 // register(agentURI) → agentId (el caller queda owner del NFT — el FORGE se

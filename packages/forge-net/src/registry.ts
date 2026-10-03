@@ -18,7 +18,8 @@ type Session = {
   instances: InstanceReport[];
   attested: Set<string>; // instanceIds que pasaron el benchmark
   rttMs?: number; // medido por ping/pong (ws-server lo escribe)
-  agentId?: number; // ERC-8004 (EVM) — reportado por el heartbeat
+  agentId?: number; // ERC-8004 (EVM) — reportado por el heartbeat (self-declared)
+  agentVerified?: boolean; // ownerOf(agentId)==pubkey confirmado on-chain
 };
 
 export class ForgeRegistry {
@@ -59,6 +60,9 @@ export class ForgeRegistry {
     // instanceId es handle global de routing: si OTRO forge ya lo reclama,
     // esta instance no entra (colisión honesta, no routing ambiguo).
     s.instances = [...dedup.values()].filter((i) => !this.claimedByOther(i.instanceId, pubkey));
+    // Claim nuevo → la verificación anterior no aplica (un forge podría
+    // reportar un agentId ajeno después de haber sido verificado con otro).
+    if (agentId !== undefined && agentId !== s.agentId) s.agentVerified = false;
     if (agentId !== undefined) s.agentId = agentId;
     s.lastSeen = this.now();
     void this.store?.touch(pubkey, s.lastSeen).catch(() => {});
@@ -70,6 +74,31 @@ export class ForgeRegistry {
       if (pk !== pubkey && s.instances.some((i) => i.instanceId === instanceId)) return true;
     }
     return false;
+  }
+
+  // Claims ERC-8004 pendientes de verificar on-chain (agentId sin owner check).
+  agentClaims(): { pubkey: string; agentId: number }[] {
+    const out: { pubkey: string; agentId: number }[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.agentId !== undefined && s.agentVerified !== true) out.push({ pubkey: s.pubkey, agentId: s.agentId });
+    }
+    return out;
+  }
+
+  // Marca verificado SOLO si el claim sigue vivo (un heartbeat pudo cambiarlo
+  // entre el ownerOf y este mark — la verificación vale para ese agentId).
+  markAgentVerified(pubkey: string, agentId: number): boolean {
+    const s = this.sessions.get(pubkey);
+    if (!s || s.agentId !== agentId) return false;
+    s.agentVerified = true;
+    return true;
+  }
+
+  // agentId VERIFICADO del forge — la fuente confiable para feedback (el env
+  // ERC8004_AGENTS sigue siendo override del operador).
+  verifiedAgentId(pubkey: string): number | undefined {
+    const s = this.sessions.get(pubkey);
+    return s?.agentVerified === true ? s.agentId : undefined;
   }
 
   setRtt(pubkey: string, rttMs: number): void {
@@ -145,7 +174,9 @@ export class ForgeRegistry {
           forgePubkey: s.pubkey,
           attested: s.attested.has(i.instanceId),
           remote: true,
-          ...(s.agentId !== undefined ? { forgeAgentId: s.agentId } : {}),
+          ...(s.agentId !== undefined
+            ? { forgeAgentId: s.agentId, forgeAgentVerified: s.agentVerified === true }
+            : {}),
         });
       }
     }

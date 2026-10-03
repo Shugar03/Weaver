@@ -32,6 +32,7 @@ export {
   REPUTATION_ABI,
   forgeAgentURI,
   registerAgent,
+  readAgentOwner,
   giveFeedback,
   jobSettledFeedback,
 } from "./erc8004.ts";

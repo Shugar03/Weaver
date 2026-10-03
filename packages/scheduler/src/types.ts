@@ -43,8 +43,10 @@ export type ForgeView = {
   attested?: boolean;
   remote?: boolean;
   // ERC-8004 (ADR-0008): agentId del Identity Registry de Monad, reportado
-  // por el heartbeat del forge — link on-chain en /v1/forges.
+  // por el heartbeat del forge (self-declared). forgeAgentVerified = el
+  // gateway confirmó ownerOf(agentId)==forgePubkey on-chain.
   forgeAgentId?: number;
+  forgeAgentVerified?: boolean;
 };
 
 export type Decision = { forgeId: string; etrMs: number; reason: string };

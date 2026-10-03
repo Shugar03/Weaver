@@ -39,6 +39,7 @@ import {
   MONAD_USDC,
   PostgresSettleJournal,
   dualVerify,
+  readAgentOwner,
   evmForgeKeypair,
   evmSigner,
   giveFeedback,
@@ -578,7 +579,12 @@ const app = createApp({
         // ERC-8004: tras cada release el operador califica al forge con la
         // evidencia on-chain (jobId + fundTx + releaseTx + resultHash).
         onSettled: (r, worker, model) => {
-          const agentId = worker ? (erc8004Agents[worker] ?? erc8004Agents[worker.toLowerCase()]) : undefined;
+          // Fuentes del agentId, por precedencia: override del operador
+          // (ERC8004_AGENTS) → claim del heartbeat VERIFICADO on-chain
+          // (ownerOf==worker). Nunca el claim crudo — un forge puede mentir.
+          const agentId = worker
+            ? (erc8004Agents[worker] ?? erc8004Agents[worker.toLowerCase()] ?? registry.verifiedAgentId(worker))
+            : undefined;
           if (agentId === undefined || !evmSubmitter) return;
           void giveFeedback(evmSubmitter, jobSettledFeedback(r, { agentId: BigInt(agentId), ...(model ? { model } : {}) }))
             .then((tx) => console.log(`erc-8004 feedback agent ${agentId} ✓ tx ${tx}`))
@@ -685,6 +691,35 @@ forgeWS = attachForgeWS(server as HttpServer, {
   nonces,
   verify: forgeVerify,
 });
+
+// ERC-8004 claim verification: el heartbeat declara agentId (self-declared);
+// el gateway confirma ownerOf(agentId)==forge pubkey on-chain y solo ahí lo
+// usa para feedback. Claims inválidos se reintentan cada ciclo (RPC caído ≠
+// mentira — un forge con agentId real tarda un ciclo más en verificarse).
+if (SETTLE_CHAIN === "evm") {
+  const evmReader = createPublicClient({ chain: { ...monadTestnet }, transport: http(evmRpc) });
+  const warnedClaims = new Set<string>(); // un warn por claim falso, no cada ciclo
+  const verifyAgentClaims = async () => {
+    for (const c of registry.agentClaims()) {
+      if (!isEvmAddr(c.pubkey)) continue; // forges Stellar no tienen agente EVM
+      const owner = await readAgentOwner(evmReader, BigInt(c.agentId));
+      if (owner !== null && owner.toLowerCase() === c.pubkey.toLowerCase()) {
+        if (registry.markAgentVerified(c.pubkey, c.agentId)) {
+          console.log(`erc-8004 claim verificado: ${c.pubkey.slice(0, 10)}… → agent ${c.agentId}`);
+        }
+      } else if (owner !== null) {
+        // owner existe pero es OTRA address → claim falso, loguear una vez.
+        const key = `${c.pubkey}:${c.agentId}`;
+        if (!warnedClaims.has(key)) {
+          warnedClaims.add(key);
+          console.warn(`erc-8004 claim FALSO: ${c.pubkey.slice(0, 10)}… dice ser agent ${c.agentId} (owner real ${owner.slice(0, 10)}…)`);
+        }
+      }
+    }
+  };
+  void verifyAgentClaims();
+  setInterval(() => void verifyAgentClaims().catch(() => {}), 10_000).unref();
+}
 
 // S44 (I3): sweep de escrows pending — un crash entre fund y release deja
 // el job en el journal; al boot reintentamos el release (el proof sigue
