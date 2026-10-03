@@ -136,12 +136,12 @@ NO edites `index.html`, solo escribí el guion nuevo).
 
 ## Hecho = checklist por tarea
 
-- [ ] T1 demo-guion reescrito (Monad + live txs) · commit:
-- [ ] T2 submission-writeup.md · commit:
-- [ ] T3 ADR-0009 · commit:
-- [ ] T4 bounties.md · commit:
-- [ ] T5 pitch-guion actualizado · commit:
-- [ ] T6 launch-copy-monad.md · commit:
+- [x] T1 demo-guion reescrito (Monad + live txs) · commit: 9edecb2
+- [x] T2 submission-writeup.md · commit: 841958b
+- [x] T3 ADR-0009 · commit: dc1051a
+- [x] T4 bounties.md · commit: 71cffa1
+- [x] T5 pitch-guion actualizado · commit: c0917f7
+- [x] T6 launch-copy-monad.md · commit: 7a64199
 
 > El humano (Devin en `main/`) se queda con: video re-render
 > (`docs/launch/index.html`), x402 live payload, deploy, push, y merge
