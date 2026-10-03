@@ -40,7 +40,7 @@ We implemented Track 04's exact requirements without synthetic abstractions:
 - **Validation Layer:** Since the ERC-8004 `ValidationRegistry` is not yet deployed on Monad testnet, Weaver provides L0 cryptographic proof (secp256k1 signatures over result hashes validated on-chain in `WeaverEscrow`) alongside automated benchmark attestation.
 
 ## 6. Deliverables & Verifiable Evidence
-- **Source Repository:** [github.com/sebastianpazvillarreal/weaver](https://github.com/sebastianpazvillarreal/weaver) (MIT License)
+- **Source Repository:** [github.com/Shugar03/Weaver](https://github.com/Shugar03/Weaver) (MIT License)
 - **Demo Video:** [YouTube / Loom Demo Video Placeholder](https://youtube.com) (≤3 min live E2E walkthrough)
 - **Verified Contracts (Monad Testnet - Chain ID 10143):**
   - WeaverEscrow: [`0x51acE4858652D942dC7b320870e4CDbc5c989cD6`](https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6)

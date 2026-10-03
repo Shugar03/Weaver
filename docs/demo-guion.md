@@ -78,7 +78,7 @@ Pantalla: `/security` (diagrama ZDR de RAM) → banner final con link a GitHub y
 
 - Subtítulos en inglés tomados directamente de la pista `EN` de este guion.
 - Descripción del video con enlaces canónicos:
-  - Repositorio: `https://github.com/sebastianpazvillarreal/weaver`
+  - Repositorio: `https://github.com/Shugar03/Weaver`
   - WeaverEscrow: `https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6`
   - Live Fund Tx: `https://testnet.monadvision.com/tx/0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932`
   - Live Release Tx: `https://testnet.monadvision.com/tx/0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58`
