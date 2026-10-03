@@ -1,9 +1,17 @@
 # Weaver — The new datacenter has no walls.
 
-Open inference on any GPU, settled on Stellar. No top-ups, no subscriptions, no middleman.
+Open inference on any GPU, settled onchain. No top-ups, no subscriptions, no middleman.
+
+> **Metropolis (Monad hackathon, deadline 13 Oct):** Weaver se presenta al track
+> **04 · Trust, Identity & AI Infrastructure** — los forges son agentes con
+> identidad/reputación on-chain estilo **ERC-8004** y liquidación por job en
+> un escrow EVM. Estrategia: `docs/metropolis/README.md` · Plan: `docs/metropolis/plan.md`
+> · Decisión: `docs/adr/0008-settlement-en-monad-evm.md` · Día a día: `docs/metropolis/roadmap.md`.
+> (La implementación previa sobre Stellar/Soroban queda como referencia — ver
+> sección *Live proof* histórica abajo.)
 
 Weaver routes each request to the cheapest HOT forge (measured ETR, not marketing),
-survives dead nodes by failover, and pays per job in USDC through a Soroban escrow.
+survives dead nodes by failover, and pays per job in USDC through an onchain escrow.
 Prompts live in RAM and die with the request — the chain only ever sees money.
 
 ## The problem: open models won, but using them means paying a toll
@@ -58,7 +66,7 @@ serve — and exactly what Weaver routes and settles.
 4. **Keep zero data.** Prompts live in RAM and die with the request; chats persist
    only on your device (deletable). Public ledger, private prompts. (`/security`)
 
-## Live proof (Stellar testnet, verify it yourself)
+## Live proof (histórico — Stellar testnet, verify it yourself)
 
 - fund $0.01: https://stellar.expert/explorer/testnet/tx/d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7
 - release (con result_hash + firma ed25519 verificada): https://stellar.expert/explorer/testnet/tx/00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab
@@ -111,3 +119,4 @@ Roadmap pointers (not dependencies): `docs/referencias-roadmap.md`.
 ---
 
 Built for the Argentina Builder Challenge (Stellar) — submission: [deck](docs/pitch/index.html) + demo, 27/09.
+Pivot a **Monad / Metropolis** (ADR-0008): [strategy](docs/metropolis/README.md) · [roadmap](docs/metropolis/roadmap.md) · [launch film 30s](docs/launch/weaver-launch.mp4).
