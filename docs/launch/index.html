@@ -77,11 +77,12 @@
     <div id="scrim" class="ov"></div>
     <div id="copy" class="ov"></div>
     <div id="card"><div class="in">
-      <div class="hd">SOROBAN ESCROW <b>TESTNET</b></div>
-      <div class="r"><span>fund_job</span><span>0.01 USDC</span></div>
-      <div class="r"><span>result_hash</span><span id="hash">sha256:········</span></div>
-      <div class="r"><span>release</span><span>→ forge-07</span></div>
-      <div class="r"><span>tx</span><span>00f8971a…d8eab</span></div>
+      <div class="hd">MONAD ESCROW <b>TESTNET</b></div>
+      <div class="r"><span>fundJob</span><span>0.01 USDC</span></div>
+      <div class="r"><span>resultHash</span><span id="hash">sha256:········</span></div>
+      <div class="r"><span>release</span><span>→ 0x784E…5CB</span></div>
+      <div class="r"><span>tx</span><span>0xf06bff…4b58</span></div>
+      <div class="r"><span>erc-8004</span><span>agent 1991 · feedback ✓</span></div>
       <div class="r"><span>status</span><span id="status">PENDING</span></div>
     </div></div>
     <div id="vignette" class="ov"></div>
@@ -114,9 +115,9 @@ const COPY = {
     b5t: { hl: "El nuevo datacenter *no tiene paredes.*" },
     b6: { k: "01 · ruteo", hl: "Cada request, *al forge más rápido.*", s: "ETR medido en vivo — no prometido." },
     b7: { k: "02 · failover", hl: "Los nodos caen. *La red no.*", s: "El siguiente forge HOT toma el job, en vivo." },
-    b8: { k: "03 · liquidación", hl: "Pago por job. *En USDC, sobre Stellar.*", s: "Sin recargas. Sin suscripciones. Sin intermediarios." },
+    b8: { k: "03 · liquidación", hl: "Pago por job. *En USDC, sobre Monad.*", s: "Escrow verificado · identidad ERC-8004 por forge." },
     b9: { k: "04 · zero data", hl: "Tu prompt vive en RAM. *Y muere ahí.*", s: "La cadena solo ve dinero." },
-    b10t: { hl: "El nuevo datacenter *no tiene paredes.*", s: "Inferencia abierta en cualquier GPU · liquidada en Stellar" },
+    b10t: { hl: "El nuevo datacenter *no tiene paredes.*", s: "Inferencia abierta en cualquier GPU · liquidada en Monad" },
     you: "vos · POST /v1/chat/completions",
     prompt: "“Resumí mis análisis y marcá lo anormal.”",
     promptTag: "PROMPT · SOLO RAM · forge-07",
@@ -132,9 +133,9 @@ const COPY = {
     b5t: { hl: "The new datacenter *has no walls.*" },
     b6: { k: "01 · route", hl: "Every request, *to the fastest forge.*", s: "Scored on measured ETR — not promises." },
     b7: { k: "02 · failover", hl: "Nodes fall. *The network doesn't.*", s: "The next HOT forge takes the job, live." },
-    b8: { k: "03 · settle", hl: "Pay per job. *In USDC, on Stellar.*", s: "No top-ups. No subscriptions. No middleman." },
+    b8: { k: "03 · settle", hl: "Pay per job. *In USDC, on Monad.*", s: "Verified escrow · ERC-8004 identity per forge." },
     b9: { k: "04 · zero data", hl: "Your prompt lives in RAM. *And dies there.*", s: "The chain only ever sees money." },
-    b10t: { hl: "The new datacenter *has no walls.*", s: "Open inference on any GPU · settled on Stellar" },
+    b10t: { hl: "The new datacenter *has no walls.*", s: "Open inference on any GPU · settled on Monad" },
     you: "you · POST /v1/chat/completions",
     prompt: "“Summarize my lab results and flag anything off.”",
     promptTag: "PROMPT · RAM ONLY · forge-07",
@@ -417,7 +418,7 @@ function draw(T) {
       ctx.fillStyle = LIMA; ctx.fillRect(pe[0] - rr * 0.22, pe[1] - rr * 0.22, rr * 0.44, rr * 0.44);
       ctx.globalAlpha = ea * 0.25; ring(pe[0], pe[1], rr * 1.6 + Math.sin(T * 4) * 3, LIMA, ea * 0.25);
       ctx.globalAlpha = ea; ctx.font = "22px VT323"; ctx.fillStyle = FOG; ctx.textAlign = "center"; ctx.textBaseline = "top";
-      ctx.fillText("SOROBAN ESCROW", pe[0], pe[1] + rr + 16);
+      ctx.fillText("MONAD ESCROW", pe[0], pe[1] + rr + 16);
       if (S.pay > 0 && S.pay < 1) {
         const q = bez(pe, f3, S.pay, -0.22);
         ctx.globalAlpha = th; ctx.fillStyle = LIMA; ctx.beginPath(); ctx.arc(q[0], q[1], 13, 0, 7); ctx.fill();
