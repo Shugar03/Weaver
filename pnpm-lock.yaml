@@ -143,6 +143,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(postgres@3.4.9)
+      viem:
+        specifier: ^2.40.2
+        version: 2.40.2(typescript@5.9.3)(zod@4.6.5)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

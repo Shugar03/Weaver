@@ -2,10 +2,13 @@
   "name": "@weaver/accounts",
   "version": "0.1.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "dependencies": {
     "@weaver/db": "workspace:*",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "viem": "^2.40.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

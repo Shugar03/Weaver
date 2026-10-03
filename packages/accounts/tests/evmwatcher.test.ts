@@ -1,0 +1,100 @@
+// ADR-0008 — EvmDepositWatcher: poll Deposited logs de WeaverCredits,
+// bytes32(utf8 acct_…) → cuenta, dedup por txHash:logIndex (replay-safe),
+// errores RPC no tumban el loop.
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  EvmDepositWatcher,
+  DEPOSITED_TOPIC,
+  accountToBytes32,
+  bytes32ToAccount,
+  type EvmLog,
+} from "../src/evmwatcher.ts";
+import { InMemoryAccountStore } from "../src/store.ts";
+import { InMemoryCreditLedger } from "../src/ledger.ts";
+
+const CREDITS = "0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498" as const;
+
+const deposit = (accountId: string, amount: bigint, tx: string, bn: bigint, logIndex = 0): EvmLog => ({
+  topics: [DEPOSITED_TOPIC, accountToBytes32(accountId), `0x${"0".repeat(24)}${"a".repeat(40)}`],
+  data: `0x${amount.toString(16).padStart(64, "0")}`,
+  transactionHash: tx,
+  blockNumber: bn,
+  logIndex,
+});
+
+describe("EVM accountToBytes32/bytes32ToAccount", () => {
+  it("roundtrip acct_ id", () => {
+    const id = "acct_lx3k2_AbCdEf";
+    assert.equal(bytes32ToAccount(accountToBytes32(id)), id);
+  });
+  it("rechaza ids >31 bytes y decodificaciones no-acct", () => {
+    assert.throws(() => accountToBytes32("x".repeat(40)));
+    assert.equal(bytes32ToAccount(accountToBytes32("")), null);
+    assert.equal(bytes32ToAccount("0x" + "ff".repeat(32)), null);
+  });
+});
+
+describe("EVM DepositWatcher", () => {
+  it("Deposited con account acct_ → acredita amount exacto", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const { account } = await store.create();
+    const w = new EvmDepositWatcher({
+      credits: CREDITS,
+      store,
+      ledger,
+      fetcher: async () => [deposit(account.id, 25_000_000n, "0xtx1", 100n)],
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    assert.equal(await ledger.balance(account.id), 25_000_000n);
+  });
+
+  it("dedup por txHash:logIndex — re-poll del mismo log no duplica", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const { account } = await store.create();
+    const log = deposit(account.id, 10_000_000n, "0xtx1", 100n);
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger,
+      fetcher: async () => [log], pollMs: 999_999,
+    });
+    await w.pollOnce();
+    await w.pollOnce(); // mismo log otra vez — cursor 100, se re-entrega
+    assert.equal(await ledger.balance(account.id), 10_000_000n);
+  });
+
+  it("accountId desconocido → log, sin acreditar, cursor igual avanza", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    const seen: string[] = [];
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger,
+      onEvent: (m) => seen.push(m),
+      fetcher: async () => [deposit("acct_ghost_xx", 1n, "0xtx9", 50n)],
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    assert.ok(seen.some((m) => m.includes("sin cuenta")));
+  });
+
+  it("fetcher que falla → log y sigue vivo", async () => {
+    const store = new InMemoryAccountStore();
+    const ledger = new InMemoryCreditLedger();
+    let calls = 0;
+    const { account } = await store.create();
+    const w = new EvmDepositWatcher({
+      credits: CREDITS, store, ledger,
+      fetcher: async () => {
+        calls++;
+        if (calls === 1) throw new Error("rpc down");
+        return [deposit(account.id, 5n, "0xtx2", 7n)];
+      },
+      pollMs: 999_999,
+    });
+    await w.pollOnce();
+    await w.pollOnce();
+    assert.equal(await ledger.balance(account.id), 5n);
+  });
+});

@@ -12,6 +12,7 @@
 //   SETTLEMENT_SECRET (presente = escrow operador→worker ON; S… o 0x… según chain),
 //   EVM_RPC_URL (default https://testnet-rpc.monad.xyz),
 //   EVM_USDC (default USDC oficial Circle de Monad testnet),
+//   EVM_CREDITS (WeaverCredits deployado — habilita el deposit watcher EVM),
 //   ERC8004_AGENTS (JSON {"0xWorker":agentId} — feedback ERC-8004 post-release),
 //   WORKER_SECRET (clave del forge — firma el proof L0 de cada output;
 //   S… ed25519 en stellar, 0x… secp256k1 en evm).
@@ -26,7 +27,7 @@ import { Auditor } from "./audit.ts";
 import { FakeForgeExec, FluxKleinForge, OllamaMLXAdapter, ProvenForgeExec, RoutedExec, SwitchableExec, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
-import { DepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
+import { DepositWatcher, EvmDepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
 import {
   EscrowSettlement,
   EvmEscrowSettlement,
@@ -49,7 +50,8 @@ import {
   sweepPendingEvm,
   sweepPendingSettles,
 } from "@weaver/settlement";
-import type { Address as EvmAddress, Hex } from "viem";
+import { createPublicClient, http, type Address as EvmAddress, type Hex } from "viem";
+import { monadTestnet } from "viem/chains";
 import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
 import { applyBreaker, CircuitBreaker, etrMs, queueMsFor, type ForgeView } from "@weaver/scheduler";
@@ -515,7 +517,8 @@ const app = createApp({
   verifyWalletSig: stellarVerify,
   catalog: modelCatalog,
   // Pública — el panel la muestra en Overview para fondear.
-  depositAddress: process.env.DEPOSIT_ADDRESS,
+  // EVM: es el contrato WeaverCredits (deposit(bytes32 acct, amount)).
+  depositAddress: SETTLE_CHAIN === "evm" ? process.env.EVM_CREDITS : process.env.DEPOSIT_ADDRESS,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // IP del socket para el rate limiter (XFF es spoofeable, no entra).
@@ -587,10 +590,38 @@ if (envOperator) {
   console.log(`weaver operator key (solo esta vez, no la pierdas): ${operator.secret}`);
 }
 
-// S47: DepositWatcher — convierte payments USDC clásicos (memo = accountId o
-// wallet pubkey) en créditos del ledger. Solo con DEPOSIT_ADDRESS + USDC_ISSUER
-// configurados; sin ellos el topup on-chain no corre (el resto de cuentas sí).
-if (process.env.DEPOSIT_ADDRESS && process.env.USDC_ISSUER) {
+// S47/ADR-0008: deposit watcher por chain.
+// Stellar: payments USDC clásicos con memo → Horizon poll.
+// EVM: eventos Deposited(bytes32 account,…) del WeaverCredits → eth_getLogs.
+// Solo con sus envs configurados; sin ellos el topup on-chain no corre.
+if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
+  const credits = process.env.EVM_CREDITS as EvmAddress;
+  const client = createPublicClient({
+    chain: { ...monadTestnet },
+    transport: http(evmRpc),
+  });
+  const watcher = new EvmDepositWatcher({
+    credits,
+    store: accounts,
+    ledger: creditLedger,
+    pollMs: Number(process.env.DEPOSIT_POLL_MS ?? 15_000),
+    fetcher: async ({ address, topics, fromBlock }) => {
+      const logs = (await client.request({
+        method: "eth_getLogs",
+        params: [{ address, topics: topics as Hex[], fromBlock: `0x${fromBlock.toString(16)}`, toBlock: "latest" }],
+      })) as { topics: string[]; data: string; transactionHash: string; blockNumber: string; logIndex: string }[];
+      return logs.map((l) => ({
+        topics: l.topics,
+        data: l.data,
+        transactionHash: l.transactionHash,
+        blockNumber: l.blockNumber,
+        logIndex: l.logIndex,
+      }));
+    },
+  });
+  watcher.start();
+  console.log(`evm-deposit-watcher ON → ${credits.slice(0, 10)}… (poll ${Number(process.env.DEPOSIT_POLL_MS ?? 15_000)}ms)`);
+} else if (process.env.DEPOSIT_ADDRESS && process.env.USDC_ISSUER) {
   const watcher = new DepositWatcher({
     horizonUrl: process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org",
     depositAddress: process.env.DEPOSIT_ADDRESS,
