@@ -33,3 +33,12 @@ demo más débil de lo que puede ser.
 
 Smoke script `scripts/smoke-hosted.mjs <base-url>`: forges, un chat job,
 telemetría del settle — falla si algo no es real.
+
+## Estado (verificado live)
+
+- **Demo público temporal**: `cloudflared` quick tunnel → `https://represents-organizations-comes-testing.trycloudflare.com` (efímero — muere con el proceso local; NO es hosting estable).
+- Verificado por la URL pública: `/v1/forges` (2 forges HOT), handshake `wss://`, job chat 200, settle on-chain.
+- `scripts/smoke-hosted.mjs` endurecido: identifica la exec del propio run (`ts >= t0`) y espera `settle.status` terminal — **SMOKE PASS con settle=settled**.
+- El smoke cazó un bug real: `job_key = keccak(sig)` colisionaba la PK de `settle_intents` en outputs idénticos (ECDSA determinista) — fix en `evm.ts` (key único por llamada), test de regresión en `evm-escrow.test.ts`, verificado live: jobs 13 y 14 released en pg.
+- Env dual correcto: `SETTLEMENT_CONTRACT` = escrow EVM, `STELLAR_CONTRACT` = escrow Soroban, `STELLAR_SECRET` = admin Stellar (NO `SETTLEMENT_SECRET`, que es la key EVM).
+- **Pendiente para hosting estable**: Railway/Render/Fly (gateway+pg) + Vercel (web) — scaffolding listo (`railway*.toml`, Dockerfiles), falta cuenta/credenciales del equipo.
