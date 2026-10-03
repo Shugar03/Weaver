@@ -5,7 +5,9 @@
 import { createHash } from "node:crypto";
 import type { ExecRequest, ForgeExec, StreamChunk } from "./ports.ts";
 
-export type ResultSigner = (resultHash: Buffer) => Buffer;
+// EVM: el signer puede ser async (viem signMessage es Promise) — el Soroban
+// ed25519 era sync; se acepta cualquiera de los dos.
+export type ResultSigner = (resultHash: Buffer) => Buffer | Promise<Buffer>;
 
 export class ProvenForgeExec implements ForgeExec {
   private readonly inner: ForgeExec;
@@ -39,7 +41,7 @@ export class ProvenForgeExec implements ForgeExec {
         req.onProof?.({
           forgeId: this.inner.forgeId,
           resultHash,
-          signature: this.sign(resultHash),
+          signature: await this.sign(resultHash),
         });
       } else {
         hasher.update(chunk.token);
