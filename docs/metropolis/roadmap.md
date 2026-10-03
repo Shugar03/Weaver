@@ -31,34 +31,44 @@
   receipt, SerialQueue), `EvmEscrowSettlement`, `evmSigner/evmVerify` ✓
 - [x] `erc8004.ts`: `registerAgent`/`giveFeedback`/`forgeAgentURI` contra los
   singletons canónicos — **live verificado**: agentId 1990 + NewFeedback ✓
-- [ ] env switch `SETTLE_CHAIN=evm|stellar` en el gateway
+- [x] env switch `SETTLE_CHAIN=evm|stellar` en el gateway — verify dual por
+  formato de pubkey (`0x…`→ecrecover, `G…`→ed25519): fleet mixta coexistiendo ✓
 
 **D3 · 5 Oct**
-- [ ] Forge identity EVM: handshake del daemon firma con secp256k1;
-  `packages/forge-net` verifica por ecrecover en vez de ed25519
-- [ ] `weaver-forge` CLI: genera/lee `~/.weaver/forge.key` (hex 0x)
-- [ ] `registerForge` onchain en el boot del daemon
+- [x] Forge identity EVM: handshake del daemon firma con secp256k1
+  (personal_sign del nonce); `forge-net` verify async dual ed25519/ecrecover ✓
+- [x] `weaver-forge init --chain evm`: keypair secp256k1, `pubkey`=address 0x,
+  config 0600 — mismo key para auth + proofs + payout ✓
+- [x] `registerForge` onchain: `weaver-forge register` / `up --contract` —
+  el forge self-registra su proof signer (msg.sender=worker) ✓
 
 **D4 · 6 Oct**
-- [ ] x402 v2: `@x402/evm` `ExactEvmScheme` + facilitator
-  `https://x402-facilitator.molandak.org` en el resource server —
-  EIP-3009 gasless para el cliente
-- [ ] `accounts` watcher → listener de `Deposited` (viem `watchEvent`)
+- [x] x402 v2 canónico: `EvmFacilitatorVerifier` — decodifica el header
+  base64 → `paymentPayload` objeto, `/verify`+`/settle` contra
+  `x402-facilitator.molandak.org` (verificado live hasta ECRecover en
+  la simulación on-chain: schema correcto) + requirements EVM en el 402
+  (`eip155:10143`, USDC `0x534b…43A3`, extra name/version). Sin `@x402/evm`:
+  wire canónico directo, misma superficie ✓
+- [x] `EvmDepositWatcher` (`packages/accounts`): `eth_getLogs` de
+  `Deposited(bytes32 acct_…)` → CreditLedger idempotente
+  (`dep:<tx>:<idx>`). `getLogs` en vez de `watchEvent`: el RPC de Monad
+  limita a 100 bloques/página ✓
 
 **D5 · 7 Oct**
-- [ ] ERC-8004 integration: forge llama `registerAgent` + `setAgentURI`
-  (registration file data:URI: endpoints, capabilities, attestation status)
-  en IdentityRegistry `0x8004…BD9e` al bootear
-- [ ] Gateway: `giveFeedback` en ReputationRegistry `0x8004…8713` por
-  ejecución cerrada — `value` = score de ETR medido + éxito, tags `weaver:etr`
-- [ ] `GET /v1/forges` expone `agentId` + links al registry/explorer
+- [x] ERC-8004 al boot: `weaver-forge up` self-registra su agente si no tiene
+  `agentId` en config (data:URI, owner = forge wallet) y lo persiste ✓
+- [x] Gateway: `giveFeedback` post-release vía `ERC8004_AGENTS` — evidencia
+  = jobId+fundTx+releaseTx+resultHash, tag `jobSettled` (el operator firma:
+  el registry rechaza self-feedback) ✓
+- [x] `GET /v1/forges` expone `forgeAgentId` (fluye por heartbeat) ✓
 
 **D6 · 8 Oct**
 - [ ] End-to-end live: forge remoto → job → proof → release → feedback,
-  todo verificable en monadscan + erc-8004.quicknode.com
+  todo verificable en monadvision + erc-8004.quicknode.com
 - [ ] Deploy gateway con `SETTLE_CHAIN=evm` (Railway)
-- [ ] Web: `/dashboard`, `/network`, `/contract` apuntan a monadscan;
-  copy Stellar→Monad en landing/docs
+- [x] Web dual-chain: `EXPLORERS{stellar,evm}` + links por formato de hash,
+  `/network` badge MONAD TESTNET, ProofSection al explorer del deploy,
+  BillingTab `dep:0x…` → MonadVision; copy Stellar→Monad ✓
 
 ## Semana 2 — el paquete (9 → 13 Oct)
 

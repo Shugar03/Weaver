@@ -94,14 +94,16 @@ Monolito modular con bordes hexagonales livianos: one deploy, small-interface
 Modules, swappable Adapters. (Decisions that hurt to revert: `docs/adr/`.)
 
 - `apps/gateway/` Hono — `POST /v1/chat/completions` SSE, x402 paywall, keyauth, scheduler
-- `apps/web/` Next.js 16 — landing, `/dashboard` (RUN + fleet + Stellar proof), `/chat`, `/forge`, `/developers`, `/security`
+- `apps/web/` Next.js 16 — landing, `/dashboard` (RUN + fleet + on-chain proof), `/network`, `/chat`, `/forge`, `/developers`, `/security`
 - `packages/scheduler/` deep module: `select(job, forges) -> decision` (ETR, warm-first)
 - `packages/forge-exec/` execution seam: `OllamaMLXAdapter`, `FakeForgeExec` (SIM standby), failover
-- `packages/settlement/` Stellar seam (testnet)
+- `packages/settlement/` dual seam `SETTLE_CHAIN`: Stellar/Soroban + **Monad EVM** (`EvmSubmitter`, `EvmEscrowSettlement`, ERC-8004, x402 v2)
+- `packages/accounts/` credit ledger + deposit watchers (Horizon memo / `Deposited` EVM)
 - `packages/telemetry/` `record(sample)` + p50/p95, capped in-memory
 - `packages/api-keys/` provider keys (`wvr_`, SHA-256, operator-gated admin)
 - `packages/benchmarks/` gateway-vs-direct runner + results
-- `contracts/weaver-escrow/` Soroban `init/fund_job/release/refund/get_job` (+ `deployments/testnet.json`)
+- `contracts/weaver-escrow-evm/` Solidity `WeaverEscrow` + `WeaverCredits` (Monad, Foundry)
+- `contracts/weaver-escrow/` Soroban `init/fund_job/release/refund/get_job` — backend previo, mantenido
 - `docs/` pitch evidence (`demanda-`, `competidores-evidencia`), demo script, roadmap notes
 - `docs/pitch/` submission deck — `index.html` (11 slides, self-contained, abrir directo en el browser) + `weaver-pitch.pdf` (generado via `Cmd+P` sobre el HTML)
 - `scripts/` `demo-capture.mjs` (3 deterministic takes), `chat-test.mjs`, `shot.mjs`
@@ -109,7 +111,12 @@ Modules, swappable Adapters. (Decisions that hurt to revert: `docs/adr/`.)
 ## Contracts
 
 - HTTP: `POST /v1/chat/completions`, `POST /v1/jobs`, `GET /v1/forges`, `GET /v1/models`, `GET /v1/executions`
-- Soroban testnet, USDC SAC `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
+- **Monad testnet** (chain `10143`, activo — `SETTLE_CHAIN=evm`):
+  - `WeaverEscrow` [`0x51acE4858652D942dC7b320870e4CDbc5c989cD6`](https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6) — verificado Sourcify
+  - `WeaverCredits` [`0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498`](https://testnet.monadvision.com/address/0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498) — verificado Sourcify
+  - USDC testnet `0x534b2f3A21130d7a60830c2Df862319e593943A3` · ERC-8004 Identity `0x8004A818BFB912233c491871b3d84c89A494BD9e` · Reputation `0x8004B663056A597Dffe9eCcC1965A193B7388713`
+  - Trail live verificable (`contracts/weaver-escrow-evm/deployments/testnet.json`): registerForge [`0x703c12eb…`](https://testnet.monadvision.com/tx/0x703c12eb6f138cdf6be95f1137df8548f5a3cb8ac5696015a7b02e36ce924fcf) → fundJob [`0x0069b8c8…`](https://testnet.monadvision.com/tx/0x0069b8c83da9d3deff81701577600c4e062b675f6bcad3ea56815d5b702aba90) → release [`0xa5d830a9…`](https://testnet.monadvision.com/tx/0xa5d830a9a08a25afacd3c1d9a949f3f94788a8df48bae40621f2c29a28decdc0) — el release exigió `ecrecover(personal_sign(resultHash))` del signer del forge
+- Soroban testnet (backend previo, `SETTLE_CHAIN=stellar`), USDC SAC `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
 
 ## What is NOT the MVP
 
@@ -117,6 +124,23 @@ Own token, on-chain inference, ZK proofs, sharding, local video, K8s, heavy loca
 Roadmap pointers (not dependencies): `docs/referencias-roadmap.md`.
 
 ---
+
+## Metropolis submission
+
+**Pre-existente (tag `stellar-submission`, Argentina Builder Challenge 27/09):** scheduler ETR,
+forge-exec + failover, protocolo forge-net (WS auth/nonce/heartbeats), telemetría, ZDR,
+API OpenAI-compatible, web UI, escrow + settlement Soroban, x402 v1 Stellar, credit ledger.
+
+**Nuevo del build window (diff auditable desde el tag):** port de la capa de confianza a Monad —
+contratos `WeaverEscrow`/`WeaverCredits` (Solidity, 18/18 tests Foundry), `EvmSubmitter` +
+`EvmEscrowSettlement` (viem), identidad de forge secp256k1 (auth `personal_sign`, proofs
+ecrecover, fleet mixta Stellar/EVM), ERC-8004 canónico (forge self-registra su agente —
+agentId 1990 — y el gateway emite `giveFeedback` post-release), `EvmDepositWatcher`,
+x402 v2 canónico contra el facilitator de Monad, y la web dual-chain.
+
+**AI tooling disclosure:** este proyecto fue desarrollado con asistencia de Devin (Cognition)
+y otros agentes de coding — diseño de módulos, implementación, tests, contratos y docs.
+Toda decisión de protocolo y la evidencia on-chain fueron verificadas manualmente.
 
 Built for the Argentina Builder Challenge (Stellar) — submission: [deck](docs/pitch/index.html) + demo, 27/09.
 Pivot a **Monad / Metropolis** (ADR-0008): [strategy](docs/metropolis/README.md) · [roadmap](docs/metropolis/roadmap.md) · [launch film 30s](docs/launch/weaver-launch.mp4).
