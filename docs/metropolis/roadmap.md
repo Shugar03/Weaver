@@ -67,7 +67,9 @@
   attestation con proof secp256k1 → job qwen3:4b → ecrecover → fundJob+
   release (0.01 USDC al forge `0x784E…`) → `giveFeedback` agent 1991 —
   trail en `contracts/weaver-escrow-evm/deployments/testnet.json` ✓
-- [ ] Deploy gateway con `SETTLE_CHAIN=evm` (Railway)
+- [ ] Deploy gateway con `SETTLE_CHAIN=evm` (Railway) — scaffolding listo
+  (`railway.toml` + `railway.web.toml` + Dockerfiles); falta crear los
+  servicios en el proyecto Railway del operador
 - [x] Web dual-chain: `EXPLORERS{stellar,evm}` + links por formato de hash,
   `/network` badge MONAD TESTNET, ProofSection al explorer del deploy,
   BillingTab `dep:0x…` → MonadVision; copy Stellar→Monad ✓
@@ -75,16 +77,22 @@
 ## Semana 2 — el paquete (9 → 13 Oct)
 
 **D7 · 9 Oct**
-- [ ] Demo real: failover en vivo + release + feedback, capturado
-- [ ] Write-up de submission (problem/approach/ERC-8004/deliverables)
-- [ ] README §submission: pre-existente (`stellar-submission` tag) vs nuevo
-  del window + disclosure AI tools + addresses de contratos
+- [x] Demo real: failover en vivo + release + feedback, capturado
+  (`docs/demo/weaver-demo.mp4` — kill real del daemon live1 → live2 sirve
+  y cobra `0x2f1bbe84`; receipt decodificado del RPC público) ✓
+- [x] Write-up de submission: `docs/metropolis/submission-writeup.md` ✓
+- [x] README §submission + addresses de contratos ✓
+- [x] FleetSection: chip `#agentId` → 8004scan con ✓ si `forgeAgentVerified`
+  (claim verificado por `ownerOf` on-chain — implementado en el gateway) ✓
 
 **D8 · 10 Oct**
-- [ ] Video demo **≤3 min** (§9.4): producto operando + on-chain visible;
-  spot 30s re-render con copy Monad como intro + captura live
-  (failover → release → monadscan → 8004 explorer)
-- [ ] Buffer de bugs
+- [x] Video demo **≤3 min** (§9.4): `docs/demo/weaver-demo.mp4` — 2:08,
+  spot 30s intro + 5 beats live + subs EN embebidos. Los explorers
+  bot-wallean headless → `docs/demo/receipt.html` decodifica el receipt
+  del RPC público (reproducible: `scripts/demo-record.mjs --beats …`) ✓
+- [x] Buffer de bugs — usado: reconciler escrow huérfanos (038b548),
+  watcher getLogs paginación+`removed:true`, authTimeout flap,
+  messages=0→400, verifyProof sync-throw, erc-8004 claim spoofing ✓
 
 **D9 · 11 Oct**
 - [ ] Submission en Devfolio: video, write-up, repo, links de contratos

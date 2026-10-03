@@ -1,5 +1,26 @@
 # Deploy del gateway en Railway — servicio desde la raíz del repo.
 # En Railway: New Project → Deploy from GitHub → Shugar03/Weaver.
+#
+# DOS servicios (un railway.toml por servicio — este es el gateway):
+#   1. weaver-gateway → dockerfilePath apps/gateway/Dockerfile (este archivo)
+#   2. weaver-web     → servicio aparte con dockerfilePath apps/web/Dockerfile
+#      (crear un segundo servicio en el mismo proyecto, root dir = repo,
+#       "Config file path" apuntando a railway.web.toml o el editor UI).
+#
+# Envs del gateway (Railway → Variables):
+#   SETTLE_CHAIN=evm REMOTE_ONLY=1 HOST=0.0.0.0
+#   SETTLEMENT_SECRET=0x…  SETTLEMENT_CONTRACT=0x51acE4858652D942dC7b320870e4CDbc5c989cD6
+#   OPERATOR_KEY=<secret>  CORS_ORIGIN=https://<weaver-web>.up.railway.app
+#   EVM_USDC=0x534b2f3A21130d7a60830c2Df862319e593943A3
+#   ERC8004_AGENTS={"<forgePubkey>":<agentId>}  EVM_ESCROW_FROM_BLOCK=<deploy blk>
+#   (opcional) RATE_LIMIT_RPM=60  AUDIT_RATE=0
+#
+# Envs de la web:
+#   WEAVER_GATEWAY=https://<weaver-gateway>.up.railway.app
+#
+# La fleet: los forges remotos conectan OUTBOUND → wss://<gateway>/v1/forge/ws
+# (cfg.gateway=https://… deriva a wss automáticamente). Correrlos local:
+#   weaver-forge up --config <cfg> --contract 0x51ac… (editar gateway en config)
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "apps/gateway/Dockerfile"
