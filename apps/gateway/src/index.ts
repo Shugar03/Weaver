@@ -867,7 +867,10 @@ export function createApp(deps: Deps) {
           try {
             if (r.releaseTx) deps.onSettled?.(r, worker, body.model);
           } catch {}
-        } catch {
+        } catch (e) {
+          // El settle falló post-serve: el error se loguea — un catch mudo
+          // escondería escrow bugs con plata de por medio.
+          console.warn(`settleJob falló (job ${id}):`, e);
           await deps.telemetry
             ?.record({ ...base, settle: { payerTx, status: "failed" } })
             .catch(() => {});

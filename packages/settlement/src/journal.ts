@@ -42,7 +42,9 @@ export class InMemorySettleJournal implements SettleJournal {
 }
 
 // — Intent-first (S50, EVM) —
-// El proof se persiste ANTES de fundJob bajo jobKey=keccak256(forgeSig).
+// El proof se persiste ANTES de fundJob bajo un jobKey único por llamada
+// (no derivable de la sig — firmas deterministas de outputs idénticos
+// colisionarían la PK entre requests distintos).
 // Invariante fail-closed: si recordIntent falla, settleJob aborta antes de
 // fondear → no puede existir un escrow on-chain sin proof journalizado.
 // attachJob liga el jobId cuando Funded mina; un crash entre fund y attach

@@ -15,6 +15,7 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
+import { randomBytes } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { SerialQueue } from "./queue.ts";
@@ -242,7 +243,12 @@ export class EvmEscrowSettlement {
     if (forgeSig.length !== 65) {
       throw new Error(`forge_sig debe ser 65 bytes (r‖s‖v), vino ${forgeSig.length}`);
     }
-    const jobKey = keccak256(`0x${forgeSig.toString("hex")}` as Hex);
+    // job_key único por LLAMADA, no derivado de la sig: dos requests distintos
+    // con output idéntico producen la misma firma (ECDSA determinista,
+    // RFC6979) — keccak(sig) colisionaba la PK de settle_intents y el segundo
+    // job nunca fondeaba. El key solo identifica la fila del intent; el
+    // reconciler matchea por worker+Funded, no por key.
+    const jobKey = keccak256(`0x${forgeSig.toString("hex")}${randomBytes(16).toString("hex")}` as Hex);
     await this.journal?.recordIntent({
       jobKey,
       worker: workerAddr,

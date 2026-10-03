@@ -100,6 +100,27 @@ describe("EVM escrow — settleJob", () => {
     assert.equal(pendingNotified, 1);
   });
 
+  it("dos settleJobs con el MISMO proof → dos intents (job_key único por llamada)", async () => {
+    // Bug live: job_key = keccak(sig) — con sig determinista (RFC6979), dos
+    // requests distintos con output idéntico colisionaban la PK: el segundo
+    // nunca fondeaba. Cada llamada es un pago distinto → key único por llamada.
+    const journal = new InMemoryIntentJournal();
+    let jobId = 100;
+    const t: EvmEscrowTransport = {
+      async ensureAllowance() {
+        return null;
+      },
+      async invoke(_c, _a, fn) {
+        if (fn === "fundJob") return { txHash: "0xfund" as Hex, retval: BigInt(jobId++) };
+        throw new Error("release cae → funded queda pending");
+      },
+    };
+    const s = new EvmEscrowSettlement(t, { escrow: ESCROW, token: USDC, payout: 10_000 }, journal);
+    await s.settleJob(HASH, SIG65, WORKER).catch(() => {});
+    await s.settleJob(HASH, SIG65, WORKER).catch(() => {});
+    assert.equal((await journal.pending()).length, 2);
+  });
+
   it("hash ≠ 32B o sig ≠ 65B → throw antes de tocar la chain", async () => {
     const calls: Call[] = [];
     const s = new EvmEscrowSettlement(fakeTransport(calls), {
