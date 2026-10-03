@@ -42,3 +42,24 @@ telemetría del settle — falla si algo no es real.
 - El smoke cazó un bug real: `job_key = keccak(sig)` colisionaba la PK de `settle_intents` en outputs idénticos (ECDSA determinista) — fix en `evm.ts` (key único por llamada), test de regresión en `evm-escrow.test.ts`, verificado live: jobs 13 y 14 released en pg.
 - Env dual correcto: `SETTLEMENT_CONTRACT` = escrow EVM, `STELLAR_CONTRACT` = escrow Soroban, `STELLAR_SECRET` = admin Stellar (NO `SETTLEMENT_SECRET`, que es la key EVM).
 - **Pendiente para hosting estable**: Railway/Render/Fly (gateway+pg) + Vercel (web) — scaffolding listo (`railway*.toml`, Dockerfiles), falta cuenta/credenciales del equipo.
+
+## Decisión demo: Monad-only
+
+El fleet demo corre `SETTLE_CHAIN=evm` — toda tx verificable en explorer Monad.
+La vía Stellar y el `SettleDispatcher` quedan en el código (dual-verified en
+testnet) como prueba de diseño chain-agnostic, pero no corren en la demo:
+un solo chain = una secret, un RPC, cero ambigüedad de envs para jueces.
+
+## Runbook de restart (demo.env — gitignored)
+
+```bash
+./scripts/demo-up.sh                     # gateway :3501, settle=ON(evm), pg
+node apps/forge/src/cli.ts up --config /tmp/forge-x402.json   # live1
+node apps/forge/src/cli.ts up --config /tmp/forge-evm2.json   # live2
+cloudflared tunnel --url http://127.0.0.1:3501                 # URL pública
+node scripts/smoke-hosted.mjs <url-pública>                  # verificación
+```
+
+Nota: los forges NO reconectan solos tras un restart del gateway — hay que
+rebotearlos (relaunch del `cli.ts up`). Los configs de forge viven en /tmp
+(ephemeral del operador).

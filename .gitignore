@@ -22,3 +22,6 @@ docs/pitch/RUN.md
 .qwen/
 # demo recording intermediates
 docs/demo/segments/
+
+# Demo env (secrets reales — ver demo.env.example)
+demo.env
