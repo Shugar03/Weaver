@@ -637,17 +637,28 @@ if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
     chain: { ...monadTestnet },
     transport: http(evmRpc),
   });
+  // Monad RPC limita eth_getLogs a ventanas de 100 bloques — el fetcher pagina
+  // interno: cursor→head en chunks. EVM_DEPOSIT_FROM_BLOCK fija el arranque
+  // (deploy block = historia completa); ausente → head actual (solo depósitos
+  // nuevos — un scan desde génesis son ~670k RPCs, inviable).
+  const LOG_WINDOW = 99n;
   const watcher = new EvmDepositWatcher({
     credits,
     store: accounts,
     ledger: creditLedger,
     pollMs: Number(process.env.DEPOSIT_POLL_MS ?? 15_000),
     fetcher: async ({ address, topics, fromBlock }) => {
-      const logs = (await client.request({
-        method: "eth_getLogs",
-        params: [{ address, topics: topics as Hex[], fromBlock: `0x${fromBlock.toString(16)}`, toBlock: "latest" }],
-      })) as { topics: string[]; data: string; transactionHash: string; blockNumber: string; logIndex: string }[];
-      return logs.map((l) => ({
+      const head = BigInt((await client.request({ method: "eth_blockNumber" })) as string);
+      const out: { topics: string[]; data: string; transactionHash: string; blockNumber: string; logIndex: string }[] = [];
+      for (let from = fromBlock; from <= head; from += LOG_WINDOW + 1n) {
+        const to = from + LOG_WINDOW > head ? head : from + LOG_WINDOW;
+        const logs = (await client.request({
+          method: "eth_getLogs",
+          params: [{ address, topics: topics as Hex[], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }],
+        })) as typeof out;
+        out.push(...logs);
+      }
+      return out.map((l) => ({
         topics: l.topics,
         data: l.data,
         transactionHash: l.transactionHash,
@@ -655,7 +666,13 @@ if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
         logIndex: l.logIndex,
       }));
     },
+    ...(process.env.EVM_DEPOSIT_FROM_BLOCK ? { fromBlock: BigInt(process.env.EVM_DEPOSIT_FROM_BLOCK) } : {}),
   });
+  if (!process.env.EVM_DEPOSIT_FROM_BLOCK) {
+    const head = BigInt((await client.request({ method: "eth_blockNumber" })) as string);
+    watcher.seek(head);
+    console.log(`evm-deposit-watcher: sin EVM_DEPOSIT_FROM_BLOCK → arranco en head ${head} (solo depósitos nuevos)`);
+  }
   watcher.start();
   console.log(`evm-deposit-watcher ON → ${credits.slice(0, 10)}… (poll ${Number(process.env.DEPOSIT_POLL_MS ?? 15_000)}ms)`);
 } else if (process.env.DEPOSIT_ADDRESS && process.env.USDC_ISSUER) {

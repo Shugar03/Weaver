@@ -52,9 +52,12 @@ export class ForgeSession implements ForgeChannel {
     this.registry = deps.registry;
     this.verify = deps.verify;
     this.consumeNonce = deps.consumeNonce;
+    // 15s default: un forge remoto firma EVM (async) y el gateway puede estar
+    // ocupado en RPCs on-chain — 5s causaba reconnect-flap en cold start. Sigue
+    // acotado contra DoS (estado por socket abierto sin auth).
     this.authTimer = setTimeout(() => {
       if (!this.authed) this.kill("auth timeout");
-    }, deps.authTimeoutMs ?? 5_000);
+    }, deps.authTimeoutMs ?? 15_000);
     this.authTimer.unref?.();
     this.onAuthed = deps.onAuthed;
   }

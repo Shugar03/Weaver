@@ -112,6 +112,11 @@ export class EvmDepositWatcher {
     if (applied) this.log(`acreditado ${amount} base units → ${account.id} (${ref})`);
   }
 
+  /** Mueve el cursor — boot en head cuando el operador no quiere rescan. */
+  seek(block: bigint): void {
+    this.cursor = block;
+  }
+
   start(): void {
     if (this.timer) return;
     void this.pollOnce();
