@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WEAVER — on-chain settlement receipt</title>
+<style>
+  :root { --lima: #d4ff4f; --fog: #8a8f98; --line: #23262b; --panel: #101214; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #0a0b0d; color: #e8eaed; font: 15px/1.55 ui-monospace, "SF Mono", Menlo, monospace; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px; }
+  .badge { color: var(--lima); letter-spacing: .3em; font-size: 13px; margin-bottom: 8px; }
+  h1 { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 36px; }
+  .card { border: 1px solid var(--line); background: var(--panel); width: 1080px; }
+  .row { display: grid; grid-template-columns: 260px 1fr; gap: 24px; padding: 16px 28px; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .k { color: var(--fog); letter-spacing: .18em; font-size: 12px; padding-top: 2px; }
+  .v { word-break: break-all; }
+  .ok { color: var(--lima); }
+  a { color: #7db4ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .dim { color: var(--fog); font-size: 13px; }
+  .foot { margin-top: 28px; color: var(--fog); font-size: 13px; letter-spacing: .12em; }
+  .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div class="badge">MONAD TESTNET · CHAIN 10143</div>
+<h1>SETTLEMENT RECEIPT</h1>
+<div class="card" id="card"><div class="row"><span class="k">STATUS</span><span class="v dim">consultando RPC público…</span></div></div>
+<div class="foot" id="foot"></div>
+<script type="module">
+// Lee ?tx=0x… (release) y ?fund=0x… opcional. Consulta el RPC público de
+// Monad testnet desde el browser — datos reales, no fixtures. Decodifica
+// Released(jobId,worker,amount,resultHash) + Transfer(escrow→worker).
+const Q = new URLSearchParams(location.search);
+const RPC = Q.get("rpc") ?? "https://testnet-rpc.monad.xyz";
+const MV = "https://testnet.monadvision.com";
+const USDC = "0x534b2f3a21130d7a60830c2df862319e593943a3";
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+async function rpc(method, params) {
+  const r = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+const addr = (t) => "0x" + t.slice(26);
+const num = (t) => Number(BigInt(t));
+const hex = (h) => h.slice(0, 10) + "…" + h.slice(-8);
+const row = (k, v) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+
+const tx = Q.get("tx");
+const card = document.getElementById("card");
+try {
+  if (!tx) throw new Error("falta ?tx=0x… (release tx)");
+  const rc = await rpc("eth_getTransactionReceipt", [tx]);
+  if (!rc) throw new Error("receipt no encontrado — ¿tx correcta?");
+  // Released(jobId,worker,amount,resultHash): 3 topics indexados [sig,jobId,
+  // worker] emitido por el escrow; Transfer USDC también tiene 3 → se excluye
+  // por topic y por address del contrato de token.
+  const released = rc.logs.find((l) => l.topics.length === 3 && l.topics[0] !== TRANSFER_TOPIC && l.address.toLowerCase() !== USDC);
+  const transfer = rc.logs.find((l) => l.address.toLowerCase() === USDC && l.topics[0] === TRANSFER_TOPIC);
+  const jobId = released ? num(released.topics[1]) : null;
+  const worker = released ? addr(released.topics[2]) : null;
+  const amount = transfer ? num(transfer.data) / 1e6 : null;
+  const resultHash = released ? "0x" + released.data.slice(66, 130) : null;
+  const block = num(rc.blockNumber);
+  card.innerHTML = [
+    row("STATUS", `<span class="ok">✓ RELEASED on-chain</span> — block ${block.toLocaleString()}`),
+    jobId !== null ? row("JOB", `#${jobId}`) : "",
+    worker ? row("WORKER (forge)", `<a href="${MV}/address/${worker}">${worker}</a>`) : "",
+    amount !== null ? row("PAYOUT", `<span class="ok">${amount} USDC</span> → forge`) : "",
+    resultHash ? row("RESULT HASH (Proof L0)", resultHash) : "",
+    row("RELEASE TX", `<a href="${MV}/tx/${tx}">${tx}</a>`),
+    row("VERIFIED BY", "WeaverEscrow 0x51ac…9cD6 — ecrecover(resultHash, forgeSig) == worker.signer"),
+  ].join("");
+  document.getElementById("foot").textContent = "datos leídos en vivo del RPC público de Monad — nada simulado";
+} catch (e) {
+  card.innerHTML = row("STATUS", `<span class="err">error: ${e.message}</span>`);
+}
+</script>
+</body>
+</html>

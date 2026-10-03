@@ -1,0 +1,61 @@
+1
+00:00:02,000 --> 00:00:09,000
+Weaver — the datacenter without walls.
+Open-weight models, routed by measured speed, paid per job.
+
+2
+00:00:12,000 --> 00:00:19,000
+Every forge signs the output it serves.
+No proof, no payment — the escrow enforces it.
+
+3
+00:00:21,000 --> 00:00:28,000
+Sub-second settlement on Monad.
+Portable reputation for every forge — ERC-8004 on-chain.
+
+4
+00:00:31,000 --> 00:00:37,900
+This is Weaver live: any GPU joins permissionlessly and
+competes on measured latency — every inference settles
+on Monad testnet with a cryptographic delivery proof.
+
+5
+00:00:38,000 --> 00:00:48,000
+I submit a prompt. No server picking: the scheduler measures
+ETR — network RTT, GPU queue, decode speed — and routes to
+the fastest warm forge.
+
+6
+00:00:48,000 --> 00:01:02,900
+The pipeline streams live: FIRE accepts, ROUTE dispatches on
+measured ETR, EXECUTE streams the tokens, SETTLE primes the
+claim. Everything logged: worker, TTFT, delivery hash.
+
+7
+00:01:03,000 --> 00:01:12,000
+Now we break it on purpose: kill the primary forge
+mid-traffic. Residential nodes drop — the network must not.
+
+8
+00:01:12,000 --> 00:01:25,000
+The gateway catches the dead socket instantly, fails over to
+the standby forge — the stream completes without a single
+error. Real process kill, not a simulation.
+
+9
+00:01:25,000 --> 00:01:35,700
+And this is not a simulation: the failover job settled
+on-chain. The forge signed the result hash with its secp256k1
+key — WeaverEscrow verified via ecrecover before paying.
+
+10
+00:01:35,700 --> 00:01:59,700
+This receipt is read live from the public Monad RPC:
+Released job, 0.01 USDC transferred to the failover forge,
+proof hash bound to the served output. Verifiable by anyone.
+
+11
+00:01:59,700 --> 00:02:07,800
+Finally, Zero Data Retention: prompts live in forge RAM and
+die with the socket. The chain only sees attestations and
+settlement. Weaver — no walls, no tolls, no spying.

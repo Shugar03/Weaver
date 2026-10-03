@@ -17,6 +17,11 @@ export type ForgeView = {
   // S30/S35: forge remoto por WS (keypair propia) + attestation del gateway.
   remote?: boolean;
   attested?: boolean;
+  forgePubkey?: string;
+  // ERC-8004: agentId declarado por heartbeat; verified = ownerOf == forge
+  // confirmado on-chain por el gateway (un claim no verificado no es evidencia).
+  forgeAgentId?: number;
+  forgeAgentVerified?: boolean;
 };
 
 export type JobsDecision = { forge: string; etr_ms: number; reason: string };

@@ -14,7 +14,23 @@ function StatusDot({ status }: { status: "hot" | "cold" | "dead" }) {
   return <span className={`inline-block h-2 w-2 rounded-full ${cls}`} />;
 }
 
-function StatusBadge({ status, sim, busy, remote, verified }: { status: "hot" | "cold" | "dead"; sim: boolean; busy: boolean; remote: boolean; verified: boolean }) {
+function StatusBadge({
+  status,
+  sim,
+  busy,
+  remote,
+  verified,
+  agentId,
+  agentVerified,
+}: {
+  status: "hot" | "cold" | "dead";
+  sim: boolean;
+  busy: boolean;
+  remote: boolean;
+  verified: boolean;
+  agentId?: number;
+  agentVerified?: boolean;
+}) {
   return (
     <span className="flex gap-2">
       {sim && <span className="border border-line px-2 py-0.5 font-tech text-sm tracking-[0.15em] text-fog">SIM</span>}
@@ -24,6 +40,23 @@ function StatusBadge({ status, sim, busy, remote, verified }: { status: "hot" | 
         <span className={`border px-2 py-0.5 font-tech text-sm tracking-[0.15em] ${verified ? "border-lima/60 text-lima" : "border-line text-fog"}`}>
           {verified ? "RMT ✓" : "RMT"}
         </span>
+      )}
+      {/* ERC-8004: link al agente del forge en 8004scan (Monad testnet).
+          ✓ = claim verificado on-chain por el gateway (ownerOf == worker);
+          sin ✓ = declarado por el forge, aún sin verificar. */}
+      {agentId !== undefined && (
+        <a
+          href={`https://8004scan.io/agents/monad-testnet/${agentId}`}
+          target="_blank"
+          rel="noreferrer"
+          title={agentVerified ? "agentId verificado on-chain" : "agentId declarado — verificación on-chain pendiente"}
+          className={`border px-2 py-0.5 font-tech text-sm tracking-[0.15em] hover:text-white ${
+            agentVerified ? "border-lima/60 text-lima" : "border-line text-fog"
+          }`}
+        >
+          #{agentId}
+          {agentVerified ? " ✓" : ""}
+        </a>
       )}
       {/* S29: BUSY = saturado medido (inFlight ≥ cap) — distinto de DEAD:
           existe y sirve, pero no toma jobs ahora (429 si todos así). */}
@@ -136,7 +169,15 @@ export function FleetSection({ base, initial }: { base: string; initial: ForgeVi
               <span className="font-tech text-sm tracking-[0.15em] text-fog">{f.capability === "image" ? "IMAGE" : "TEXT"}</span>
               <span className="flex items-center justify-end gap-3">
                 <span className="font-tech text-xl">{r.metric}</span>
-                <StatusBadge status={r.status} sim={r.sim} busy={r.busy} remote={r.remote} verified={r.verified} />
+                <StatusBadge
+                  status={r.status}
+                  sim={r.sim}
+                  busy={r.busy}
+                  remote={r.remote}
+                  verified={r.verified}
+                  agentId={f.forgeAgentId}
+                  agentVerified={f.forgeAgentVerified}
+                />
               </span>
               <span className="text-right font-tech text-lg text-fog">{r.jobs}</span>
               <button
