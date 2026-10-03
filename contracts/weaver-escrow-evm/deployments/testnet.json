@@ -22,19 +22,22 @@
     "live_forge_register": "0xdfec48f921b5eae3dc748341243723536b265c09c3976bfd0e07525038c4aff3",
     "live_fund_job_2": "0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932",
     "live_release_job_2": "0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58",
-    "live_feedback_1991": "0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd"
+    "live_feedback_1991": "0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd",
+    "x402_client_fund": "0xd8b1c7a6bf86d66632b6fbc40488d0a8f69121d2345bec65360a47752468e8c0",
+    "x402_facilitator_settle": "0x901995b7bf8576d44d88500acec67917b8517e6d858b0ec825c2aa1460227c44",
+    "x402_escrow_release": "0x58ce4dfd05b8b02a68a479133b0ee7ba822f48e32fb393933eb449415601a502"
   },
   "result_hash_job_1": "0x6948cc5c41ac8d31762de5d69f40405e701adafb38c219d7c6b7cf77344e6561",
   "live_e2e": {
-    "note": "Forge remoto real (weaver-forge up, chain=evm) → attestation con proof secp256k1 → POST /v1/chat/completions (qwen3:4b) → verify ecrecover → fundJob+release on-chain (forge cobró 0.01 USDC) → giveFeedback ERC-8004 agent 1991.",
+    "note": "Forge remoto real (weaver-forge up, chain=evm) \u2192 attestation con proof secp256k1 \u2192 POST /v1/chat/completions (qwen3:4b) \u2192 verify ecrecover \u2192 fundJob+release on-chain (forge cobr\u00f3 0.01 USDC) \u2192 giveFeedback ERC-8004 agent 1991.",
     "forge": "0x784E0a01c683df116fA5bb5A91180d6Fc06BF5CB",
     "agent_id": 1991,
     "result_hash_job_2": "0x9f9f03227dd1af68d0b71b214336cb3d84162aff5365be7e9567706be4f12695"
   },
   "previous": {
     "contract_id": "0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C",
-    "note": "v1: la firma se ataba a keccak256(resultHash||jobId) — incompatible con el proveedor que firma result_hash al servir, antes de que exista el jobId. Redeployado con la semántica correcta (firma sobre result_hash solo)."
+    "note": "v1: la firma se ataba a keccak256(resultHash||jobId) \u2014 incompatible con el proveedor que firma result_hash al servir, antes de que exista el jobId. Redeployado con la sem\u00e1ntica correcta (firma sobre result_hash solo)."
   },
-  "note": "WeaverEscrow v2: release exige ecrecover(personal_sign(resultHash)) == signer registrado del worker. Worker self-registra su signer (msg.sender = worker). WeaverCredits: deposits USDC → Deposited(bytes32 account,…) para el ledger off-chain. Ambos verificados en Sourcify.",
+  "note": "WeaverEscrow v2: release exige ecrecover(personal_sign(resultHash)) == signer registrado del worker. Worker self-registra su signer (msg.sender = worker). WeaverCredits: deposits USDC \u2192 Deposited(bytes32 account,\u2026) para el ledger off-chain. Ambos verificados en Sourcify.",
   "explorer": "https://testnet.monadvision.com"
 }

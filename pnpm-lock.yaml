@@ -20,6 +20,9 @@ importers:
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
+      viem:
+        specifier: 2.40.2
+        version: 2.40.2(typescript@5.9.3)(zod@4.6.5)
 
   apps/forge:
     dependencies:

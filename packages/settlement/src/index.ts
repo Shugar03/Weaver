@@ -7,6 +7,7 @@ export type { PendingSettle, SettleJournal, SettleIntent, IntentJournal } from "
 export { stellarPay } from "./pay.ts";
 export { isEvmAddr, verifyScheme, dualVerify } from "./verify.ts";
 export { FakeVerifier, FacilitatorVerifier, EvmFacilitatorVerifier } from "./verifier.ts";
+export { buildX402Eip3009Header, EIP3009_TYPES } from "./eip3009.ts";
 export type { PaymentRequirements, PaymentVerifier, SettleResult } from "./verifier.ts";
 // — Seam EVM (Monad, ADR-0008) —
 export {
