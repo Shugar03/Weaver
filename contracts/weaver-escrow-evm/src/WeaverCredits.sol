@@ -13,8 +13,8 @@ contract WeaverCredits {
     address public immutable admin;
     IERC20 public immutable token;
 
-    /// @param account accountId del Account layer (keccak256 del "acct_…" id,
-    ///        definido por el gateway — el contrato es agnóstico al formato)
+    /// @param account accountId del Account layer ("acct_…" en UTF-8 — cabe en
+    ///        bytes32 y el watcher lo decodifica directo, sin lookup por hash)
     event Deposited(bytes32 indexed account, address indexed payer, uint256 amount);
 
     error BadAmount();
