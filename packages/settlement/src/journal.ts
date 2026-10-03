@@ -2,7 +2,7 @@
 // fund_job devuelve jobId; si el proceso muere antes del release, el journal
 // es la ÚNICA referencia a ese escrow. Boot sweep: pending() → re-release
 // (el proof sigue válido) o refund si el forge ya no es reclamable.
-import { settleIntents, settleJobs } from "@weaver/db";
+import { scanCursors, settleIntents, settleJobs } from "@weaver/db";
 import type { Db } from "@weaver/db";
 import { and, eq, isNull } from "drizzle-orm";
 
@@ -150,6 +150,27 @@ export class PostgresSettleJournal implements SettleJournal {
       fundTx: r.fundTx,
       createdAt: r.createdAt.getTime(),
     }));
+  }
+}
+
+// S52: cursor durable de scan — PostgresScanCursor. Una fila por watcher;
+// upsert por nombre. Comparte la conexión del journal (misma DB del gateway).
+export class PostgresScanCursor {
+  private db: Db;
+  private name: string;
+  constructor(db: Db, name: string) {
+    this.db = db;
+    this.name = name;
+  }
+  async load(): Promise<bigint | null> {
+    const rows = await this.db.select({ head: scanCursors.head }).from(scanCursors).where(eq(scanCursors.name, this.name));
+    return rows.length === 0 ? null : BigInt(rows[0].head);
+  }
+  async save(head: bigint): Promise<void> {
+    await this.db
+      .insert(scanCursors)
+      .values({ name: this.name, head: head.toString() })
+      .onConflictDoUpdate({ target: scanCursors.name, set: { head: head.toString(), updatedAt: new Date() } });
   }
 }
 

@@ -131,4 +131,19 @@ if (!PG_URL) {
     assert.deepEqual(await b.knownJobIds(), [55]);
     await wipe();
   });
+
+  test("PostgresScanCursor: upsert + persistencia entre instancias", async () => {
+    const { PostgresScanCursor } = await import("../src/journal.ts");
+    const { scanCursors } = await import("@weaver/db");
+    const wipeC = () => db.delete(scanCursors).then(() => {});
+    await wipeC();
+    const c1 = new PostgresScanCursor(db, "evm-reconcile-test");
+    assert.equal(await c1.load(), null, "sin fila → null (primer arranque)");
+    await c1.save(12345n);
+    const c2 = new PostgresScanCursor(db, "evm-reconcile-test");
+    assert.equal(await c2.load(), 12345n, "otra instancia ve el head — durable");
+    await c2.save(12400n); // upsert, no segunda fila
+    assert.equal(await c2.load(), 12400n);
+    await wipeC();
+  });
 }

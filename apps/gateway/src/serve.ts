@@ -33,14 +33,17 @@ import {
   ESCROW_ABI,
   EvmEscrowSettlement,
   EvmFacilitatorVerifier,
+  createEvmReconciler,
   EvmSubmitter,
   FacilitatorVerifier,
   FUNDED_TOPIC,
   InMemoryIntentJournal,
+  InMemoryScanCursor,
   InMemorySettleJournal,
   isEvmAddr,
   MONAD_USDC,
   PostgresIntentJournal,
+  PostgresScanCursor,
   PostgresSettleJournal,
   type IntentJournal,
   dualVerify,
@@ -49,10 +52,11 @@ import {
   evmSigner,
   giveFeedback,
   jobSettledFeedback,
-  reconcileEvmOrphans,
   registerForge,
   registerForgeEvm,
   RpcSubmitter,
+  SettleDispatcher,
+  type SettleReceipt,
   stellarPubkey,
   stellarSigner,
   stellarVerify,
@@ -79,10 +83,18 @@ const MAX_INFLIGHT_IMAGE = 1;
 // las máquinas con GPU); con el flag los embedded ni se construyen.
 const REMOTE_ONLY = process.env.REMOTE_ONLY === "1";
 
-// SETTLE_CHAIN (ADR-0008): "stellar" (default, Soroban escrow v3) o "evm"
-// (Monad testnet — WeaverEscrow.sol + ERC-8004). La chain del escrow la
-// decide el OPERADOR; la de cada forge se detecta por pubkey (G… vs 0x…).
-const SETTLE_CHAIN = (process.env.SETTLE_CHAIN ?? "stellar") as "stellar" | "evm";
+// SETTLE_CHAIN (ADR-0008): "stellar" (default, Soroban escrow v3), "evm"
+// (Monad testnet — WeaverEscrow.sol + ERC-8004) o "dual" (spec 003: fleet
+// mixta — la vía de settle la decide el FORMATO del worker, no un env).
+// La chain del escrow la decide el OPERADOR; la de cada forge se detecta
+// por pubkey (G… vs 0x…).
+const SETTLE_CHAIN = (process.env.SETTLE_CHAIN ?? "stellar") as "stellar" | "evm" | "dual";
+const evmOn = SETTLE_CHAIN === "evm" || SETTLE_CHAIN === "dual";
+const xlmOn = SETTLE_CHAIN === "stellar" || SETTLE_CHAIN === "dual";
+// dual: SETTLEMENT_SECRET = key EVM (primaria); la vía Stellar usa envs
+// propias — una sola SECRET con dos formatos incompatibles no es viable.
+const xlmSecret = xlmOn ? (SETTLE_CHAIN === "dual" ? process.env.STELLAR_SECRET : process.env.SETTLEMENT_SECRET) : undefined;
+const xlmContract = xlmOn ? (SETTLE_CHAIN === "dual" ? process.env.STELLAR_CONTRACT : process.env.SETTLEMENT_CONTRACT) : undefined;
 // Verify dual (@weaver/settlement): forges EVM firman personal_sign (ecrecover
 // async), forges Stellar ed25519 (sync). Ambas fleets conviven sobre el mismo
 // wire — la pubkey decide el esquema, unknown = fail-closed.
@@ -175,14 +187,25 @@ const nonces = new NonceStore();
 // el sweep de boot re-liquida o reembolsa lo que quedó pending.
 // S50 (EVM): intent-first — el proof se persiste ANTES de fundJob; un crash
 // entre fund y attach lo cierra reconcileEvmOrphans por match worker→Funded.
-const settleJournal =
-  SETTLE_CHAIN === "evm"
-    ? process.env.DATABASE_URL
-      ? new PostgresIntentJournal(dbFromUrl(process.env.DATABASE_URL))
-      : new InMemoryIntentJournal()
-    : process.env.DATABASE_URL
-      ? new PostgresSettleJournal(dbFromUrl(process.env.DATABASE_URL))
-      : new InMemorySettleJournal();
+// Journals por vía: EVM usa intent-first (spec reconciler), Stellar el
+// pending-journal clásico. En dual conviven ambos — cada sweep toca el suyo.
+const evmJournal = evmOn
+  ? process.env.DATABASE_URL
+    ? new PostgresIntentJournal(dbFromUrl(process.env.DATABASE_URL))
+    : new InMemoryIntentJournal()
+  : undefined;
+const xlmJournal = xlmOn
+  ? process.env.DATABASE_URL
+    ? new PostgresSettleJournal(dbFromUrl(process.env.DATABASE_URL))
+    : new InMemorySettleJournal()
+  : undefined;
+const settleJournal = evmJournal ?? xlmJournal!;
+// Cursor durable del reconciler (S52): pg si hay DB, memoria si no.
+const evmCursor = evmOn
+  ? process.env.DATABASE_URL
+    ? new PostgresScanCursor(dbFromUrl(process.env.DATABASE_URL), "evm-reconcile")
+    : new InMemoryScanCursor()
+  : undefined;
 // Los mapas los crea attachForgeWS al levantar el server; antes de eso el
 // registry simplemente no tiene remotos (probeAll/forges los ignoran).
 let forgeWS: ReturnType<typeof attachForgeWS> | null = null;
@@ -190,9 +213,10 @@ let forgeWS: ReturnType<typeof attachForgeWS> | null = null;
 // S23: los execs firman el sha256 de su propio output (Proof L0) cuando hay
 // WORKER_SECRET. El contrato verifica la firma en release — sin proof, no paga.
 // Sin secret: execs sin firmar → settle queda "failed" honesto (no se fabrica).
-// WORKER_SECRET: S… (stellar) o 0x… (evm) — el signer matchea SETTLE_CHAIN.
+// WORKER_SECRET: S… (stellar) o 0x… (evm) — el signer matchea el formato
+// de la key, no el chain global (dual: el embedded firma según su key).
 const sign = process.env.WORKER_SECRET
-  ? SETTLE_CHAIN === "evm"
+  ? process.env.WORKER_SECRET.startsWith("0x")
     ? evmSigner(process.env.WORKER_SECRET as Hex)
     : stellarSigner(process.env.WORKER_SECRET)
   : undefined;
@@ -472,7 +496,7 @@ const media = new Map<string, { buf: Buffer; mime: string }>();
 // el onPending referencia forgeWS (creado después del http server).
 const evmRpc = process.env.EVM_RPC_URL ?? "https://testnet-rpc.monad.xyz";
 const evmSubmitter =
-  SETTLE_CHAIN === "evm" && process.env.SETTLEMENT_SECRET
+  evmOn && process.env.SETTLEMENT_SECRET
     ? new EvmSubmitter({ rpcUrl: evmRpc, privateKey: process.env.SETTLEMENT_SECRET as Hex })
     : null;
 // Worker fallback (embedded): WORKER_ADDRESS o el operador mismo (self-pay).
@@ -487,7 +511,7 @@ const evmSettlement =
           payout: Number(process.env.PAYOUT_BASE ?? 10000), // $0.01 USDC (6 dec)
           ...(process.env.PAYOUT_PER_TOKEN ? { perToken: Number(process.env.PAYOUT_PER_TOKEN) } : {}),
         },
-        settleJournal as IntentJournal,
+        evmJournal as IntentJournal,
         (p) => {
           forgeWS?.sessions.get(p.worker)?.send({ type: "job.funded", chainJobId: p.jobId, resultHash: p.resultHash });
         },
@@ -505,6 +529,44 @@ const erc8004Agents = (() => {
     return {};
   }
 })();
+
+// Spec 003 — vías de settle por formato de worker. Cada una se construye solo
+// si tiene chain+secret+contract: la configuración decide la flota pagable.
+const evmVia = evmSettlement
+  ? {
+      settleJob: (h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }) => {
+        // Worker por job (forgePubkeyOf = address del forge remoto); embedded
+        // sin pubkey cae al fallback (operador = self-pay). Un worker G… en
+        // modo solo-EVM llega acá si el dispatcher no lo desvió — defensa.
+        if (worker !== undefined && !isEvmAddr(worker)) throw new Error(`worker no-EVM ${worker}: no pagable en escrow Monad`);
+        return evmSettlement.settleJob(h, sig, (worker ?? evmFallbackWorker) as EvmAddress, stats);
+      },
+    }
+  : undefined;
+const xlmVia =
+  xlmSecret && xlmContract
+    ? new EscrowSettlement(
+        new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", xlmSecret),
+        {
+          contractId: xlmContract,
+          operator: stellarPubkey(xlmSecret),
+          // WORKER_ADDRESS = fallback para forges embedded (sin pubkey propia);
+          // sin env cobra el operador mismo (compute propio → self-pay).
+          worker: process.env.WORKER_ADDRESS ?? stellarPubkey(xlmSecret),
+          payout: Number(process.env.PAYOUT_BASE ?? 100000), // $0.01 USDC base
+          ...(process.env.PAYOUT_PER_TOKEN ? { perToken: Number(process.env.PAYOUT_PER_TOKEN) } : {}),
+        },
+        xlmJournal,
+        // S42 (I4): release del operador falló → el job quedó funded ligado
+        // al worker. Se lo avisamos al forge: puede self-claimear on-chain
+        // sin depender de que el gateway reintente.
+        (p) => {
+          forgeWS?.sessions.get(p.worker)?.send({ type: "job.funded", chainJobId: p.jobId, resultHash: p.resultHash });
+        },
+      )
+    : undefined;
+const settleDispatcher =
+  evmVia || xlmVia ? new SettleDispatcher({ evm: evmVia, stellar: xlmVia }) : undefined;
 
 const app = createApp({
   forges,
@@ -562,7 +624,7 @@ const app = createApp({
   catalog: modelCatalog,
   // Pública — el panel la muestra en Overview para fondear.
   // EVM: es el contrato WeaverCredits (deposit(bytes32 acct, amount)).
-  depositAddress: SETTLE_CHAIN === "evm" ? process.env.EVM_CREDITS : process.env.DEPOSIT_ADDRESS,
+  depositAddress: evmOn ? process.env.EVM_CREDITS : process.env.DEPOSIT_ADDRESS,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // IP del socket para el rate limiter (XFF es spoofeable, no entra).
@@ -582,7 +644,7 @@ const app = createApp({
   ...(payTo
     ? {
         paywall:
-          SETTLE_CHAIN === "evm"
+          evmOn
             ? {
                 verifier: new EvmFacilitatorVerifier(process.env.X402_FACILITATOR ?? "https://x402-facilitator.molandak.org"),
                 payTo,
@@ -606,21 +668,13 @@ const app = createApp({
   // pubkey — un G... hardcodeado desalineado dejaría toda tx sin auth).
   // SETTLEMENT_CONTRACT es obligatorio: sin default — un contractId stale
   // contra un contrato de ABI vieja rompería cada settle silenciosamente.
-  ...(SETTLE_CHAIN === "evm" && evmSettlement
+  // Spec 003: SettleDispatcher rutea por formato del worker (0x→evm, G→xlm).
+  ...(settleDispatcher ? { settlement: settleDispatcher } : {}),
+  // ERC-8004: tras cada release el operador califica al forge con la
+  // evidencia on-chain (jobId + fundTx + releaseTx + resultHash).
+  ...(evmSubmitter
     ? {
-        // EVM: worker por job (forgePubkeyOf = address del forge remoto);
-        // embedded sin pubkey cae al fallback (operador = self-pay).
-        settlement: {
-          settleJob: (h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }) => {
-            // Mixed fleet: un forge G… sirvió pero su identidad no es pagable en
-            // este escrow — failed explícito, no un throw opaco dentro de viem.
-            if (worker !== undefined && !isEvmAddr(worker)) throw new Error(`worker no-EVM ${worker}: no pagable en escrow Monad`);
-            return evmSettlement.settleJob(h, sig, (worker ?? evmFallbackWorker) as EvmAddress, stats);
-          },
-        },
-        // ERC-8004: tras cada release el operador califica al forge con la
-        // evidencia on-chain (jobId + fundTx + releaseTx + resultHash).
-        onSettled: (r, worker, model) => {
+        onSettled: (r: SettleReceipt, worker: string | undefined, model?: string) => {
           // Fuentes del agentId, por precedencia: override del operador
           // (ERC8004_AGENTS) → claim del heartbeat VERIFICADO on-chain
           // (ownerOf==worker). Nunca el claim crudo — un forge puede mentir.
@@ -632,28 +686,6 @@ const app = createApp({
             .then((tx) => console.log(`erc-8004 feedback agent ${agentId} ✓ tx ${tx}`))
             .catch((e) => console.warn(`erc-8004 feedback agent ${agentId} falló:`, e));
         },
-      }
-    : process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT
-    ? {
-        settlement: new EscrowSettlement(
-          new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET),
-          {
-            contractId: process.env.SETTLEMENT_CONTRACT,
-            operator: stellarPubkey(process.env.SETTLEMENT_SECRET),
-            // WORKER_ADDRESS = fallback para forges embedded (sin pubkey propia);
-            // sin env cobra el operador mismo (compute propio → self-pay).
-            worker: process.env.WORKER_ADDRESS ?? stellarPubkey(process.env.SETTLEMENT_SECRET),
-            payout: Number(process.env.PAYOUT_BASE ?? 100000), // $0.01 USDC base
-            ...(process.env.PAYOUT_PER_TOKEN ? { perToken: Number(process.env.PAYOUT_PER_TOKEN) } : {}),
-          },
-          settleJournal,
-          // S42 (I4): release del operador falló → el job quedó funded ligado
-          // al worker. Se lo avisamos al forge: puede self-claimear on-chain
-          // sin depender de que el gateway reintente.
-          (p) => {
-            forgeWS?.sessions.get(p.worker)?.send({ type: "job.funded", chainJobId: p.jobId, resultHash: p.resultHash });
-          },
-        ),
       }
     : {}),
 });
@@ -673,7 +705,7 @@ if (envOperator) {
 // Stellar: payments USDC clásicos con memo → Horizon poll.
 // EVM: eventos Deposited(bytes32 account,…) del WeaverCredits → eth_getLogs.
 // Solo con sus envs configurados; sin ellos el topup on-chain no corre.
-if (SETTLE_CHAIN === "evm" && process.env.EVM_CREDITS) {
+if (evmOn && process.env.EVM_CREDITS) {
   const credits = process.env.EVM_CREDITS as EvmAddress;
   const client = createPublicClient({
     chain: { ...monadTestnet },
@@ -756,7 +788,7 @@ forgeWS = attachForgeWS(server as HttpServer, {
 // el gateway confirma ownerOf(agentId)==forge pubkey on-chain y solo ahí lo
 // usa para feedback. Claims inválidos se reintentan cada ciclo (RPC caído ≠
 // mentira — un forge con agentId real tarda un ciclo más en verificarse).
-if (SETTLE_CHAIN === "evm") {
+if (evmOn) {
   const evmReader = createPublicClient({ chain: { ...monadTestnet }, transport: http(evmRpc) });
   const warnedClaims = new Set<string>(); // un warn por claim falso, no cada ciclo
   const verifyAgentClaims = async () => {
@@ -784,7 +816,7 @@ if (SETTLE_CHAIN === "evm") {
 // S44 (I3): sweep de escrows pending — un crash entre fund y release deja
 // el job en el journal; al boot reintentamos el release (el proof sigue
 // válido). Si la tx revierte queda failed y visible — jamás huérfano.
-if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
+if (evmOn && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
   const escrow = process.env.SETTLEMENT_CONTRACT as EvmAddress;
   // Fallback worker: solo auto-registrable si ES el operador (registerForge
   // liga msg.sender=worker — un worker remoto se registra con su propia key).
@@ -804,18 +836,14 @@ if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
     })
     .catch((e) => console.warn("settle sweep EVM no corrió:", e));
 
-  // S50: reconciler de huérfanos — intents sin jobId vs Funded on-chain.
-  // Boot + cada 60s: el caso feliz (journal vacío de intents) solo consulta
-  // Funded del operador en la ventana reciente — barato en testnet.
+  // S50+S52: reconciler de huérfanos — runner con guard anti-solape (un scan
+  // por vez) y cursor durable (scan_cursors en pg / memoria en dev). La
+  // ventana [from,head] la decide el runner: cursor-overlap tras el primero,
+  // EVM_ESCROW_FROM_BLOCK como floor, lookback solo en el arranque inicial.
   const reconcileReader = createPublicClient({ chain: { ...monadTestnet }, transport: http(evmRpc) });
   const pad32 = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}` as Hex;
   const RECONCILE_WINDOW = 99n;
-  const fetchFunded = async (worker?: EvmAddress) => {
-    const head = BigInt((await reconcileReader.request({ method: "eth_blockNumber" })) as string);
-    // EVM_ESCROW_FROM_BLOCK: deploy block = historia completa. Default: lookback
-    // reciente — un scan desde génesis son ~700k RPCs (mismo límite del watcher).
-    const lookback = BigInt(process.env.EVM_RECONCILE_LOOKBACK ?? 500_000);
-    const from0 = process.env.EVM_ESCROW_FROM_BLOCK ? BigInt(process.env.EVM_ESCROW_FROM_BLOCK) : head - lookback;
+  const fetchFundedRange = async (from0: bigint, head: bigint, worker?: EvmAddress) => {
     const topics: (Hex | null)[] = [
       FUNDED_TOPIC,
       null, // jobId cualquiera
@@ -823,7 +851,7 @@ if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
       worker ? pad32(worker) : null,
     ];
     const out: { jobId: number; worker: EvmAddress; txHash: string }[] = [];
-    for (let from = from0 < 0n ? 0n : from0; from <= head; from += RECONCILE_WINDOW + 1n) {
+    for (let from = from0; from <= head; from += RECONCILE_WINDOW + 1n) {
       const to = from + RECONCILE_WINDOW > head ? head : from + RECONCILE_WINDOW;
       const logs = (await reconcileReader.request({
         method: "eth_getLogs",
@@ -840,13 +868,24 @@ if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
     }
     return out;
   };
-  const readJob = (jobId: number) =>
-    reconcileReader
-      .readContract({ address: escrow, abi: ESCROW_ABI, functionName: "getJob", args: [BigInt(jobId)] })
-      .then((j) => ({ state: Number((j as { state: number }).state), worker: (j as { worker: EvmAddress }).worker }))
-      .catch(() => null);
+  const reconciler = createEvmReconciler({
+    submitter: evmSubmitter,
+    journal: evmJournal as IntentJournal,
+    escrow,
+    headBlock: async () => BigInt((await reconcileReader.request({ method: "eth_blockNumber" })) as string),
+    fetchFundedRange,
+    readJob: (jobId: number) =>
+      reconcileReader
+        .readContract({ address: escrow, abi: ESCROW_ABI, functionName: "getJob", args: [BigInt(jobId)] })
+        .then((j) => ({ state: Number((j as { state: number }).state), worker: (j as { worker: EvmAddress }).worker }))
+        .catch(() => null),
+    cursor: evmCursor,
+    fromBlockFloor: process.env.EVM_ESCROW_FROM_BLOCK ? BigInt(process.env.EVM_ESCROW_FROM_BLOCK) : undefined,
+    lookback: BigInt(process.env.EVM_RECONCILE_LOOKBACK ?? 500_000),
+  });
   const reconcile = () =>
-    reconcileEvmOrphans({ submitter: evmSubmitter, journal: settleJournal as IntentJournal, escrow, fetchFunded, readJob })
+    reconciler
+      .run()
       .then((r) => {
         if (r.recovered + r.orphans + r.staleIntents > 0) {
           console.log(`settle reconcile EVM: ${r.recovered} recuperados, ${r.orphans} huérfanos, ${r.staleIntents} intents stale`);
@@ -855,21 +894,26 @@ if (SETTLE_CHAIN === "evm" && evmSubmitter && process.env.SETTLEMENT_CONTRACT) {
       .catch((e) => console.warn("settle reconcile EVM no corrió:", e));
   void reconcile();
   setInterval(() => void reconcile(), 60_000).unref();
-} else if (process.env.SETTLEMENT_SECRET && process.env.SETTLEMENT_CONTRACT) {
-  const contractId = process.env.SETTLEMENT_CONTRACT;
-  const submitter = new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", process.env.SETTLEMENT_SECRET);
-  const operatorAddr = stellarPubkey(process.env.SETTLEMENT_SECRET);
+}
+
+// Stellar via: sweep propio (journal separado en dual). En modo solo-stellar
+// era el else-if del bloque EVM; ahora corre independiente — en dual AMBOS
+// sweeps corren al boot.
+if (xlmOn && xlmSecret && xlmContract) {
+  const contractId = xlmContract;
+  const submitter = new RpcSubmitter(process.env.SOROBAN_RPC ?? "https://soroban-testnet.stellar.org", xlmSecret);
+  const operatorAddr = stellarPubkey(xlmSecret);
   // El worker fallback (embedded o WORKER_ADDRESS) debe estar registrado o
   // fund_job revierte (ForgeNotFound). Self-register idempotente al boot.
   const fallbackWorker = process.env.WORKER_ADDRESS ?? operatorAddr;
   void registerForge(submitter, contractId, fallbackWorker)
     .then(() => console.log(`worker fallback registrado on-chain: ${fallbackWorker.slice(0, 12)}…`))
     .catch((e) => console.warn("register_forge del worker fallback falló:", e));
-  void sweepPendingSettles(submitter, settleJournal, contractId, operatorAddr)
+  void sweepPendingSettles(submitter, xlmJournal!, contractId, operatorAddr)
     .then((r) => {
       if (r.released + r.failed > 0) console.log(`settle sweep: ${r.released} released, ${r.failed} failed`);
     })
     .catch((e) => console.warn("settle sweep no corrió:", e));
-} else if (process.env.SETTLEMENT_SECRET) {
-  console.warn("SETTLEMENT_SECRET sin SETTLEMENT_CONTRACT: settle OFF (fail-closed, sin default de contrato)");
+} else if (xlmOn && xlmSecret && !xlmContract) {
+  console.warn("STELLAR_SECRET sin contrato (SETTLEMENT_CONTRACT/STELLAR_CONTRACT): vía stellar OFF (fail-closed)");
 }

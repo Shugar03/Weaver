@@ -58,6 +58,13 @@ export const settleIntents = pgTable("settle_intents", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// S52 (spec 005): cursores de scan on-chain, por nombre de watcher.
+export const scanCursors = pgTable("scan_cursors", {
+  name: text("name").primaryKey(),
+  head: text("head").notNull(), // bigint como decimal string
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // S30: identidades de forges remotos (ADR-0005). El estado vivo (capacidad,
 // inFlight) es efímero por heartbeat — acá solo persiste la identidad.
 export const forges = pgTable("forges", {

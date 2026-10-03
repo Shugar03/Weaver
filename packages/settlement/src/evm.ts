@@ -360,13 +360,21 @@ export async function reconcileEvmOrphans(deps: {
 
   // Fase 1: intents sin jobId → ¿hay un Funded on-chain del mismo worker que
   // el journal no conoce? attach + release con el proof del intent.
+  // fetchFunded PROPAGA errores: un scan caído no es "sin eventos" — descartar
+  // un intent con Funded real por un blip de RPC convierte plata recuperable
+  // en huérfano permanente (el fallo reintenta el ciclo completo).
   for (const intent of await journal.intentsWithoutJob()) {
-    const candidates = await fetchFunded(intent.worker as Address).catch(() => [] as FundedJob[]);
+    const candidates = await fetchFunded(intent.worker as Address);
     let matched = false;
+    let hadUnknown = false;
     for (const c of candidates) {
       if (known.has(c.jobId)) continue;
       const job = await readJob(c.jobId).catch(() => null);
-      if (job?.state !== 0 || job.worker.toLowerCase() !== intent.worker.toLowerCase()) continue;
+      if (job === null) {
+        hadUnknown = true; // job ilegible ≠ inexistente — no descartar el intent
+        continue;
+      }
+      if (job.state !== 0 || job.worker.toLowerCase() !== intent.worker.toLowerCase()) continue;
       try {
         const released = await submitter.invoke(escrow, ESCROW_ABI, "release", [
           BigInt(c.jobId),
@@ -391,7 +399,7 @@ export async function reconcileEvmOrphans(deps: {
         break;
       }
     }
-    if (!matched) {
+    if (!matched && !hadUnknown) {
       staleIntents++;
       // El proof existe pero no hay Funded on-chain → fundJob nunca minó
       // (receipt perdido incluye el caso tx-droppeado). No se auto-fondea:
@@ -401,13 +409,18 @@ export async function reconcileEvmOrphans(deps: {
       console.warn(
         `settle reconcile: intent ${intent.jobKey.slice(0, 12)}… sin Funded on-chain (worker ${intent.worker.slice(0, 10)}…) → descartado. Trabajo no escroizado — decisión manual.`,
       );
+    } else if (!matched) {
+      // Candidatos ilegibles este ciclo: el intent sobrevive y reintenta —
+      // discard solo con evidencia completa de que no hay Funded matching.
+      staleIntents++;
+      console.warn(`settle reconcile: intent ${intent.jobKey.slice(0, 12)}… con candidatos ilegibles (RPC) — se reintenta, no se descarta`);
     }
   }
 
   // Fase 2: huérfanos puros — Funded on-chain del operador que el journal no
   // conoce ni como pending ni como intent (pérdida total de la fila).
   let orphans = 0;
-  for (const f of await fetchFunded().catch(() => [] as FundedJob[])) {
+  for (const f of await fetchFunded()) {
     if (known.has(f.jobId)) continue;
     const job = await readJob(f.jobId).catch(() => null);
     if (job?.state !== 0) continue; // ya Released/Refunded — no es huérfano
@@ -417,6 +430,86 @@ export async function reconcileEvmOrphans(deps: {
     );
   }
   return { recovered, orphans, staleIntents };
+}
+
+// — S52: runner stateful del reconciler (spec 005) —
+// reconcileEvmOrphans es puro (matching); createEvmReconciler decide QUÉ
+// bloques escanear y CUÁNDO: guard anti-solape + cursor durable.
+export interface ScanCursor {
+  load(): Promise<bigint | null>;
+  save(head: bigint): Promise<void>;
+}
+
+export class InMemoryScanCursor implements ScanCursor {
+  private head: bigint | null = null;
+  async load(): Promise<bigint | null> {
+    return this.head;
+  }
+  async save(head: bigint): Promise<void> {
+    this.head = head;
+  }
+}
+
+// Re-scan de seguridad tras el cursor: los logs de los últimos N bloques se
+// re-lee siempre — cubre reorgs (un Funded puede reaparecer removido) y la
+// carrera entre headBlock y el minado del propio Funded.
+export const REORG_OVERLAP_BLOCKS = 64n;
+
+export type ReconcileRunResult = { skipped: boolean; recovered: number; orphans: number; staleIntents: number };
+
+export function createEvmReconciler(deps: {
+  submitter: Pick<EvmSubmitter, "invoke">;
+  journal: IntentJournal;
+  escrow: Address;
+  // Cabeza de chain actual (eth_blockNumber).
+  headBlock: () => Promise<bigint>;
+  // Scanner de la ventana [from,to] — la paginación eth_getLogs vive afuera.
+  fetchFundedRange: (from: bigint, to: bigint, worker?: Address) => Promise<FundedJob[]>;
+  readJob: (jobId: number) => Promise<{ state: number; worker: Address } | null>;
+  // Durable en prod (PostgresScanCursor); in-memory en dev/tests.
+  cursor?: ScanCursor;
+  // Primer arranque sin cursor: floor explícito (EVM_ESCROW_FROM_BLOCK) o
+  // lookback desde head. Floor siempre gana sobre el cursor-overlap.
+  fromBlockFloor?: bigint;
+  lookback?: bigint;
+}): { run(): Promise<ReconcileRunResult> } {
+  const { submitter, journal, escrow, headBlock, fetchFundedRange, readJob, cursor, fromBlockFloor, lookback } = deps;
+  let running = false;
+
+  async function run(): Promise<ReconcileRunResult> {
+    if (running) return { skipped: true, recovered: 0, orphans: 0, staleIntents: 0 };
+    running = true;
+    try {
+      const head = await headBlock();
+      const saved = cursor ? await cursor.load() : null;
+      let from: bigint;
+      if (saved !== null) {
+        from = saved > REORG_OVERLAP_BLOCKS ? saved - REORG_OVERLAP_BLOCKS : 0n;
+      } else if (fromBlockFloor !== undefined) {
+        from = fromBlockFloor;
+      } else {
+        from = head - (lookback ?? 500_000n);
+      }
+      if (fromBlockFloor !== undefined && from < fromBlockFloor) from = fromBlockFloor;
+      if (from < 0n) from = 0n;
+
+      const fetchFunded = (worker?: Address) => fetchFundedRange(from, head, worker);
+      const r = await reconcileEvmOrphans({ submitter, journal, escrow, fetchFunded, readJob });
+
+      // El cursor SOLO avanza cuando no quedan intents sin resolver: un intent
+      // pendiente cuyo Funded quede detrás del cursor jamás se re-escanearía
+      // — plata recuperable convertida en huérfano permanente. Con intents
+      // abiertos la ventana se mantiene hasta que se attacheen o descarten.
+      if (cursor && (await journal.intentsWithoutJob()).length === 0) {
+        await cursor.save(head);
+      }
+      return { skipped: false, ...r };
+    } finally {
+      running = false;
+    }
+  }
+
+  return { run };
 }
 
 // registerForge on-chain — el WORKER manda la tx (msg.sender = worker, su
