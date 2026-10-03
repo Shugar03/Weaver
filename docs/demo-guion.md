@@ -1,129 +1,107 @@
-# Demo Checkpoint 1 — guion video 3 min (ES + subs EN)
+# Demo Metropolis Track 04 — Guion video 3 min (ES + subs EN)
 
-Historia: **failover + Stellar**. Un chat que sigue andando aunque mates el servidor,
-y un pago real en testnet que cualquiera puede verificar. Tesis + plata, nada de slides.
+Historia: **failover en vivo + Monad EVM + ERC-8004**. Un request de inferencia que no se cae aunque mates el worker primario, liquidación sub-segundo con proof criptográfico en Monad testnet, y reputación descentralizada on-chain para el agente ejecutor. Cero slides, 100% código, red y blockchain real.
 
 ## Pre-requisitos (checklist grabación)
 
-- [ ] Box fría (nada pesado corriendo) + `OLLAMA_KEEP_ALIVE=30m` — bajo carga el TTFT se va a 26–47s.
-- [ ] `ollama serve` en terminal 1, modelo `qwen3:4b` ya pulleado.
-- [ ] Terminal 2: `node apps/gateway/src/serve.ts` → copiar la **operator key** del log.
-- [ ] Terminal 3: `pnpm --filter @weaver/web dev` (puerto 3000). Gateway default `:3001`, la web ya lo espera.
-- [ ] **1 RUN de calentamiento** en `/dashboard` y descartarlo (deja pesos HOT, TTFT ~0.2s).
-- [ ] Viewport 1440×900. Prompt corto en el textarea (el default largo es para uso, no para cámara).
-- [ ] `OPERATOR_KEY=wvr_... node scripts/demo-capture.mjs` verde al menos una vez (deja las 3 tomas en `/tmp`).
+- [ ] Box fría (sin cargas en background) + Ollama con `OLLAMA_KEEP_ALIVE=30m` (`qwen3:4b` ya descargado).
+- [ ] Terminal 1 (Forge remoto): `weaver-forge up --chain evm --contract 0x51acE4858652D942dC7b320870e4CDbc5c989cD6 --model qwen3:4b`
+- [ ] Terminal 2 (Gateway): `SETTLE_CHAIN=evm REMOTE_ONLY=1 SETTLEMENT_SECRET=... SETTLEMENT_CONTRACT=0x51acE4858652D942dC7b320870e4CDbc5c989cD6 ERC8004_AGENTS=1 node apps/gateway/src/serve.ts`
+- [ ] Terminal 3 (Web UI): `pnpm --filter @weaver/web dev` (puerto 3000, apunta al gateway `:3001`).
+- [ ] **1 RUN de calentamiento** en `/network` descartado para asegurar pesos HOT en VRAM (TTFT medido ~0.2s).
+- [ ] Viewport 1440×900. Tabs de MonadVision ya abiertas con los hashes canónicos.
+- [ ] Browser abierto en `http://localhost:3000/network` (vista en vivo del pipeline FIRE→ROUTE→EXECUTE→SETTLE).
 
 ## Beats (tiempos + texto + pantalla)
 
 ### 0:00–0:20 — Hook (landing `/`)
 
-> ES: "Este es Weaver: el nuevo datacenter no tiene paredes. Los modelos abiertos ya
-> ganaron — Google sirve 300 veces más tokens que hace dos años. Pero para usarlos pasás
-> por un peaje: los gateways te cobran por cargar créditos, no te garantizan nada y te
-> atan a su suscripción. Weaver saca al intermediario: cualquier GPU compite y cada job
-> se paga en Stellar, por uso, sin recarga."
+> ES: "Este es Weaver: el nuevo datacenter no tiene paredes. Los modelos abiertos ya ganaron, pero para usarlos hoy tenés que pasar por un peaje: gateways centralizados que te obligan a comprar créditos por adelantado, no te dan SLAs y se quedan con tus márgenes. Weaver saca al intermediario: cualquier GPU se conecta sin permiso, compite por latencia, y cada inferencia se liquida al instante en Monad con proof criptográfico."
 >
-> EN: "This is Weaver: the new datacenter has no walls. Open models already won — Google
-> serves 300x the tokens it did two years ago. But using them means paying a toll:
-> gateways charge you to top up credits, guarantee nothing, and lock you into
-> subscriptions. Weaver removes the middleman: any GPU competes, and every job pays out
-> on Stellar — per use, no top-ups."
+> EN: "This is Weaver: the datacenter without walls. Open-weight models won, but using them today means paying a toll: centralized gateways forcing prepaid credit top-ups, offering zero real SLAs, and pocketing your margins. Weaver removes the middleman: any GPU joins permissionlessly, competes on measured latency, and every inference settles instantly on Monad with cryptographic delivery proof."
 
-Pantalla: hero + arco. Click en `RUN LIVE DEMO →`.
+Pantalla: Landing `/`, métricas de red viva, headline. Click en `INSPECT NETWORK PIPELINE →` directo a `/network`.
 
-### 0:20–1:00 — RUN vivo (`/dashboard` #live)
+### 0:20–1:00 — RUN vivo en `/network` (FIRE → ROUTE → EXECUTE → SETTLE)
 
-> ES: "Pido un modelo. No elijo servidor, no configuro nada: el scheduler mide ETR —
-> red, cola, carga — y manda mi job al forge HOT más barato. Responde en stream, y abajo
-> dice quién lo ejecutó, en cuánto, y por qué."
+> ES: "Mando un prompt. No elijo servidores ni toco configs: el scheduler mide ETR en tiempo real — RTT de red, cola en GPU y velocidad de decode — y rutea al forge HOT más rápido. Vemos el pipeline completo en stream: FIRE recibe el request, ROUTE selecciona por ETR medido, EXECUTE transmite los tokens vía WebSocket, y SETTLE prepara el claim. Abajo queda registrado: qué worker ejecutó, TTFT y el hash de entrega."
 >
-> EN: "I ask for a model. No server picking, no config: the scheduler scores ETR —
-> network, queue, load — and routes my job to the cheapest HOT forge. It streams back,
-> and below it says who ran it, how fast, and why."
+> EN: "I submit a prompt. No manual server picking or configs: our scheduler calculates real-time ETR — network RTT, GPU queue depth, and measured decode speed — routing straight to the fastest warm forge. The pipeline streams live: FIRE accepts the request, ROUTE dispatches via measured ETR, EXECUTE streams tokens over WebSocket, and SETTLE primes the settlement claim. Full metadata is logged: worker address, TTFT, and delivery hash."
 
-Pantalla: prompt corto → RUN → stream → meta `FORGE ollama-local TTFT … WHY warm-first`.
+Pantalla: Prompt en `/network` → RUN → pipeline animado de 4 etapas → stream de tokens fluido → metadata: forge `0x784E0a01c683df116fA5bb5A91180d6Fc06BF5CB`, TTFT medido ~180ms, reason `warm-first-measured`.
 
-### 1:00–1:50 — KILL + failover (el clip que vende)
+### 1:00–1:45 — KILL + Failover en vivo (resiliencia tolerante a fallos)
 
-> ES: "Ahora lo rompo a propósito. Mato el forge primario… y vuelvo a pedir.
-> El request sigue andando: hizo failover al standby, en vivo. En cómputo descentralizado
-> los nodos se caen — la red, no."
+> ES: "Ahora rompemos la infraestructura a propósito. En computación distribuida los nodos hogareños o mineros se caen: la red no puede caerse. Mato el forge primario en medio del tráfico... y vuelvo a disparar. El gateway detecta la desconexión antes del token 1, re-enruta en caliente al forge standby por circuit breaker, y el usuario recibe su respuesta sin error 500."
 >
-> EN: "Now I break it on purpose. I kill the primary forge… and ask again.
-> The request still completes: it failed over to standby, live. In decentralized
-> compute, nodes fall — the network doesn't."
+> EN: "Now we break it on purpose. In distributed computing, residential or edge nodes drop off: the network must not. I kill the primary forge under traffic... and fire another request. The gateway catches the disconnect pre-token, instantly fails over to the standby forge via circuit breaker, and the user receives a clean stream without a single 500 error."
 
-Pantalla: `Kill Forge` → RUN → `forge-sim-01` en el meta → `Revivir Forge`.
+Pantalla: Click en `Kill Primary Forge` (o `Ctrl+C` en terminal del forge primario) → nuevo RUN → el scheduler descarta el nodo caído, rutea al nodo standby en <15ms → respuesta completa → revivir forge.
 
-### 1:50–2:40 — Plata real (stellar.expert)
+### 1:45–2:35 — Settle On-Chain en Monad (MonadVision live)
 
-> ES: "Y esto no es teatro: cada job se paga. El cliente paga por request vía x402;
-> el escrow en Soroban libera al worker un centavo de USDC solo si el forge firmó
-> el hash del resultado con su clave ed25519 — el contrato verifica la firma antes
-> de pagar. Sin firma válida, no hay pago: proof de entrega, on-chain.
-> Estas transacciones las verifica cualquiera."
+> ES: "Y esto no es simulación: cada inferencia se paga on-chain. El cliente deposita USDC en el contrato WeaverCredits o paga vía x402. Al servir, el forge remoto firma el hash del resultado con su clave secp256k1 en RAM. Nuestro contrato WeaverEscrow en Monad verifica la firma mediante ecrecover antes de liberar los fondos: sin proof firmado por el worker registrado, no hay pago. Sub-segundo, verified en Monad testnet."
 >
-> EN: "And this isn't theater: every job gets paid. The client pays per request via
-> x402; the Soroban escrow releases one cent of USDC only if the forge signed the
-> result hash with its ed25519 key — the contract verifies the signature before
-> paying. No valid signature, no payment: delivery proof, on-chain.
-> Anyone can verify these transactions."
+> EN: "This isn't a simulation: every single inference is settled on-chain. The client deposits USDC into the WeaverCredits contract or pays via x402. Upon serving, the remote forge signs the result hash using its secp256k1 key in RAM. Our WeaverEscrow contract on Monad verifies the signature via ecrecover before releasing funds: without a valid signed proof matching the registered worker, zero payment. Sub-second finality, fully verified on Monad testnet."
 
-Pantalla (pestañas ya abiertas, nada de tipear hashes en cámara):
+Pantalla (tabs ya abiertas en MonadVision, paneo limpio):
+- **Contrato WeaverEscrow:** [`0x51acE4858652D942dC7b320870e4CDbc5c989cD6`](https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6) (Sourcify verificado).
+- **Fund Job tx:** [`0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932`](https://testnet.monadvision.com/tx/0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932) — depósito de 0.01 USDC para el job #2.
+- **Release tx (Proof L0):** [`0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58`](https://testnet.monadvision.com/tx/0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58) — evento `Released(jobId=2, resultHash=0x9f9f...)` y transferencia de 0.01 USDC al forge `0x784E0a01c683df116fA5bb5A91180d6Fc06BF5CB`.
 
-- fund $0.01: `https://stellar.expert/explorer/testnet/tx/d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7`
-- release (con proof L0 — hash firmado por el forge): `https://stellar.expert/explorer/testnet/tx/00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab`
-- contrato v3: `https://stellar.expert/explorer/testnet/contract/CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB`
+### 2:35–2:50 — ERC-8004: Identidad y Reputación de Agente
 
-### 2:40–3:00 — Cierre (`/security` 5s + CTA)
-
-> ES: "Y lo que ningún explorer muestra: tus prompts. Weaver no los guarda — viven en RAM
-> y mueren con el request. La cadena solo ve plata. The new datacenter has no walls —
-> y no te espía. Repo y testnet abajo."
+> ES: "Y para el track de agentes: identidad sin plataformas. Al arrancar, el forge auto-registra su propio agente en el Identity Registry ERC-8004. Cuando se liquida el escrow, el gateway emite feedback on-chain con el hash y las txs como evidencia inmutable. El agente 1991 acumula reputación portable que le pertenece a su wallet, no a Weaver."
 >
-> EN: "And what no explorer shows: your prompts. Weaver doesn't keep them — they live
-> in RAM and die with the request. The chain only ever sees money. The new datacenter
-> has no walls — and it doesn't spy on you."
+> EN: "And for the Autonomous Agents track: platform-free identity. On boot, the forge self-registers its own agent on the ERC-8004 Identity Registry. Once escrow settles, the gateway submits on-chain feedback attaching the result hash and settlement txs as immutable evidence. Agent 1991 builds portable reputation owned by its wallet, not by Weaver."
 
-## Plan B (si Ollama se pone lento grabando)
+Pantalla:
+- **ERC-8004 Identity Registry:** [`0x8004A818BFB912233c491871b3d84c89A494BD9e`](https://testnet.monadvision.com/address/0x8004A818BFB912233c491871b3d84c89A494BD9e)
+- **Live Feedback tx (Agent 1991):** [`0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd`](https://testnet.monadvision.com/tx/0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd) — evento `NewFeedback(agentId=1991, tag="jobSettled")`.
 
-1. Cortá el TTFT en edición — el stream se ve igual. Lo que importa es el meta final.
-2. El failover al sim es instantáneo: ese clip te salva el video aunque el take 1 salga lento.
-3. Respaldo: `scripts/demo-capture.mjs` deja `/tmp/weaver-take1-run.png` y
-   `/tmp/weaver-take3-failover.png` — mostralos como stills con voz encima.
-4. Nunca grabes con el prompt default largo ni sin el RUN de calentamiento.
+### 2:50–3:00 — Cierre (`/security` + ZDR + CTA)
 
-## Post
+> ES: "Por último, Zero Data Retention: tus prompts nunca tocan disco ni entrenan modelos ajenos; viven en RAM del forge y mueren con el socket. La blockchain solo ve atestaciones y plata. El nuevo datacenter no tiene paredes, rinde cuentas en Monad y no te espía. Probá la testnet en GitHub."
+>
+> EN: "Finally, Zero Data Retention: your prompts never touch disk or train foreign models; they live in forge RAM and vanish when the socket closes. The blockchain only ever sees attestations and settlement. The new datacenter has no walls, settles on Monad, and never spies on you. Try testnet on GitHub."
 
-- Subtítulos EN desde la columna EN de arriba (timings del beat).
-- Descripción del video: repo + los 3 links de testnet + `GET /v1/models` para agentes.
-- Una línea de fuentes en la descripción: "Demanda: Google I/O 2026 · Energía: IEA abr-2026 · Cloud: Synergy Q2-2025".
+Pantalla: `/security` (diagrama ZDR de RAM) → banner final con link a GitHub y contratos de Monad testnet.
+
+## Plan B (si el nodo local se satura grabando)
+
+1. Cortá el TTFT en edición si Ollama hace cold load — el stream y los tags de metadata son lo relevante.
+2. El failover al simulador o forge standby es instantáneo: ese take es el punto fuerte técnico.
+3. Respaldo de captures: tené listos los screenshots de MonadVision con los hashes reales por si hay hipo de conectividad con el RPC de testnet.
+4. Usá siempre el prompt de prueba conciso: "Explain why decentralized inference needs cryptographic proof in 2 sentences."
+
+## Post-producción
+
+- Subtítulos en inglés tomados directamente de la pista `EN` de este guion.
+- Descripción del video con enlaces canónicos:
+  - Repositorio: `https://github.com/Shugar03/Weaver`
+  - WeaverEscrow: `https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6`
+  - Live Fund Tx: `https://testnet.monadvision.com/tx/0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932`
+  - Live Release Tx: `https://testnet.monadvision.com/tx/0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58`
+  - Live ERC-8004 Feedback (Agent 1991): `https://testnet.monadvision.com/tx/0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd`
+  - API endpoint: `POST /v1/chat/completions` (OpenAI-compatible)
 
 ## Fuentes (backup ante preguntas de jueces)
 
 Evidencia completa y fechada en `docs/demanda-evidencia.md`. Los 5 citables:
 
-1. Google 9.7T (abr-2024) → 480T (abr-2025) → 3.2Q tokens/mes (may-2026) — Pichai, I/O 2026.
-2. OpenAI API >6B tokens/min + 800M usuarios/semana (Altman, DevDay oct-2025); 8.6T tokens/día (a16z/OpenRouter dic-2025).
-3. Datacenters 485 TWh en 2025 (+17%) → ~950 TWh en 2030; AI-focused x3 — IEA abr-2026.
-4. Jevons: GPT-4 $30/$60 por 1M (2023) → GPT-5 $1.25/$10 (2025), 1000x en 3 años a igual MMLU (a16z) — mientras el volumen vuela.
-5. Big Three 63% cloud (Synergy Q2-2025) + capex hyperscalers $646B en 2026 ~2% PIB USA (Apollo feb-2026) + colas de interconexión USA con mediana >3 años (LBNL).
-
-Qué NO decimos en cámara (sin primaria sólida): backlog $ de NVIDIA, lead times exactos H100, revenues auto-reportados de redes DePIN.
+1. Google: 9.7T (abr-2024) → 480T (abr-2025) → 3.2Q tokens/mes (may-2026) — Pichai, I/O 2026.
+2. OpenAI API: >6B tokens/min + 800M usuarios/semana (Altman, DevDay oct-2025); 8.6T tokens/día (a16z/OpenRouter dic-2025).
+3. Datacenters: 485 TWh en 2025 (+17%) → ~950 TWh en 2030; AI-focused x3 — IEA abr-2026.
+4. Paradoja de Jevons: GPT-4 $30/$60 por 1M (2023) → GPT-5 $1.25/$10 (2025), 1000x más barato en 3 años a igual MMLU (a16z) — mientras el consumo se dispara.
+5. Concentración de infraestructura: Big Three controlan 63% del cloud (Synergy Q2-2025) + capex de hyperscalers de $646B en 2026 (~2% PIB USA, Apollo feb-2026) + colas de interconexión eléctrica en USA con mediana >3 años (LBNL).
 
 ## El rival es el peaje (no los labs)
 
-Posicionamiento corregido 15/09: competimos con OpenRouter, Together, Fireworks, fal.ai,
-Replicate y suscripciones como OpenCode Go — no con Google. Evidencia en
-`docs/competidores-evidencia.md` (snapshot 15/09, solo primarias). Los 6 dardos:
+Posicionamiento: competimos con intermediarios como OpenRouter, Together, Fireworks, fal.ai, Replicate y suscripciones como OpenCode Go — no con los laboratorios base. Evidencia en `docs/competidores-evidencia.md`:
 
-1. OpenRouter no marca el token pero cobra 5,5% (mín. $0,80) por cargar créditos, 8% en Business — el peaje es la recarga.
-2. OpenRouter vende disponibilidad "as-available" sin garantía (Terms §5.4) — conveniencia sin SLA.
-3. Fireworks admite cero garantías de latencia/disponibilidad en serverless; su 99,9% solo cubre el 503 genuino, no la saturación.
-4. Together reserva el SLA para PTU contratado ($0,05/min); el serverless es best-effort.
-5. Replicate cobra H100 a $5,49/h y en privados factura setup+idle+activo — pagás la espera.
-6. OpenCode Go: $10/mes por hasta $60 de uso, con caps de $15 por modelo premium — suscripción que raciona lo abierto.
-
-Líneas rojas (serían mentira en cámara): decir que OpenRouter marca el token (no lo hace);
-vender ZDR como diferencial único (Together y Fireworks ya lo tienen por default);
-citar a fal.ai como gateway de LLMs (su pricing es media+GPU).
+1. OpenRouter no marca el token pero cobra 5,5% (mín. $0,80) por cargar créditos, y 8% en Business — el peaje es la recarga y la custodia.
+2. OpenRouter vende disponibilidad "as-available" sin garantía legal de servicio (Terms §5.4) — pura conveniencia sin SLA.
+3. Fireworks admite cero garantías de latencia ni disponibilidad en serverless; su 99,9% solo cubre el 503 genuino de infraestructura, no la degradación bajo saturación.
+4. Together reserva el SLA para capacidad dedicada PTU ($0,05/min); el serverless estándar opera en best-effort.
+5. Replicate cobra H100 a $5,49/h y en deployments privados factura setup + idle + tiempo activo — pagás la espera y la capacidad ociosa.
+6. OpenCode Go: $10/mes por hasta $60 de uso teórico, pero con límites de $15 por modelo premium — una suscripción que raciona el acceso a modelos abiertos.

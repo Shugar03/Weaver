@@ -1,4 +1,4 @@
-# Pitch script — Checkpoint 2 (borrador v1)
+# Pitch script — Metropolis Track 04 (Monad + ERC-8004)
 
 > Duración objetivo: ~3 min hablados + demo en vivo.
 > Acompaña el deck `docs/pitch/index.html` (11 slides, flechas para navegar).
@@ -11,7 +11,8 @@
 
 > "Esto es Weaver. El nuevo datacenter no tiene paredes.
 > Es un mercado de inferencia: cualquier GPU sirve modelos abiertos,
-> cada job se verifica criptográficamente, y cada token se paga on-chain.
+> cada job se verifica criptográficamente, y cada ejecución se liquida
+> en Monad con reputación ERC-8004.
 > En tres minutos les muestro por qué hace falta — y después lo van a ver correr."
 
 ## Slide 2 — La demanda (20s)
@@ -55,53 +56,58 @@
 ## Slide 7 — Weaver (20s)
 
 > "Weaver es ese mercado. Los forges aportan GPUs por WebSocket autenticado.
-> El gateway rutea cada job al forge más barato y rápido *medido* — no
-> declarado. Y Stellar liquida cada ejecución en un escrow verificable.
-> Tres piezas: routing, verificación, pago."
+> El gateway rutea cada job al forge más rápido por ETR *medido* — no
+> declarado. Y Monad liquida cada ejecución en sub-segundos mediante un escrow
+> verificable e indexa reputación bajo ERC-8004.
+> Tres piezas: routing por ETR, verificación criptográfica, liquidación instantánea."
 
-## Slide 8 — Cómo usamos Stellar (25s)
+## Slide 8 — Cómo usamos Monad y ERC-8004 (25s)
 
-> "La confianza es el problema real en una red de desconocidos. La resolvemos
-> así: cada resultado lleva un hash firmado con la clave ed25519 del forge.
-> El contrato Soroban solo libera el pago si esa firma verifica — sin proof
-> válido no hay plata. Y el forge tiene una ventana de 24 horas para
-> self-claimear aunque el operador desaparezca. Proof de entrega, on-chain.
-> Cualquiera lo audita en stellar.expert."
+> "La confianza es el problema real en una red descentralizada. La resolvemos
+> con criptografía: cada resultado lleva un hash firmado con la clave secp256k1
+> del forge en RAM al momento de servirlo. Nuestro contrato WeaverEscrow en Monad
+> solo libera USDC si ecrecover valida esa firma — sin proof válido, no hay plata.
+> Y tras el release, el gateway emite feedback al Reputation Registry canónico
+> de ERC-8004. El agente 1991 acumula reputación portable on-chain que le pertenece
+> a su wallet. Cualquiera lo audita en MonadVision."
 
 ## Slide 9 — El producto (20s)
 
-> "Para el usuario es una API key: `wvr_…`. Entra en opencode, pi, hermes,
-> cursor — cualquier cliente OpenAI-compatible. Billing prepago en USDC,
-> debit por tokens medidos. Si no tenés crédito, 402 antes de tocar un forge.
-> Marketplace público con TTFT y tok/s medidos — lo no medido muestra un
-> guion, no un número inventado."
+> "Para el usuario es una API key OpenAI-compatible o pago directo por x402 gasless.
+> Entra en opencode, cursor, hermes o cualquier framework de agentes.
+> Pipeline visible en `/network`: FIRE recibe, ROUTE selecciona por latencia real,
+> EXECUTE transmite los tokens y SETTLE liquida on-chain. Zero Data Retention:
+> los prompts viven en memoria volátil y mueren con el socket."
 
 ## Slide 10 — Estado (15s)
 
-> "Y no es un mockup: 262 tests verdes, contrato v5 con self-claim y upgrade,
-> forges remotos por WebSocket con attestation y failover, y un smoke e2e
-> que corre el loop completo con USDC de testnet. Cero prompts guardados."
+> "Y no es un mockup: contratos WeaverEscrow y WeaverCredits verificados en Sourcify
+> en Monad testnet, tests unitarios y de integración verdes en Foundry y Node,
+> forges remotos por WebSocket con failover en caliente, y un trail E2E real con
+> pagos de USDC y feedback ERC-8004 comprobables on-chain. Todo en código abierto."
 
 ## Slide 11 — Transición al demo (10s)
 
-> "Todo lo que les conté corre. Vamos a verlo."
+> "Todo lo que les conté corre en vivo. Vamos a verlo."
 
 ---
 
-## Demo en vivo — recorrido principal (rúbrica Foco de Producto)
+## Demo en vivo — recorrido principal (Track 04)
 
-1. **`/models`** — marketplace live: modelos reales, providers, tok/s medidos
-2. **`/models/[id]`** — detalle: capacidades, snippet, CTA a chat
-3. **`/account`** — crear cuenta en un click → deposit address + memo
-4. **Top-up USDC testnet** (con memo) → watcher acredita → balance visible
-5. **`/chat?model=`** — emitir key `wvr_` → stream real → debit medido
-6. **`/v1/me/billing`** — ledger: depósito `dep:<opId>` + debit `job:<id>`
-7. **(si hay settlement)** — fund/release en stellar.expert
+1. **`/network`** — pipeline interactivo en vivo: FIRE → ROUTE → EXECUTE → SETTLE.
+2. **Inferencia en stream** — prompt real a modelo abierto (`qwen3:4b`), TTFT medido visible (~180ms).
+3. **Failover en vivo** — matar el forge primario bajo tráfico; el scheduler conmuta a standby en <15ms sin interrumpir la respuesta.
+4. **On-chain proof en MonadVision (tabs abiertas):**
+   - **WeaverEscrow:** [`0x51acE4858652D942dC7b320870e4CDbc5c989cD6`](https://testnet.monadvision.com/address/0x51acE4858652D942dC7b320870e4CDbc5c989cD6)
+   - **Fund Job tx:** [`0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932`](https://testnet.monadvision.com/tx/0xd8393adb1656de6ad4e1b1d4ced739cde91d2d32be3e13983b8cec313ed1e932)
+   - **Release tx (Proof L0):** [`0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58`](https://testnet.monadvision.com/tx/0xf06bff167edabf727a8cc5bdd478bc2d39ff7cd9dec1e27fb865ef94c2564b58)
+5. **ERC-8004 Identity & Reputation:**
+   - **Identity Registry:** [`0x8004A818BFB912233c491871b3d84c89A494BD9e`](https://testnet.monadvision.com/address/0x8004A818BFB912233c491871b3d84c89A494BD9e)
+   - **Feedback tx (Agent 1991):** [`0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd`](https://testnet.monadvision.com/tx/0xae89a2f0a15ee337dd2d1548fa8a67f1bf56f051581cfe35dbc14911df6303dd)
 
 ## Notas de honestidad (qué NO decir)
 
-- No decir que OpenRouter marca el precio del token (cobra fee de recarga)
-- No prometer SLA de latencia (medimos, no garantizamos)
-- No decir "descentralizado" sin aclarar: el gateway es el punto de
-  coordinación — forges multi-operador sí; discovery on-chain es roadmap
-- No mostrar métricas no medidas como si fueran reales (el "—" es honestidad)
+- No decir que OpenRouter marca el precio del token (cobra fee de recarga).
+- No prometer SLA de latencia absoluto (medimos ETR dinámico, no inventamos SLAs).
+- No decir "totalmente descentralizado" sin aclarar: el gateway coordina el ruteo; los forges son descentralizados y la reputación es soberana on-chain.
+- No inventar transacciones: usar exclusivamente los hashes verificados del deployment.
