@@ -47,6 +47,13 @@ export type ForgeView = {
   // gateway confirmó ownerOf(agentId)==forgePubkey on-chain.
   forgeAgentId?: number;
   forgeAgentVerified?: boolean;
+  // Calibración del ETR (spec 002): lo predicho vs lo real, por forge.
+  // etrMs = predicción vigente (misma fórmula que el router). Los últimos dos
+  // solo existen tras un job calibrado — ausentes = sin evidencia, la UI
+  // muestra "—" antes que inventar.
+  etrMs?: number;
+  etrLastActualMs?: number;
+  etrErrPct?: number;
 };
 
 export type Decision = { forgeId: string; etrMs: number; reason: string };

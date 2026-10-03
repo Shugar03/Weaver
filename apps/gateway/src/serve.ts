@@ -61,7 +61,7 @@ import {
 } from "@weaver/settlement";
 import { createPublicClient, http, type Address as EvmAddress, type Hex } from "viem";
 import { monadTestnet } from "viem/chains";
-import { InMemoryTelemetry, PostgresTelemetry } from "@weaver/telemetry";
+import { InMemoryTelemetry, PostgresTelemetry, etrCalibration } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
 import { applyBreaker, CircuitBreaker, etrMs, queueMsFor, type ForgeView } from "@weaver/scheduler";
 import { ForgeRegistry, InMemoryForgeStore, NonceStore, PostgresForgeStore } from "@weaver/forge-net";
@@ -247,6 +247,8 @@ const p50cache = new Map<string, number>();
 const tokCache = new Map<string, number>();
 // S36: reliability medida por forge (ok/total en la ventana de samples).
 const relCache = new Map<string, number>();
+// Spec 002: calibración ETR por forge (predicho vs real, refresh 5s).
+const calibCache = new Map<string, { errPct: number; lastPredMs: number; lastActualMs: number }>();
 const probeAll = async () => {
   for (const [id, e] of Object.entries(execs)) {
     let up = false;
@@ -281,6 +283,12 @@ const probeAll = async () => {
   // S28: tok/s medido por forge — Σ genTokens / Σ decodeMs de samples con stats
   // (solo ok; un fallo no tiene decode). Misma ventana de frescura que el p50.
   const rec = await telemetry.recent(200).catch(() => []);
+  // Spec 002: calibración del ETR por forge (EMA del error |pred-real|/real).
+  calibCache.clear();
+  for (const f of all) {
+    const cal = etrCalibration(rec, f.forgeId);
+    if (cal) calibCache.set(f.forgeId, cal);
+  }
   for (const f of all) {
     const xs = rec.filter((s) => s.forgeId === f.forgeId && s.ok && s.genTokens && s.decodeMs);
     if (xs.length === 0) {
@@ -341,7 +349,7 @@ async function forges(): Promise<ForgeView[]> {
     const n = tracked?.inFlight ?? f.inFlight ?? 0;
     const cap = (f.capability ?? "text") === "image" ? MAX_INFLIGHT_IMAGE : MAX_INFLIGHT_TEXT;
     const expected = p50cache.get(f.forgeId) ?? (f.hot ? 500 : f.loadTimeMs);
-    return {
+    const view = {
       ...f,
       measuredTtftMs: p50cache.get(f.forgeId),
       tokPerSec: tokCache.get(f.forgeId) ?? f.tokPerSec, // heartbeat si no hay historia local
@@ -351,6 +359,16 @@ async function forges(): Promise<ForgeView[]> {
       // cap local fijo del composition root.
       saturated: f.remote ? f.saturated === true : !dead && n >= cap,
       queueMs: dead ? f.queueMs : queueMsFor(n, expected),
+    };
+    // Spec 002: el ETR vigente del view (misma fórmula que el router usa) +
+    // la calibración medida. La predicción usa el view ya decorado (queueMs
+    // incluye su propia posición — consistente con lo que ve el router).
+    const cal = calibCache.get(f.forgeId);
+    return {
+      ...view,
+      etrMs: dead ? undefined : Math.round(etrMs({ ...view, forgeId: f.forgeId }, { id: "view", model: f.model })),
+      etrLastActualMs: cal?.lastActualMs,
+      etrErrPct: cal?.errPct,
     };
   });
   return applyBreaker(deco, breaker);
@@ -401,6 +419,10 @@ const rpm = Number(process.env.RATE_LIMIT_RPM ?? 120);
 const liveExecs = new Proxy(execs, {
   get: (t, k) => t[k as string] ?? forgeWS?.remoteExecs.get(k as string),
 });
+// Spec 002 — las predicciones que el router hace por job quedan guardadas:
+// jobId → forgeId → etrMs. El sample de telemetría persiste la predicción del
+// forge que SIRVIÓ → calibración honesta del ETR en /v1/forges.
+const jobEtrs = new Map<string, Map<string, number>>();
 const exec = new RoutedExec<ForgeView>({
   // Solo forges de texto: si el request pide un modelo de imagen, sin candidatos
   // → error honesto "sin execs", no un dispatch al puerto equivocado.
@@ -413,7 +435,11 @@ const exec = new RoutedExec<ForgeView>({
     // S28: max_tokens del request = tamaño del job → el ETR pondera el decode
     // esperado (tok/s medido), no solo el primer token.
     const job = { id: req.jobId, model: req.model, estOutTokens: req.options?.maxTokens };
-    return [...views].sort((a, b) => etrMs(a, job) - etrMs(b, job));
+    const etrs = new Map(views.map((v) => [v.forgeId, etrMs(v, job)]));
+    jobEtrs.set(req.jobId, etrs);
+    // Job huérfano (nunca llegó el telRecord): la entrada moriría — TTL 10min.
+    setTimeout(() => jobEtrs.delete(req.jobId), 600_000).unref?.();
+    return [...views].sort((a, b) => etrs.get(a.forgeId)! - etrs.get(b.forgeId)!);
   },
 });
 
@@ -525,6 +551,9 @@ const app = createApp({
   telemetry,
   node: { version: "0.1.0", startedAt: Date.now() },
   apiKeys,
+  // Spec 002: la predicción que el router hizo para (job, forge servido) —
+  // el sample la persiste y la calibración se vuelve medible.
+  predictedEtrOf: (jobId, forgeId) => jobEtrs.get(jobId)?.get(forgeId),
   accounts,
   ledger: creditLedger,
   pricing,

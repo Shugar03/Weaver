@@ -141,11 +141,12 @@ export function FleetSection({ base, initial }: { base: string; initial: ForgeVi
   return (
     <div className="border border-line bg-panel">
       {/* header de tabla — convención status-page */}
-      <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto] items-center gap-x-5 border-b border-line px-4 py-2 font-tech text-sm tracking-[0.2em] text-fog">
+      <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto_auto] items-center gap-x-5 border-b border-line px-4 py-2 font-tech text-sm tracking-[0.2em] text-fog">
         <span />
         <span>FORGE</span>
         <span>MODEL</span>
         <span>MODALIDAD</span>
+        <span className="text-right">ETR</span>
         <span className="text-right">MEDIDO</span>
         <span className="text-right">JOBS*</span>
         <span />
@@ -157,7 +158,7 @@ export function FleetSection({ base, initial }: { base: string; initial: ForgeVi
           return (
             <li
               key={f.forgeId}
-              className={`grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto] items-center gap-x-5 border-b border-line/60 px-4 py-3 transition-colors last:border-b-0 ${
+              className={`grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto_auto] items-center gap-x-5 border-b border-line/60 px-4 py-3 transition-colors last:border-b-0 ${
                 flash === f.forgeId ? "bg-lima/10" : ""
               }`}
             >
@@ -167,6 +168,24 @@ export function FleetSection({ base, initial }: { base: string; initial: ForgeVi
               </a>
               <span className="font-tech text-base text-fog">{f.model}</span>
               <span className="font-tech text-sm tracking-[0.15em] text-fog">{f.capability === "image" ? "IMAGE" : "TEXT"}</span>
+              {/* spec 002: predicho→real del último job + Δ% medido.
+                  Sin calibración todavía: "—" (nunca inventado). */}
+              <span className="text-right font-tech text-sm whitespace-nowrap">
+                {f.etrMs !== undefined && f.etrLastActualMs !== undefined ? (
+                  <span
+                    title={`ETR predicho ${(f.etrMs / 1000).toFixed(2)}s → real ${(f.etrLastActualMs / 1000).toFixed(2)}s (error EMA ${f.etrErrPct}%)`}
+                    className={f.etrErrPct !== undefined && f.etrErrPct >= 50 ? "text-danger" : "text-lima"}
+                  >
+                    {(f.etrMs / 1000).toFixed(1)}→{(f.etrLastActualMs / 1000).toFixed(1)}s Δ{f.etrErrPct}%
+                  </span>
+                ) : f.etrMs !== undefined ? (
+                  <span className="text-fog" title="ETR vigente predicho — aún sin jobs calibrados">
+                    →{(f.etrMs / 1000).toFixed(1)}s
+                  </span>
+                ) : (
+                  <span className="text-fog">—</span>
+                )}
+              </span>
               <span className="flex items-center justify-end gap-3">
                 <span className="font-tech text-xl">{r.metric}</span>
                 <StatusBadge

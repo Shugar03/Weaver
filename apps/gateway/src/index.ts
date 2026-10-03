@@ -92,6 +92,9 @@ type Deps = {
   // S48: metadata declarada por modelo para el marketplace (env MODEL_CATALOG).
   // Solo lo que el operador declara — nada se infiere ni se inventa.
   catalog?: Record<string, CatalogMeta>;
+  // ETR predicho que el router computó para (jobId, forgeId) — serve.ts lo
+  // llena en el order() de RoutedExec. El sample lo persiste → calibración.
+  predictedEtrOf?: (jobId: string, forgeId: string) => number | undefined;
 };
 
 export type CatalogMeta = {
@@ -764,13 +767,20 @@ export function createApp(deps: Deps) {
     // Async: el verifyProof EVM (ecrecover) es Promise — los call sites la
     // llaman fire-and-forget, igual que antes (jamás frenan el stream).
     const telRecord = async (ok: boolean) => {
+      const served = servedForgeId ?? exec.forgeId;
       const base = {
-        forgeId: servedForgeId ?? exec.forgeId,
+        forgeId: served,
         model: body.model,
         ttftMs: firstAt < 0 ? Date.now() - t0 : firstAt - t0,
         ok,
         ts: Date.now(),
         keyId: c.get("keyId"),
+        // ETR que el router predijo para este forge en este job — el
+        // contraste con el real es la calibración (spec 002). Failover al
+        // 2do candidato: la predicción es la del forge que SIRVIÓ.
+        ...(deps.predictedEtrOf?.(id, served) !== undefined
+          ? { predictedMs: deps.predictedEtrOf(id, served) }
+          : {}),
         ...(lastStats?.genTokens !== undefined
           ? { genTokens: lastStats.genTokens, decodeMs: lastStats.decodeMs }
           : {}),

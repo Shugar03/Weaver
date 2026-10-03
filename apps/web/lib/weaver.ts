@@ -22,6 +22,11 @@ export type ForgeView = {
   // confirmado on-chain por el gateway (un claim no verificado no es evidencia).
   forgeAgentId?: number;
   forgeAgentVerified?: boolean;
+  // Calibración del ETR (spec 002): etrMs = predicción vigente; los otros dos
+  // solo tras un job calibrado — ausentes = sin evidencia, mostrar "—".
+  etrMs?: number;
+  etrLastActualMs?: number;
+  etrErrPct?: number;
 };
 
 export type JobsDecision = { forge: string; etr_ms: number; reason: string };

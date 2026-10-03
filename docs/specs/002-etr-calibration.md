@@ -41,3 +41,10 @@ números inventados.
 - Re-pesos del scheduler con el error (la medición informa, aún no cierra
   el loop de control — sería siguiente iteración).
 - Histogramas p50/p99 — solo EMA simple por ahora.
+
+## Estado: VERIFICADO LIVE ✓
+
+Job real en :3501 — `predictedMs:438` vs actual `675` (ttft 132 + decode 543)
+→ `etrErrPct:35` expuesto en `/v1/forges` junto a `etrMs` vigente. El router
+subestimó y ahora el 35% es visible, no escondido. Sample + view + UI
+(columna ETR en FleetSection) completos; settle on-chain en el mismo job.

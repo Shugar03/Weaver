@@ -15,6 +15,9 @@ export type Sample = {
   // genTokens/decodeMs alimentan tokPerSec del ForgeView → ETR size-aware.
   genTokens?: number;
   decodeMs?: number;
+  // ETR predicho por el router para ESTE job en ESTE forge — el contraste
+  // con ttftMs+decodeMs es la calibración visible del "measured" (spec 002).
+  predictedMs?: number;
   // S23: payerTx = cobro x402 del cliente; fundTx/releaseTx = escrow operador→worker.
   settle?: { payerTx?: string; fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
 };
