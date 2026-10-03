@@ -99,6 +99,41 @@ describe("ADR-0008 EvmFacilitatorVerifier (x402 v2 canónico)", () => {
     assert.equal(calls, 0);
   });
 
+  it("payload malformado (null/string/array) → false sin tocar la red", async () => {
+    let calls = 0;
+    const v = new EvmFacilitatorVerifier("https://x", async () => {
+      calls++;
+      return new Response(JSON.stringify({ isValid: true }));
+    });
+    const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64");
+    // Un facilitador que dijera "isValid:true" no importa — el header ni viaja.
+    for (const bad of [
+      { x402Version: 2, payload: null },
+      { x402Version: 2, payload: "string" },
+      { x402Version: 2, payload: 42 },
+      { payload: { signature: "0x" } }, // sin x402Version — decode pasa, facilitator decide
+    ]) {
+      const ok = await v.verify(b64(bad), EVM_REQS);
+      if ("x402Version" in bad) assert.equal(ok, false, JSON.stringify(bad));
+      else assert.equal(ok, true); // shape incompleto lo evalúa el facilitador
+    }
+    assert.equal(calls, 1, "solo el payload con shape decente viaja");
+  });
+
+  it("facilitador 200 con body no-JSON → false sin throw", async () => {
+    const v = new EvmFacilitatorVerifier("https://x", async () => new Response("<html>cloudflare</html>"));
+    assert.equal(await v.verify(HEADER, EVM_REQS), false);
+    assert.deepEqual(await v.settle(HEADER, EVM_REQS), { success: false });
+  });
+
+  it("facilitador HTTP 500/429 → verify false, settle success:false", async () => {
+    for (const status of [500, 429, 401]) {
+      const v = new EvmFacilitatorVerifier("https://x", async () => new Response("err", { status }));
+      assert.equal(await v.verify(HEADER, EVM_REQS), false, `${status}`);
+      assert.deepEqual(await v.settle(HEADER, EVM_REQS), { success: false }, `${status}`);
+    }
+  });
+
   it("settle mapea `transaction` (v2) y `txHash` (v1) indistintamente", async () => {
     const v2 = new EvmFacilitatorVerifier("https://x", async () =>
       new Response(JSON.stringify({ success: true, transaction: "0xtx" }), { status: 200 }),

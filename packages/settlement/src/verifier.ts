@@ -101,7 +101,9 @@ export class EvmFacilitatorVerifier implements PaymentVerifier {
   private decode(header: string): X402V2PaymentPayload | null {
     try {
       const p = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as X402V2PaymentPayload;
-      return typeof p === "object" && p !== null && typeof p.payload === "object" ? p : null;
+      // payload:null cuela con typeof==="object" — un header así no viaja al
+      // facilitador (verify false directo, no request desperdiciado).
+      return typeof p === "object" && p !== null && typeof p.payload === "object" && p.payload !== null ? p : null;
     } catch {
       return null;
     }
