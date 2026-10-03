@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
-import { EXPLORER, short, type Deployment } from "../../lib/site";
+import { accountUrl, short, txUrl, type Deployment } from "../../lib/site";
 import { forgeRow } from "../../lib/fleet";
 import type { ForgeView } from "../../lib/weaver";
 
@@ -317,12 +317,12 @@ export function ForgeConsole({
                     <span className="text-lima">
                       ● settled
                       {last.settle.fundTx && (
-                        <a href={`${EXPLORER.tx}${last.settle.fundTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                        <a href={txUrl(last.settle.fundTx)} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
                           fund {short(last.settle.fundTx)} ↗
                         </a>
                       )}
                       {last.settle.releaseTx && (
-                        <a href={`${EXPLORER.tx}${last.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
+                        <a href={txUrl(last.settle.releaseTx)} target="_blank" rel="noreferrer" className="ml-3 hover:underline">
                           release {short(last.settle.releaseTx)} ↗
                         </a>
                       )}
@@ -343,7 +343,7 @@ export function ForgeConsole({
                   <span className={e.ok ? "text-lima" : "text-danger"}>
                     {e.ok ? `Completed · ${e.ttftMs} ms` : "Failed"}
                     {e.settle?.status === "settled" && e.settle.releaseTx && (
-                      <a href={`${EXPLORER.tx}${e.settle.releaseTx}`} target="_blank" rel="noreferrer" className="ml-2 text-fog hover:text-lima">
+                      <a href={txUrl(e.settle.releaseTx)} target="_blank" rel="noreferrer" className="ml-2 text-fog hover:text-lima">
                         ${short(e.settle.releaseTx)} ↗
                       </a>
                     )}
@@ -362,7 +362,7 @@ export function ForgeConsole({
             <div className="font-tech text-base text-fog">Total · {settled.length} payout{settled.length === 1 ? "" : "s"} · USDC de juguete</div>
             {releaseTx ? (
               <a
-                href={`${EXPLORER.tx}${releaseTx}`}
+                href={txUrl(releaseTx)}
                 target="_blank"
                 rel="noreferrer"
                 className="mt-4 flex items-center justify-between border border-line px-4 py-3 hover:border-lima"
@@ -377,7 +377,7 @@ export function ForgeConsole({
             </div>
             {deployment?.worker && (
               <a
-                href={`${EXPLORER.account}${deployment.worker}`}
+                href={accountUrl(deployment.worker)}
                 target="_blank"
                 rel="noreferrer"
                 className="mt-3 block font-tech text-lg text-fog hover:text-lima"

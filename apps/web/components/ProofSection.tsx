@@ -1,8 +1,10 @@
-import { EXPLORER, short, type Deployment } from "../lib/site";
+import { EXPLORERS, accountUrl, contractUrl, short, txUrl, type Deployment } from "../lib/site";
 
 const TX_LABELS: [string, string][] = [
   ["release_job_1", "Release"],
   ["fund_job_1", "Fund"],
+  ["approve_usdc", "Approve"],
+  ["register_forge", "Register"],
   ["init", "Init"],
   ["deploy_contract", "Deploy"],
 ];
@@ -11,10 +13,11 @@ export function ProofSection({ deployment }: { deployment: Deployment | null }) 
   if (!deployment) {
     return (
       <div className="border border-line bg-panel p-8 font-tech text-xl text-fog">
-        <span className="text-danger">■</span> SIN DEPLOY REGISTRADO — ver contracts/weaver-escrow/deployments/testnet.json
+        <span className="text-danger">■</span> SIN DEPLOY REGISTRADO — ver contracts/weaver-escrow*/deployments/testnet.json
       </div>
     );
   }
+  const chain = deployment.chain ?? "stellar";
   const txs = TX_LABELS.filter(([k]) => deployment.txs[k]).map(([k, label]) => ({
     label,
     hash: deployment.txs[k] as string,
@@ -27,14 +30,14 @@ export function ProofSection({ deployment }: { deployment: Deployment | null }) 
           <span className="border border-lima px-2 py-0.5 font-tech text-sm tracking-[0.15em] text-lima">● VERIFIED</span>
         </div>
         <a
-          href={`${EXPLORER.contract}${deployment.contract_id}`}
+          href={contractUrl(deployment.contract_id, chain)}
           target="_blank"
           rel="noreferrer"
           className="mt-2 block font-tech text-3xl tracking-wide hover:text-lima"
         >
           {short(deployment.contract_id)} ↗
         </a>
-        <div className="mt-1 font-tech text-base text-fog">Deployed on Stellar · Soroban · Testnet</div>
+        <div className="mt-1 font-tech text-base text-fog">Deployed on {EXPLORERS[chain].name}</div>
         <div className="mt-6 border-t border-line pt-4 font-tech text-lg tracking-[0.18em] text-fog">
           LATEST TRANSACTIONS
         </div>
@@ -48,7 +51,7 @@ export function ProofSection({ deployment }: { deployment: Deployment | null }) 
               />
               <div className="flex items-center justify-between">
                 <span className="font-tech text-xl">{t.label}</span>
-                <a href={`${EXPLORER.tx}${t.hash}`} target="_blank" rel="noreferrer" className="font-tech text-lg text-fog hover:text-lima">
+                <a href={txUrl(t.hash, chain)} target="_blank" rel="noreferrer" className="font-tech text-lg text-fog hover:text-lima">
                   {short(t.hash)} ↗
                 </a>
               </div>
@@ -59,13 +62,13 @@ export function ProofSection({ deployment }: { deployment: Deployment | null }) 
       <div className="border border-line bg-panel p-6 lg:col-span-2">
         <div className="font-tech text-lg tracking-[0.18em] text-fog">ACCOUNTS (USDC TESTNET)</div>
         {([
-          ["Client", deployment.admin, EXPLORER.account],
-          ["Escrow", deployment.contract_id, EXPLORER.contract],
-          ...(deployment.worker ? [["Worker", deployment.worker, EXPLORER.account]] : []),
-        ] as [string, string, string][]).map(([label, addr, base]) => (
+          ["Client", deployment.admin, accountUrl(deployment.admin, chain)],
+          ["Escrow", deployment.contract_id, contractUrl(deployment.contract_id, chain)],
+          ...(deployment.worker ? [["Worker", deployment.worker, accountUrl(deployment.worker, chain)]] : []),
+        ] as [string, string, string][]).map(([label, addr, url]) => (
           <a
             key={label}
-            href={`${base}${addr}`}
+            href={url}
             target="_blank"
             rel="noreferrer"
             className="mt-3 flex items-center justify-between border border-line px-4 py-3 hover:border-lima"

@@ -4,7 +4,7 @@
 // Solo muestra ejecuciones con settle != null; si el gateway no liquida
 // (modo dev), lo dice en vez de inventar números.
 import { useEffect, useState } from "react";
-import { EXPLORER, short } from "../../lib/site";
+import { short, txUrl } from "../../lib/site";
 
 type Exec = {
   forgeId: string;
@@ -58,12 +58,12 @@ export function SettleFeed({ base }: { base: string }) {
               <span className="text-fog">{e.model}</span>
               <span className="ml-auto flex gap-3">
                 {e.settle!.fundTx && (
-                  <a href={`${EXPLORER.tx}${e.settle!.fundTx}`} target="_blank" rel="noreferrer" className="text-fog hover:text-lima">
+                  <a href={txUrl(e.settle!.fundTx)} target="_blank" rel="noreferrer" className="text-fog hover:text-lima">
                     fund {short(e.settle!.fundTx)} ↗
                   </a>
                 )}
                 {e.settle!.releaseTx && (
-                  <a href={`${EXPLORER.tx}${e.settle!.releaseTx}`} target="_blank" rel="noreferrer" className="text-lima hover:underline">
+                  <a href={txUrl(e.settle!.releaseTx)} target="_blank" rel="noreferrer" className="text-lima hover:underline">
                     release {short(e.settle!.releaseTx)} ↗
                   </a>
                 )}

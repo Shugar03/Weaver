@@ -145,7 +145,7 @@ export default function Developers() {
             El gateway habla OpenAI-compatible: <span className="text-white">chat completions + models</span>.
             Cualquier cliente OpenAI anda. El billing es <span className="text-white">crédito prepago por cuenta</span>:
             creás una cuenta en <a href="/account" className="text-lima underline">/account</a>, fondeás con
-            USDC (Stellar), emitís una key <span className="font-tech text-base text-white">wvr_…</span> y cada
+            USDC (Monad testnet), emitís una key <span className="font-tech text-base text-white">wvr_…</span> y cada
             request debita tokens medidos post-stream.
           </p>
         </section>

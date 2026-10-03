@@ -7,9 +7,9 @@ const RETENTION: [string, string, string, boolean][] = [
   ["Chats de /chat", "localStorage de tu browser", "Solo tu máquina, borrable acá", true],
   ["Telemetría (forge, TTFT)", "Memoria del gateway, tope 500", "Hasta reiniciar", true],
   ["Modelos y pesos", "Tu disco (Ollama)", "Tuyos", true],
-  ["Secrets Stellar", "~/.config, permisos 600", "Solo tu máquina", true],
+  ["Secrets de chain", "~/.config, permisos 600", "Solo tu máquina", true],
   ["Secrets en repo", "—", "Escaneado, limpio", true],
-  ["Montos, direcciones, txs", "Ledger Stellar público", "Para siempre, por diseño", true],
+  ["Montos, direcciones, txs", "Ledger público on-chain", "Para siempre, por diseño", true],
 ];
 
 const CHECKS: [string, string, boolean][] = [

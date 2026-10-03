@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown, ArrowUp } from "@phosphor-icons/react";
 import { getBilling, type LedgerEvent, type MeInfo } from "../../lib/account";
+import { txUrl } from "../../lib/site";
 
 export function BillingTab({ base, token, me }: { base: string; token: string; me: MeInfo | null }) {
   const [events, setEvents] = useState<LedgerEvent[] | null>(null);
@@ -65,17 +66,24 @@ export function BillingTab({ base, token, me }: { base: string; token: string; m
                     {topup ? "+" : "-"}${e.amountUSDC.toFixed(4)}
                   </span>
                   <span className="truncate font-tech text-sm text-fog" title={e.ref}>
-                    {depOp ? (
-                      <a
-                        className="underline decoration-dotted hover:text-lima"
-                        href={`https://stellar.expert/explorer/testnet/op/${e.ref.slice(4)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="ver pago en stellar.expert"
-                      >
-                        {e.ref}
-                      </a>
-                    ) : (
+                    {depOp ? (() => {
+                      const r = e.ref.slice(4);
+                      // EVM: dep:0x<tx>:<logIndex> → tx en MonadVision.
+                      // Stellar: dep:<opId> → op en stellar.expert.
+                      const evm = r.startsWith("0x");
+                      const href = evm ? txUrl(r.split(":")[0]) : `https://stellar.expert/explorer/testnet/op/${r}`;
+                      return (
+                        <a
+                          className="underline decoration-dotted hover:text-lima"
+                          href={href}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={evm ? "ver pago en MonadVision" : "ver pago en stellar.expert"}
+                        >
+                          {e.ref}
+                        </a>
+                      );
+                    })() : (
                       e.ref
                     )}
                   </span>

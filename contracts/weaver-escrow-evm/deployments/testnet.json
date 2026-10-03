@@ -1,0 +1,30 @@
+{
+  "chain": "evm",
+  "network": "monad-testnet",
+  "chain_id": 10143,
+  "contract_id": "0x51acE4858652D942dC7b320870e4CDbc5c989cD6",
+  "credits_contract": "0xd14957AE85C4FA10fd5AB9f0d17f1cFcE2C0A498",
+  "token_usdc": "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+  "admin": "0xbaD8908CD47c0A47F31F35a45e5c8Ba14878aF3B",
+  "worker": "0xbaD8908CD47c0A47F31F35a45e5c8Ba14878aF3B",
+  "proof_signer": "0x7c41eb4274b7e5C51e44BA01606d9Db403BBbebc",
+  "erc8004": {
+    "identity_registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "reputation_registry": "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    "forge_agent_id": 1990
+  },
+  "txs": {
+    "deploy_contract": "0xb6da173ea6051911c6d2499f1bdf94657a9c93786084b7e39cb130ec30cd5150",
+    "register_forge": "0x703c12eb6f138cdf6be95f1137df8548f5a3cb8ac5696015a7b02e36ce924fcf",
+    "approve_usdc": "0xe8b521d50d83ac40e076e71fa7f140294b2f265b90b066b9fa08d8e66884924e",
+    "fund_job_1": "0x0069b8c83da9d3deff81701577600c4e062b675f6bcad3ea56815d5b702aba90",
+    "release_job_1": "0xa5d830a9a08a25afacd3c1d9a949f3f94788a8df48bae40621f2c29a28decdc0"
+  },
+  "result_hash_job_1": "0x6948cc5c41ac8d31762de5d69f40405e701adafb38c219d7c6b7cf77344e6561",
+  "previous": {
+    "contract_id": "0x743C4299e79D7A1Bfe3e6491971eF6116988fc2C",
+    "note": "v1: la firma se ataba a keccak256(resultHash||jobId) — incompatible con el proveedor que firma result_hash al servir, antes de que exista el jobId. Redeployado con la semántica correcta (firma sobre result_hash solo)."
+  },
+  "note": "WeaverEscrow v2: release exige ecrecover(personal_sign(resultHash)) == signer registrado del worker. Worker self-registra su signer (msg.sender = worker). WeaverCredits: deposits USDC → Deposited(bytes32 account,…) para el ledger off-chain. Ambos verificados en Sourcify.",
+  "explorer": "https://testnet.monadvision.com"
+}
