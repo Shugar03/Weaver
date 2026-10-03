@@ -41,3 +41,28 @@ el job se sirvió pero no se pagó — visible en ledger).
 El escrow Soroban necesita un deploy vivo + USDC Stellar testnet. Si el
 deploy viejo murió o el friendbot no responde, se entrega el dispatcher +
 test dual mock y se documenta la limitación (no se simula un "live" falso).
+
+## Status — LIVE VERIFIED (2025-10-03)
+
+`SettleDispatcher` en `packages/settlement/src/dispatch.ts` (5/5 tests).
+`serve.ts`: `SETTLE_CHAIN=dual` con journals separados (`evmJournal`
+intent-first / `xlmJournal` settle) y secrets por vía
+(`SETTLEMENT_SECRET`/`SETTLEMENT_CONTRACT`, `STELLAR_SECRET`/`STELLAR_CONTRACT`).
+
+**Run live** — gateway :3501 `SETTLE_CHAIN=dual`, un gateway, dos chains:
+
+| Forge | Worker | Modelo | Settle | Tx on-chain |
+|---|---|---|---|---|
+| `xlm1` | `GCPTTQJ2…FBP` | gemma4:e2b | Soroban v5 | release `5e8aebab27f7…` — ledger 5008624 (horizon `successful:true`) |
+| `live1` | `0x784E0a…5CB` | qwen3:4b | Monad escrow | release `0xefb2fbf0…cb965` |
+
+- Escrow Soroban v5 redeployado: `CBV2QLMGF3HG…` (el anterior era v3,
+  ABI incompatible — ver `deployments/testnet.json`).
+- + ERC-8004 feedback post-settle `0xae44dc50…` (agent 1991).
+- Bug real cazado: el release Soroban rebotó `trustline entry is missing`
+  — el forge Stellar no tenía trustline USDC. `change-trust` ejecutado
+  (`d3941808…`), trustline confirmada vía Horizon, siguiente job settleó.
+
+Routing determinístico por modelo: gemma4:e2b → único forge con ese modelo
+(xlm1, Stellar); qwen3:4b → live1 (EVM). El dispatcher eligió la vía por
+formato de `proof.worker` sin configuración adicional.

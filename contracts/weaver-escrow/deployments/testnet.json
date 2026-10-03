@@ -1,24 +1,30 @@
 {
   "network": "testnet",
-  "contract_id": "CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB",
+  "contract_id": "CBV2QLMGF3HGIUUQH7RJ6VP2VLMEDXG3RGSUWBUO6A5C7RVZEWRTEBJP",
   "admin": "GDQGSN4K3MEBNTYEOGFHAUPJAH6FMGSJC6W6K37RY43KMW44G3CP4SMA",
   "token_usdc_sac": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-  "wasm_hash": "a542b6b5ab1289effb05e4bfc0f647e16f6572531046f289c5547fceff82c0b5",
-  "worker": "GDWZGZBSGDM2522KDT4MZZ6MGDDBTIX2CPFLXZMWMCWOHAPARTUZJX6T",
-  "worker_pubkey_hex": "ed93643230d9aeeb4a1cf8cce7cc30c619a2fa13cabbe59660ace381e08ce994",
   "txs": {
-    "upload_wasm": "d8605680ea4bf7dfe6297da1e1114c34070cbf6ef81f9286e966c50f96c3a699",
-    "deploy_contract": "018577f01a29f9a3ff792e4afe2e23df7c11a8a432d844aa36d18fb789817031",
-    "init": "f1a08d89c1feee1b8655fc72deb4f4952d413ef19c2b4aa44aa468074249adf4",
-    "fund_job_live": "d414d8fd8e5f16ed2f971729b99a71c4b8c0843427fd1a0277605f10e851ade7",
-    "release_job_live": "00f8971a9772a21e7348cad928c5370ebdcee126e6f5bd4f978e42c7f23d8eab"
+    "deploy_contract": "be64725eb663fe2f014db1739afffa193a607b8e9934262b6085566a8497c145",
+    "init": "1e6046616ddac26f78acfc7e08a71b44e2b2d3576e897aab62eca03ca3fe8a2e",
+    "register_forge_live": "d298a0d9cf2bf42016adc2e7d15724eb5b9f6419baa1b3a39acada5ae63a8c42",
+    "release_job_live": "5e8aebab27f704d1c356135e7b10eb420b4c110d063e8d343df4d8231dfef1fa"
+  },
+  "live_forges": {
+    "xlm1": "GCPTTQJ26ZT233FB3GEKEEB777NSLEJEIL7CL2QRGLY7A5FPMVE3FFBP"
   },
   "versions": { "sdk": "22.0.11", "cli": "28.0.0" },
-  "previous": {
-    "contract_id": "CDEEVEE7FV4DFNZVYVLBU6A2XRUCMP2RACR7HJIDISIEAXJJQUBTCGJH",
-    "note": "v2: init auth + result_hash sin firma — queda como referencia histórica"
-  },
-  "note": "v3 (Proof L0): init registra la pubkey ed25519 del worker y release exige su firma sobre result_hash — firma inválida revierte y el job queda Funded. Secrets viven en ~/.config/stellar, jamás en el repo.",
-  "abi": "v3",
-  "abi_warning": "El source actual es v5 (ADR-0006): fund_job(client,amount,worker) + register_forge self-service + release caller∈{admin,worker} + ventana de claim + upgrade admin-gated. Este deploy es v3 — el adapter settlement YA NO es compatible con él (fund_job de v3 no toma worker). Redeploy con ./deploy.sh y actualizar este archivo antes de usar settlement on-chain."
+  "note": "v5 (ADR-0006): fund_job(client,amount,worker) + register_forge self-service + release caller∈{admin,worker} + ventana de claim + upgrade admin-gated. Verificado live en fleet mixta (spec 003): job gemma4:e2b → xlm1 → release 5e8aebab… (ledger 5008624). Secrets viven en ~/.config/stellar, jamás en el repo.",
+  "abi": "v5",
+  "previous": [
+    {
+      "contract_id": "CDHD6QRVGY5XNX6XUUYVCGJ6PH476J4YQXOSLJXH3RIPDRPW4PXWSENB",
+      "abi": "v3",
+      "note": "v3 (Proof L0): release exigía firma del worker registrada en init. ABI incompatible con el adapter actual (fund_job sin worker). Referencia histórica."
+    },
+    {
+      "contract_id": "CDEEVEE7FV4DFNZVYVLBU6A2XRUCMP2RACR7HJIDISIEAXJJQUBTCGJH",
+      "abi": "v2",
+      "note": "init auth + result_hash sin firma — referencia histórica."
+    }
+  ]
 }
