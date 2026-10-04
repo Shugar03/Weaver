@@ -117,6 +117,9 @@ type Deps = {
   delegationAgent?: string;
   usdcToken?: string;
   delegationChainId?: number;
+  // spec 013: peso de reputación ERC-8004 en el ETR efectivo del scheduler.
+  // 0 = ETR puro (default en tests); serve pasa REP_WEIGHT (0.3).
+  repWeight?: number;
   // ETR predicho que el router computó para (jobId, forgeId) — serve.ts lo
   // llena en el order() de RoutedExec. El sample lo persiste → calibración.
   predictedEtrOf?: (jobId: string, forgeId: string) => number | undefined;
@@ -134,7 +137,7 @@ export function createApp(deps: Deps) {
   const app = new Hono<{
     Variables: { keyId?: string; keyOwner?: string; accountId?: string; paymentHeader?: string; paymentReqs?: PaymentRequirements };
   }>();
-  const scheduler = new EtrScheduler();
+  const scheduler = new EtrScheduler(deps.repWeight ?? 0);
 
   // S21: Idempotency-Key — el retry del cliente re-ejecuta pero no re-cobra.
   // Cachea la Promise (no el resultado): requests concurrentes con la misma key

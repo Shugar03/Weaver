@@ -4,6 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EtrScheduler } from "../src/scheduler.ts";
+import type { ForgeView } from "../src/types.ts";
 
 describe("S1 warm-first", () => {
   it("elige forge-hot frente a forge-cold con mismo RTT/queue", () => {
@@ -54,6 +55,53 @@ describe("S20 ETR medido", () => {
     ]);
     assert.equal(d.forgeId, "tibio");
     assert.equal(d.reason, "warm-first");
+  });
+});
+
+describe("spec 013 reputation-weighted routing", () => {
+  const fv = (forgeId: string, rttMs: number, reputationScore?: number): ForgeView => ({
+    forgeId, model: "m", hot: true, rttMs, queueMs: 0, loadTimeMs: 0, price: 0, reliability: 1,
+    ...(reputationScore !== undefined ? { reputationScore } : {}),
+  });
+
+  it("rep=0 (default) → ETR puro, comportamiento idéntico a hoy", () => {
+    const s = new EtrScheduler();
+    const d = s.select({ id: "j", model: "m" }, [fv("rapido", 100, 0), fv("lento-bueno", 110, 1)]);
+    assert.equal(d.forgeId, "rapido");
+  });
+
+  it("w=0.3: rep 1.0 baja ×0.85 → gana el marginal; reason lleva |rep-boost", () => {
+    const s = new EtrScheduler(0.3);
+    // etr efectivo: lento-bueno 110×0.85=93.5 < rapido 100×1.15=115 (rep 0)
+    const d = s.select({ id: "j", model: "m" }, [fv("rapido", 100, 0), fv("lento-bueno", 110, 1)]);
+    assert.equal(d.forgeId, "lento-bueno");
+    assert.equal(d.etrMs, 110); // reporta el REAL, no el ponderado
+    assert.match(d.reason, /rep-boost/);
+  });
+
+  it("la rep desconocida es neutral (0.5 → factor 1.0, ni premio ni castigo)", () => {
+    const s = new EtrScheduler(0.3);
+    const d = s.select({ id: "j", model: "m" }, [fv("desconocido", 100), fv("bueno", 105, 1)]);
+    // desconocido 100×1.0=100 vs bueno 105×0.85=89.25 → gana bueno (rep real pesa)
+    assert.equal(d.forgeId, "bueno");
+    // pero un neutral claramente más rápido sigue ganando: la rep no invierte
+    const d2 = s.select({ id: "j", model: "m" }, [fv("desconocido", 80), fv("bueno", 105, 1)]);
+    assert.equal(d2.forgeId, "desconocido"); // 80×1.0=80 < 89.25
+  });
+
+  it("la rep NUNCA pone un forge mucho más lento encima (ETR domina)", () => {
+    const s = new EtrScheduler(0.3);
+    const d = s.select({ id: "j", model: "m" }, [fv("rapido", 100, 0.5), fv("lento", 500, 1)]);
+    assert.equal(d.forgeId, "rapido"); // 500×0.85=425 sigue > 100
+  });
+
+  it("forge muerto (etr ∞) no resucita por rep", () => {
+    const s = new EtrScheduler(0.3);
+    const d = s.select({ id: "j", model: "m" }, [
+      fv("vivo", 200, 0.5),
+      { ...fv("muerto", 0, 1), queueMs: 99999, hot: false },
+    ]);
+    assert.equal(d.forgeId, "vivo");
   });
 });
 

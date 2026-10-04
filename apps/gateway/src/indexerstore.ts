@@ -48,6 +48,9 @@ export interface IndexerStore {
   forges(): Promise<IndexedForge[]>;
   feedbacks(agentId: bigint): Promise<IndexedFeedback[]>;
   agent(agentId: bigint): Promise<IndexedAgent | null>;
+  // spec 013: workerLc → reputación 0..1 (Laplace: (pos+1)/(pos+neg+2) sobre
+  // attestations NO revocadas de todos los agentes del worker — owner).
+  reputationScores(): Promise<Map<string, number>>;
 }
 
 const ZERO: NetworkMetric = {
@@ -99,6 +102,36 @@ export class InMemoryIndexerStore implements IndexerStore {
   async agent(agentId: bigint) {
     return (this.seed.agents ?? []).find((a) => a.agentId === agentId) ?? null;
   }
+  async reputationScores() {
+    // Mismo contrato que Pg: join Feedback→Agent por agentId; owner = worker.
+    const ownerOf = new Map((this.seed.agents ?? []).map((a) => [a.agentId, a.owner]));
+    return computeRepScores(
+      (this.seed.feedbacks ?? []).map((f) => ({
+        worker: ownerOf.get(f.agentId) ?? "",
+        value: f.value,
+        valueDecimals: f.valueDecimals,
+        revoked: f.revoked,
+      })),
+    );
+  }
+}
+
+// spec 013 — score de reputación por worker, compartido por ambos impls.
+// posMass/negMass suman |value|·10^-decimals de attestations NO revocadas;
+// Laplace (pos+1)/(pos+neg+2): sin evidencia → 0.5 neutral, nunca inventado.
+type RepRow = { worker: string; value: bigint; valueDecimals: number; revoked: boolean };
+export function computeRepScores(rows: RepRow[]): Map<string, number> {
+  const acc = new Map<string, { pos: number; neg: number }>();
+  for (const r of rows) {
+    if (r.revoked || !r.worker) continue;
+    const v = Number(r.value) / 10 ** r.valueDecimals;
+    if (!Number.isFinite(v)) continue;
+    const a = acc.get(r.worker.toLowerCase()) ?? { pos: 0, neg: 0 };
+    if (v > 0) a.pos += v;
+    else a.neg -= v;
+    acc.set(r.worker.toLowerCase(), a);
+  }
+  return new Map([...acc].map(([w, a]) => [w, (a.pos + 1) / (a.pos + a.neg + 2)]));
 }
 
 // Lectura cruda: drizzle sql con nombres envio entre comillas dobles.
@@ -246,5 +279,23 @@ export class PgIndexerStore implements IndexerStore {
       sql`SELECT "agentId", owner, "agentURI" FROM "Agent" WHERE "agentId" = ${agentId.toString()}`,
     );
     return a ? { agentId: big(a.agentId), owner: a.owner, agentURI: a.agentURI } : null;
+  }
+
+  async reputationScores() {
+    const rows = await this.rows<{
+      worker: string;
+      value: string;
+      valueDecimals: number | string;
+      revoked: boolean;
+    }>(
+      // Feedback→Agent por agentId; Agent.owner = worker pubkey del forge.
+      // Un worker puede tener varios agentIds (re-registro) — la rep es del
+      // worker, se agrega sobre todos sus agentes.
+      sql`SELECT a.owner AS worker, f.value, f."valueDecimals", f.revoked
+          FROM "Feedback" f JOIN "Agent" a ON a."agentId" = f."agentId"`,
+    );
+    return computeRepScores(
+      rows.map((r) => ({ worker: r.worker, value: big(r.value), valueDecimals: num(r.valueDecimals), revoked: r.revoked })),
+    );
   }
 }

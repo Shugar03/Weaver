@@ -21,7 +21,20 @@ export function etrMs(forge: ForgeView, job: Job): number {
   return Number.isFinite(total) && total >= 0 ? total : Number.POSITIVE_INFINITY;
 }
 
+// spec 013: ETR efectivo = etrMs × (1 + w·(0.5 − rep)). rep desconocida = 0.5
+// → factor 1 (neutral). Con w=0.3 el factor queda en [0.85, 1.15]: la rep
+// desempata y gana marginales — jamás pone un forge lento sobre uno muy
+// rápido. etrMs=∞ sigue ∞ (la rep no resucita forges muertos).
+export function effectiveEtr(forge: ForgeView, job: Job, repWeight: number): number {
+  const rep = forge.reputationScore ?? 0.5;
+  return etrMs(forge, job) * (1 + repWeight * (0.5 - rep));
+}
+
 export class EtrScheduler implements Scheduler {
+  private readonly repWeight: number;
+  constructor(repWeight = 0) {
+    this.repWeight = repWeight;
+  }
   select(job: Job, forges: ForgeView[]): Decision {
     if (forges.length === 0) throw new Error("scheduler: sin forges candidatos");
     // S27: sin candidatos del modelo → error explícito. El fallback anterior a
@@ -29,23 +42,32 @@ export class EtrScheduler implements Scheduler {
     const pool = forges.filter((f) => f.model === job.model);
     if (pool.length === 0) throw new Error(`scheduler: sin forges para ${job.model}`);
     let best = pool[0];
-    let bestEtr = etrMs(best, job);
+    let bestEtr = effectiveEtr(best, job, this.repWeight);
+    let pureEtrBest = pool[0];
+    let pureEtrBestMs = etrMs(pureEtrBest, job);
     for (const f of pool.slice(1)) {
-      const e = etrMs(f, job);
+      const e = effectiveEtr(f, job, this.repWeight);
       if (e < bestEtr) {
         best = f;
         bestEtr = e;
       }
+      const pe = etrMs(f, job);
+      if (pe < pureEtrBestMs) {
+        pureEtrBest = f;
+        pureEtrBestMs = pe;
+      }
     }
+    const baseReason =
+      best.hot && best.measuredTtftMs !== undefined
+        ? "measured"
+        : best.hot
+          ? "warm-first"
+          : "cold-pero-unico";
     return {
       forgeId: best.forgeId,
-      etrMs: bestEtr,
-      reason:
-        best.hot && best.measuredTtftMs !== undefined
-          ? "measured"
-          : best.hot
-            ? "warm-first"
-            : "cold-pero-unico",
+      // etrMs reportado = el REAL (calibración honesta), no el ponderado.
+      etrMs: etrMs(best, job),
+      reason: best === pureEtrBest ? baseReason : `${baseReason}|rep-boost`,
     };
   }
 }

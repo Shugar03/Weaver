@@ -68,7 +68,7 @@ import { createPublicClient, http, type Address as EvmAddress, type Hex } from "
 import { monadTestnet } from "viem/chains";
 import { InMemoryTelemetry, PostgresTelemetry, etrCalibration } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
-import { applyBreaker, CircuitBreaker, etrMs, queueMsFor, type ForgeView } from "@weaver/scheduler";
+import { applyBreaker, CircuitBreaker, effectiveEtr, etrMs, queueMsFor, type ForgeView } from "@weaver/scheduler";
 import { ForgeRegistry, InMemoryForgeStore, NonceStore, PostgresForgeStore } from "@weaver/forge-net";
 import { attachForgeWS } from "./forgews.ts";
 import type { Server as HttpServer } from "node:http";
@@ -213,6 +213,24 @@ const evmCursor = evmOn
 const indexerStore = process.env.INDEXER_DATABASE_URL
   ? new PgIndexerStore(dbFromUrl(process.env.INDEXER_DATABASE_URL))
   : undefined;
+// spec 013: reputación ERC-8004 por worker (lc) — el scheduler la pondera en
+// el ETR efectivo (REP_WEIGHT, default 0.3 → factor ∈ [0.85, 1.15]). El
+// routing NO depende de envio: refresh falla → último score conocido sigue.
+const repCache = new Map<string, number>();
+const REP_WEIGHT = Number(process.env.REP_WEIGHT ?? "0.3");
+const refreshRep = async () => {
+  try {
+    const scores = await indexerStore?.reputationScores();
+    if (scores) {
+      repCache.clear();
+      for (const [w, s] of scores) repCache.set(w, s);
+    }
+  } catch {
+    /* indexer caído → cache stale, routing sigue con ETR */
+  }
+};
+void refreshRep();
+setInterval(() => void refreshRep(), 60_000).unref();
 // Los mapas los crea attachForgeWS al levantar el server; antes de eso el
 // registry simplemente no tiene remotos (probeAll/forges los ignoran).
 let forgeWS: ReturnType<typeof attachForgeWS> | null = null;
@@ -385,6 +403,9 @@ async function forges(): Promise<ForgeView[]> {
       measuredTtftMs: p50cache.get(f.forgeId),
       tokPerSec: tokCache.get(f.forgeId) ?? f.tokPerSec, // heartbeat si no hay historia local
       reliability: relCache.get(f.forgeId) ?? f.reliability, // S36: medida cuando hay samples
+      // spec 013: reputación ERC-8004 del worker (cache del indexer). Sin
+      // pubkey o sin dato → ausente → neutral 0.5 en el scheduler.
+      reputationScore: f.forgePubkey ? repCache.get(f.forgePubkey.toLowerCase()) : undefined,
       inFlight: n,
       // Remote: el cap lo conoce el forge (su config) → self-report. Embedded:
       // cap local fijo del composition root.
@@ -474,7 +495,11 @@ const exec = new RoutedExec<ForgeView>({
     jobEtrs.set(req.jobId, etrs);
     // Job huérfano (nunca llegó el telRecord): la entrada moriría — TTL 10min.
     setTimeout(() => jobEtrs.delete(req.jobId), 600_000).unref?.();
-    return [...views].sort((a, b) => etrs.get(a.forgeId)! - etrs.get(b.forgeId)!);
+    // spec 013: el dispatch ordena por ETR EFECTIVO (rep ERC-8004 ponderada)
+    // — la misma política que usa EtrScheduler.select para la decisión.
+    return [...views].sort(
+      (a, b) => effectiveEtr(a, job, REP_WEIGHT) - effectiveEtr(b, job, REP_WEIGHT),
+    );
   },
 });
 
@@ -653,6 +678,7 @@ const app = createApp({
         delegationChainId: 10143,
       }
     : {}),
+  repWeight: REP_WEIGHT,
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // IP del socket para el rate limiter (XFF es spoofeable, no entra).

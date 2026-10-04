@@ -47,6 +47,10 @@ export type ForgeView = {
   // gateway confirmó ownerOf(agentId)==forgePubkey on-chain.
   forgeAgentId?: number;
   forgeAgentVerified?: boolean;
+  // spec 013: reputación ERC-8004 del worker (0..1, Laplace-smoothed sobre
+  // attestations no revocadas). Ausente/desconocida = neutral 0.5 — el forge
+  // sin identidad on-chain compite sin premio ni castigo.
+  reputationScore?: number;
   // Calibración del ETR (spec 002): lo predicho vs lo real, por forge.
   // etrMs = predicción vigente (misma fórmula que el router). Los últimos dos
   // solo existen tras un job calibrado — ausentes = sin evidencia, la UI

@@ -131,4 +131,15 @@ describe("spec 008 — PgIndexerStore (PGlite, base envio schema)", () => {
     assert.equal(a?.agentURI, "https://agent.uri/meta");
     assert.equal(await store.agent(42n), null);
   });
+
+  it("spec 013: reputationScores — join Feedback⋈Agent, Laplace, revoked fuera", async () => {
+    const scores = await store.reputationScores();
+    // agent 1990 (owner 0xowner): f1=500/10^2=5 + f2=40/10^1=4 → pos 9,
+    // f3 REVOCADA no cuenta → (9+1)/(9+0+2) = 10/11 ≈ 0.909
+    const s = scores.get("0xowner");
+    assert.ok(s !== undefined);
+    assert.ok(Math.abs(s - 10 / 11) < 1e-9, `score ${s} ≠ 10/11`);
+    // feedback de agente inexistente (agentId 7) no produce worker ni score
+    assert.equal(scores.size, 1);
+  });
 });
