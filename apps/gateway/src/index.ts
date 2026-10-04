@@ -1008,6 +1008,9 @@ export function createApp(deps: Deps) {
     const t0 = Date.now();
     let firstAt = -1;
     let servedForgeId: string | null = null;
+    // spec 014: intentos fallidos pre-token — el failover se reporta al
+    // cliente (weaver_route) en vez de quedar invisible. Solo ids reales.
+    const failedForges: string[] = [];
     // S28: stats del frame done → el sample lleva genTokens/decodeMs medidos.
     let lastStats: ExecStats | null = null;
     // S23: el forge firma su output (Proof L0) — el contrato lo exige en release.
@@ -1168,6 +1171,7 @@ export function createApp(deps: Deps) {
             deps.breaker?.ok(fid);
           },
           onFail: (fid) => {
+            failedForges.push(fid);
             deps.breaker?.fail(fid);
           },
           onProof: (p) => {
@@ -1201,6 +1205,10 @@ export function createApp(deps: Deps) {
             { index: 0, message: { role: "assistant", content }, finish_reason: "stop" },
           ],
           ...usage,
+          // spec 014: el failover también es visible en el response bufferizado.
+          ...(failedForges.length
+            ? { weaver_route: { failed: failedForges, serving: servedForgeId } }
+            : {}),
           ...receipt(),
         });
       } catch {
@@ -1247,13 +1255,21 @@ export function createApp(deps: Deps) {
               deps.breaker?.ok(fid); // sirvió: resetea sus fallos consecutivos
             },
             onFail: (fid) => {
+              failedForges.push(fid);
               deps.breaker?.fail(fid); // intento fallido (pre-token o mid-stream)
             },
             onProof: (p) => {
               proof = p;
             },
           })) {
-            if (firstAt < 0) firstAt = Date.now();
+            if (firstAt < 0) {
+              firstAt = Date.now();
+              // spec 014: hubo failover pre-token → frame meta ANTES de los
+              // tokens. El cliente ve "live1 → live2" real, no una simulación.
+              if (failedForges.length) {
+                send(`data: ${JSON.stringify({ weaver_route: { failed: failedForges, serving: servedForgeId } })}\n\n`);
+              }
+            }
             if (tok.done) {
               // Frame final OpenAI: finish_reason + usage si el engine reportó.
               const stats = tok.stats;

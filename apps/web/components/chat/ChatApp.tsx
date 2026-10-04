@@ -18,6 +18,7 @@ import {
   type RunStatus,
   type ToolDef,
   type WeaverProof,
+  type WeaverRoute,
 } from "../../lib/weaver";
 import { speak, startListening, stopSpeaking, sttSupported, ttsSupported, type SttHandle } from "../../lib/speech";
 import { ThinkingBlock } from "../ThinkingBlock";
@@ -36,6 +37,7 @@ type Msg = {
   etrMs?: number;
   reason?: string;
   proof?: WeaverProof; // spec 009: receipt verificable del forge que sirvió
+  route?: WeaverRoute; // spec 014: failover real reportado por el gateway
 };
 
 type Chat = { id: string; title: string; ts: number; messages: Msg[] };
@@ -336,10 +338,14 @@ export function ChatApp({ base }: { base: string }) {
           }
           if (mediaList.length) setMessages([...withUser, liveMsg()]);
         },
+        onRoute: (route) => {
+          const final: Msg[] = [...withUser, { ...liveMsg(), route }];
+          setMessages(final);
+        },
         onDone: (m) => {
           const final: Msg[] = [
             ...withUser,
-            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason, proof: m.proof },
+            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason, proof: m.proof, route: m.route },
           ];
           setMessages(final);
           setTtfts((prev) => [...prev.slice(-19), m.ttftMs]);
@@ -624,6 +630,16 @@ export function ChatApp({ base }: { base: string }) {
                       <>
                         {"  "}
                         <ProofChip proof={m.proof} output={m.text} base={base} />
+                      </>
+                    )}
+                    {m.route && (
+                      <>
+                        {"  "}FAILOVER{" "}
+                        <span className="text-danger">
+                          {m.route.failed.join(", ")}
+                        </span>
+                        {" → "}
+                        <span className="text-lima">{m.route.serving ?? "?"}</span>
                       </>
                     )}
                   </div>

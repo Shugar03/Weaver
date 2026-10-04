@@ -171,10 +171,13 @@ type RawToolCall = {
   function?: { name?: string; arguments?: string };
 };
 
+export type WeaverRoute = { failed: string[]; serving: string | null };
+
 type StreamEvent =
   | { type: "delta"; delta: ChatDelta }
   | { type: "finish"; reason: string; usage?: { prompt_tokens?: number; completion_tokens?: number } }
   | { type: "proof"; proof: WeaverProof }
+  | { type: "route"; route: WeaverRoute } // spec 014: failover visible
   | { type: "error"; error: string };
 
 // Un request → stream de frames ya parseados. Lo comparten runChat (dashboard,
@@ -213,6 +216,7 @@ async function* streamChat(base: string, body: Record<string, unknown>): AsyncGe
           usage?: { prompt_tokens?: number; completion_tokens?: number };
           choices?: { delta?: ChatDelta; finish_reason?: string | null }[];
           weaver_proof?: WeaverProof; // spec 009: receipt en el frame final
+          weaver_route?: WeaverRoute; // spec 014: failover visible
         };
         try {
           json = JSON.parse(data) as typeof json;
@@ -226,6 +230,7 @@ async function* streamChat(base: string, body: Record<string, unknown>): AsyncGe
         }
         const ch = json.choices?.[0];
         if (ch?.delta && Object.keys(ch.delta).length > 0) yield { type: "delta", delta: ch.delta };
+        if (json.weaver_route) yield { type: "route", route: json.weaver_route };
         if (json.weaver_proof) yield { type: "proof", proof: json.weaver_proof };
         if (ch?.finish_reason) yield { type: "finish", reason: ch.finish_reason, usage: json.usage };
       }
@@ -240,7 +245,9 @@ export type RunCallbacks = {
   // Razonamiento del modelo (qwen3 thinking): llega como delta.reasoning —
   // el UI que lo implementa lo muestra; el que no, no lo pierde del stream.
   onReasoning?: (t: string) => void;
-  onDone: (meta: { forge: string; ttftMs: number; etrMs: number; reason: string; proof?: WeaverProof }) => void;
+  // spec 014: failover real — el gateway reporta quién murió y quién sirvió.
+  onRoute?: (route: WeaverRoute) => void;
+  onDone: (meta: { forge: string; ttftMs: number; etrMs: number; reason: string; proof?: WeaverProof; route?: WeaverRoute }) => void;
   onError: (msg: string) => void;
 };
 
@@ -254,6 +261,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
   let first = -1;
   let text = "";
   let proof: WeaverProof | undefined;
+  let route: WeaverRoute | undefined; // spec 014: último failover reportado
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -280,6 +288,9 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
           text += content;
           cb.onToken(content);
         }
+      } else if (ev.type === "route") {
+        route = ev.route;
+        cb.onRoute?.(ev.route);
       } else if (ev.type === "proof") {
         proof = ev.proof;
       } else if (ev.type === "error") {
@@ -293,6 +304,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
       etrMs: decision?.etr_ms ?? 0,
       reason: decision?.reason ?? "sin-decisión",
       ...(proof ? { proof } : {}),
+      ...(route ? { route } : {}),
     });
     return;
   } catch (e) {
@@ -586,6 +598,9 @@ export async function runAgent(
   // spec 009: cada hop genera su receipt — nos quedamos el del ÚLTIMO, que
   // es el output que el usuario ve (los intermedios son llamadas a tools).
   let proof: WeaverProof | undefined;
+  // spec 014: el failover de cada hop se reporta en vivo (cb.onRoute); el del
+  // último hop queda en la meta para el badge persistente del mensaje.
+  let route: WeaverRoute | undefined;
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -632,6 +647,9 @@ export async function runAgent(
           finish = ev.reason;
           const u = ev.usage;
           if (u?.prompt_tokens !== undefined) cb.onUsage?.(u.prompt_tokens, u.completion_tokens ?? 0);
+        } else if (ev.type === "route") {
+          route = ev.route;
+          cb.onRoute?.(ev.route);
         } else if (ev.type === "proof") {
           proof = ev.proof;
         } else if (ev.type === "error") {
@@ -659,6 +677,7 @@ export async function runAgent(
       etrMs: decision?.etr_ms ?? 0,
       reason: decision?.reason ?? "sin-decisión",
       ...(proof ? { proof } : {}),
+      ...(route ? { route } : {}),
     });
   } catch (e) {
     cb.onError(e instanceof Error ? e.message : "error de red");
