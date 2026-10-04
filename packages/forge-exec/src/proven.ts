@@ -44,7 +44,11 @@ export class ProvenForgeExec implements ForgeExec {
           signature: await this.sign(resultHash),
         });
       } else {
-        hasher.update(chunk.token);
+        // Solo el contenido entra al hash — los tokens think (qwen3) son
+        // razonamiento efímero: el cliente verifica sha256 del texto leído,
+        // y el escrow libera contra lo que el usuario vio. Bug medido live:
+        // hashear think+content daba PROOF ✗ permanente en el chip.
+        if (chunk.kind !== "think") hasher.update(chunk.token);
       }
       yield chunk;
     }

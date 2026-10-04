@@ -29,6 +29,30 @@ describe("S23 ProvenForgeExec", () => {
     assert.equal(proofs[0].signature.length, 36); // "SIG:" + 32B hash
   });
 
+  it("tokens think NO entran al hash — el receipt ata la respuesta visible", async () => {
+    // Bug live (PROOF ✗ permanente en modelos thinking): se hasheaba
+    // think+content pero el cliente verifica sha256 del contenido leído.
+    class Thinking implements ForgeExec {
+      readonly forgeId = "thinker";
+      readonly model = "m";
+      async *execute(): AsyncIterable<StreamChunk> {
+        yield { token: "razonando…", done: false, kind: "think" };
+        yield { token: "respuesta ", done: false, kind: "content" };
+        yield { token: "visible", done: false, kind: "content" };
+        yield { token: "", done: true };
+      }
+    }
+    const proofs: Proof[] = [];
+    const exec = new ProvenForgeExec(new Thinking(), fakeSign);
+    await collect(exec, { onProof: (p) => proofs.push(p) });
+    assert.equal(proofs.length, 1);
+    assert.deepEqual(
+      proofs[0].resultHash,
+      createHash("sha256").update("respuesta visible").digest(),
+      "el hash ata solo el contenido — el think es efímero y no verificable client-side",
+    );
+  });
+
   it("muerte mid-stream → sin proof (trabajo no completado no se firma)", async () => {
     class Flaky implements ForgeExec {
       readonly forgeId = "flaky";

@@ -207,7 +207,9 @@ export class ForgeDaemon {
       })) {
         if (!c.done) {
           midStream = true;
-          hasher.update(c.token, "utf8");
+          // think fuera del hash (mismo contrato que ProvenForgeExec): el
+          // receipt ata el contenido visible, no el razonamiento efímero.
+          if (c.kind !== "think") hasher.update(c.token, "utf8");
           this.channel.send({ type: "job.chunk", jobId: m.jobId, token: c.token, ...(c.kind ? { kind: c.kind } : {}) });
         } else {
           if (c.stats?.genTokens && c.stats.decodeMs) {

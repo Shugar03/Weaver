@@ -65,6 +65,7 @@ import {
   sweepPendingSettles,
 } from "@weaver/settlement";
 import { createPublicClient, http, type Address as EvmAddress, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { monadTestnet } from "viem/chains";
 import { InMemoryTelemetry, PostgresTelemetry, etrCalibration } from "@weaver/telemetry";
 import { dbFromUrl } from "@weaver/db";
@@ -244,6 +245,15 @@ const sign = process.env.WORKER_SECRET
   ? process.env.WORKER_SECRET.startsWith("0x")
     ? evmSigner(process.env.WORKER_SECRET as Hex)
     : stellarSigner(process.env.WORKER_SECRET)
+  : undefined;
+
+// Los embedded firman con WORKER_SECRET pero no están en el registry remoto —
+// su pubkey derivada se publica igual, para que el receipt L0 sea verificable
+// end-to-end en dev (el ProofChip hace ecrecover contra este signer).
+const embeddedSignerPubkey = process.env.WORKER_SECRET
+  ? process.env.WORKER_SECRET.startsWith("0x")
+    ? privateKeyToAccount(process.env.WORKER_SECRET as Hex).address
+    : stellarPubkey(process.env.WORKER_SECRET)
   : undefined;
 
 // S19: registry forgeId→exec. El router ordena la fleet por ETR en cada request
@@ -641,7 +651,8 @@ const app = createApp({
   breaker,
   challenges: nonces,
   // S34: payout per-forge — la pubkey del registry ES la cuenta que cobra.
-  forgePubkeyOf: (forgeId) => registry.pubkeyOf(forgeId),
+  forgePubkeyOf: (forgeId) =>
+    registry.pubkeyOf(forgeId) ?? (execs[forgeId] !== undefined ? embeddedSignerPubkey : undefined),
     // S37: toda firma de forge remoto se verifica antes del release.
   verifyProof: forgeVerify,
   // S38: audit replay — con probabilidad AUDIT_RATE re-ejecutamos el prompt

@@ -108,6 +108,28 @@ test("job.assign → ack → chunks → done con hash+firma del output", async (
   d.stop();
 });
 
+test("job con chunks think → resultHash ata solo el contenido visible", async () => {
+  // Mismo bug que proven.ts (PROOF ✗ en thinking models): el hasher del
+  // daemon metía los tokens de razonamiento — el chip del cliente hashea
+  // solo el contenido. kind:"think" queda fuera del hash.
+  class Thinking extends FakeForgeExec {
+    override async *execute(): AsyncIterable<import("@weaver/forge-exec").StreamChunk> {
+      yield { token: "piensa ", done: false, kind: "think" };
+      yield { token: "echo:hola", done: false, kind: "content" };
+      yield { token: "", done: true };
+    }
+  }
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({ channel: ch, instances: [inst(new Thinking({ forgeId: "gpu0", model: "qwen3:4b" }))], sign });
+  d.start();
+  ch.inject({ type: "job.assign", jobId: "jt", instanceId: "gpu0", model: "qwen3:4b", prompt: "hola" });
+  await new Promise((r) => setTimeout(r, 50));
+  const done = ch.last("job.done")!;
+  const expectHash = createHash("sha256").update("echo:hola", "utf8").digest();
+  assert.equal(done.resultHash, expectHash.toString("hex"), "think fuera del hash — el receipt ata lo leído");
+  d.stop();
+});
+
 test("job.assign a instanceId desconocido → job.fail (no cuelga el gateway)", async () => {
   const ch = new FakeChannel();
   const d = new ForgeDaemon({ channel: ch, instances: [inst(new FakeForgeExec({ forgeId: "gpu0" }))], sign });
