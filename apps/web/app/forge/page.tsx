@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SiteHeader } from "../../components/SiteHeader";
+import { RepChip } from "../../components/forge/RepChip";
 import { forgeRow, type ForgeViewLike, type ExecSample } from "../../lib/fleet";
 
 const GATEWAY = process.env.WEAVER_GATEWAY ?? "http://localhost:3001";
@@ -45,6 +46,12 @@ export default async function ForgeIndex() {
                       <span className="font-tech text-xl">{f.forgeId}</span>
                       <span className="ml-3 font-tech text-base text-fog">{f.model}</span>
                       {r.sim && <span className="ml-3 border border-line px-1.5 py-0.5 font-tech text-sm text-fog">SIM</span>}
+                      {/* spec 010 — REP solo con identidad ERC-8004 verificada on-chain */}
+                      {f.forgeAgentId !== undefined && f.forgeAgentVerified === true && (
+                        <span className="ml-3">
+                          <RepChip base={GATEWAY} agentId={f.forgeAgentId} />
+                        </span>
+                      )}
                     </span>
                     <span className="font-tech text-sm tracking-[0.15em] text-fog">
                       {f.capability === "image" ? "IMAGE" : "TEXT"}

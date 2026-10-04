@@ -18,6 +18,10 @@ export type ForgeViewLike = {
   // S30/S35: forge remoto (WS, keypair propia) + attestation pasada.
   remote?: boolean;
   attested?: boolean;
+  // spec 010: identidad ERC-8004 — agentId declarado por heartbeat;
+  // verified = ownerOf on-chain confirmado por el gateway.
+  forgeAgentId?: number;
+  forgeAgentVerified?: boolean;
 };
 
 export type ExecSample = {

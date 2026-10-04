@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { accountUrl, short, txUrl, type Deployment } from "../../lib/site";
 import { forgeRow } from "../../lib/fleet";
 import type { ForgeView } from "../../lib/weaver";
+import { RepChip } from "./RepChip";
+import { ReputationPanel } from "./ReputationPanel";
 
 // Consola de UN forge de la fleet (S26). Todo número es vivo o declarado:
 // /v1/forges (vista del forge), /v1/executions?forgeId= (sus jobs),
@@ -226,6 +228,11 @@ export function ForgeConsole({
             </span>
           )}
           {forge?.sim && <span className="border border-line px-2.5 py-1 font-tech text-base tracking-[0.15em] text-fog">SIM</span>}
+          {/* spec 010 — reputación ERC-8004: solo si el claim está verificado
+              on-chain (ownerOf == forge); claim sin verificar se declara abajo */}
+          {forge?.forgeAgentId !== undefined && forge.forgeAgentVerified === true && (
+            <RepChip base={base} agentId={forge.forgeAgentId} />
+          )}
           <a
             href="https://github.com/Shugar03/Weaver/blob/main/apps/gateway/src/serve.ts"
             target="_blank"
@@ -387,6 +394,16 @@ export function ForgeConsole({
             )}
           </div>
         </div>
+
+        {/* spec 010 — attestations on-chain del agente ERC-8004 del forge.
+            Claim no verificado: honesto, no evidencia — se declara. */}
+        {forge?.forgeAgentId !== undefined && forge.forgeAgentVerified === true ? (
+          <ReputationPanel base={base} agentId={forge.forgeAgentId} />
+        ) : forge?.forgeAgentId !== undefined ? (
+          <div className="mt-6 border border-line px-4 py-3 font-tech text-base text-fog">
+            ERC-8004 claim #{forge.forgeAgentId} sin verificar on-chain — la reputación se muestra solo con identidad confirmada.
+          </div>
+        ) : null}
 
         <footer className="mt-10 flex flex-col gap-2 border-t border-line py-5 font-tech text-base tracking-[0.15em] text-fog md:flex-row md:justify-between">
           <span><span className="font-bold tracking-[0.3em] text-white">WEAVER</span> · OPEN COMPUTE. HIGHER INTELLIGENCE.</span>
