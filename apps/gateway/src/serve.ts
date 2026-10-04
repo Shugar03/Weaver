@@ -28,7 +28,7 @@ import { Auditor } from "./audit.ts";
 import { FakeForgeExec, FluxKleinForge, OllamaMLXAdapter, ProvenForgeExec, RoutedExec, SwitchableExec, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import { InMemoryApiKeys, PostgresApiKeys } from "@weaver/api-keys";
-import { DepositWatcher, EvmDepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, PostgresAccountStore, PostgresCreditLedger, pricingFromEnv } from "@weaver/accounts";
+import { DepositWatcher, EvmDepositWatcher, InMemoryAccountStore, InMemoryCreditLedger, InMemoryDelegationGrants, PostgresAccountStore, PostgresCreditLedger, PostgresDelegationGrants, pricingFromEnv } from "@weaver/accounts";
 import {
   EscrowSettlement,
   ESCROW_ABI,
@@ -418,6 +418,10 @@ const accounts = process.env.DATABASE_URL
 const creditLedger = process.env.DATABASE_URL
   ? new PostgresCreditLedger(dbFromUrl(process.env.DATABASE_URL))
   : new InMemoryCreditLedger();
+// spec 012: grants de delegación canjeados — pg si hay DB, mem si no.
+const delegationGrants = process.env.DATABASE_URL
+  ? new PostgresDelegationGrants(dbFromUrl(process.env.DATABASE_URL))
+  : new InMemoryDelegationGrants();
 const pricing = pricingFromEnv(process.env.MODEL_PRICING);
 const meChallenges = new NonceStore();
 
@@ -639,6 +643,16 @@ const app = createApp({
   // Pública — el panel la muestra en Overview para fondear.
   // EVM: es el contrato WeaverCredits (deposit(bytes32 acct, amount)).
   depositAddress: evmOn ? process.env.EVM_CREDITS : process.env.DEPOSIT_ADDRESS,
+  // spec 012: delegation session spend — delegate = operador (el que podría
+  // ejecutar el redeem on-chain); solo cuando hay settlement EVM activo.
+  ...(evmSubmitter
+    ? {
+        delegationGrants,
+        delegationAgent: evmSubmitter.address as string,
+        usdcToken: (process.env.EVM_USDC ?? MONAD_USDC) as string,
+        delegationChainId: 10143,
+      }
+    : {}),
   ...(corsOrigins.length ? { corsOrigins } : {}),
   ...(rpm > 0 ? { rateLimit: { rpm } } : {}),
   // IP del socket para el rate limiter (XFF es spoofeable, no entra).

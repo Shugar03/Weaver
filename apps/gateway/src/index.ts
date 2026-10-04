@@ -8,6 +8,21 @@ import type { ForgeView } from "@weaver/scheduler";
 import type { ExecStats, ForgeExec, ImageExec, Proof } from "@weaver/forge-exec";
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
 import type { SettleReceipt } from "@weaver/settlement";
+import {
+  DelegationEngine,
+  buildWeaverAgentDelegation,
+  hashDelegation,
+  decodeErc20TransferAmountTerms,
+  decodeTimestampTerms,
+  isEvmAddr,
+  DELEGATION_DOMAIN,
+  DELEGATION_TYPES,
+  ENFORCER_ERC20_TRANSFER_AMOUNT,
+  ENFORCER_TIMESTAMP,
+  ROOT_AUTHORITY,
+  type Delegation,
+} from "@weaver/settlement";
+import { encodeFunctionData, erc20Abi, isAddressEqual, type Address, type Hex } from "viem";
 import type { ApiKeys } from "@weaver/api-keys";
 import type { AccountStore, CreditLedger, PricingBook } from "@weaver/accounts";
 import { depositMemoFor } from "@weaver/accounts";
@@ -95,6 +110,13 @@ type Deps = {
   // spec 008: lectura del índice Envio (stats/leaderboard/reputation).
   // Ausente = endpoints /v1/network/* devuelven 404 (indexer no corre).
   indexerStore?: import("./indexerstore.ts").IndexerStore;
+  // spec 012: delegation session spend — grants MetaMask (ERC-7710) canjeados
+  // a credits. Requiere las tres: store + agent (delegate = operador EVM) +
+  // usdcToken (ERC20 del cap). Sin ellas las rutas no existen.
+  delegationGrants?: import("@weaver/accounts").DelegationGrants;
+  delegationAgent?: string;
+  usdcToken?: string;
+  delegationChainId?: number;
   // ETR predicho que el router computó para (jobId, forgeId) — serve.ts lo
   // llena en el order() de RoutedExec. El sample lo persiste → calibración.
   predictedEtrOf?: (jobId: string, forgeId: string) => number | undefined;
@@ -430,6 +452,156 @@ export function createApp(deps: Deps) {
         if (!mine.some((k) => k.id === id)) return c.json({ error: "key inexistente" }, 404);
         await keys.revoke(id);
         return c.json({ revoked: true });
+      });
+    }
+
+    // spec 012: MetaMask delegation → credits (mint-on-redeem). El usuario
+    // firma una delegación acotada (cap USDC + expiry + targets); el gateway
+    // la verifica con el DelegationEngine — misma semántica que un
+    // redeemDelegations on-chain — y acredita el cap al ledger (dlg:<hash>).
+    if (deps.delegationGrants && deps.delegationAgent && deps.usdcToken) {
+      const grants = deps.delegationGrants;
+      const agent = deps.delegationAgent as Address;
+      const usdc = deps.usdcToken as Address;
+      const chainId = deps.delegationChainId ?? 10143;
+      const engine = new DelegationEngine();
+
+      const evmWallet = async (c: Context): Promise<string | null> => {
+        const account = (await accounts.get(c.get("accountId")!))!;
+        return account.walletPubkey && isEvmAddr(account.walletPubkey) ? account.walletPubkey : null;
+      };
+
+      // Typed data lista para eth_signTypedData_v4 — el usuario solo firma.
+      app.post("/v1/me/delegations/template", requireAccount, async (c) => {
+        const wallet = await evmWallet(c);
+        if (!wallet) return c.json({ error: "la cuenta no tiene wallet EVM linkeada", code: "no_evm_wallet" }, 422);
+        const body = await parseJson<{ capUSDC?: number; ttlSec?: number }>(c);
+        if (!body) return c.json(badJson, 400);
+        const capUSDC = typeof body.capUSDC === "number" ? body.capUSDC : NaN;
+        const ttlSec = typeof body.ttlSec === "number" ? body.ttlSec : NaN;
+        if (!Number.isFinite(capUSDC) || capUSDC <= 0 || capUSDC > 10_000) {
+          return c.json({ error: "capUSDC debe ser 0 < x ≤ 10000", code: "bad_cap" }, 422);
+        }
+        if (!Number.isFinite(ttlSec) || ttlSec < 60 || ttlSec > 2_592_000) {
+          return c.json({ error: "ttlSec debe estar entre 60s y 30d", code: "bad_ttl" }, 422);
+        }
+        const now = Math.floor(Date.now() / 1000);
+        const delegation = buildWeaverAgentDelegation({
+          delegator: wallet as Address,
+          agent,
+          usdc,
+          maxAmount: BigInt(Math.round(capUSDC * 1e6)),
+          expiresAt: now + Math.floor(ttlSec),
+          validAfter: now - 60, // skew de reloj: válida desde ya
+          allowedTargets: [usdc],
+          allowedSelectors: ["0xa9059cbb" as Hex], // transfer() solamente
+        });
+        return c.json({
+          domain: DELEGATION_DOMAIN(chainId),
+          types: DELEGATION_TYPES,
+          primaryType: "Delegation",
+          // salt es bigint → string decimal (MetaMask/viem lo aceptan así).
+          message: { ...delegation, salt: delegation.salt.toString() },
+        });
+      });
+
+      app.post("/v1/me/delegations", requireAccount, async (c) => {
+        const wallet = await evmWallet(c);
+        if (!wallet) return c.json({ error: "la cuenta no tiene wallet EVM linkeada", code: "no_evm_wallet" }, 422);
+        const body = await parseJson<{ delegation?: Record<string, unknown> }>(c);
+        const wire = body?.delegation;
+        if (!wire || typeof wire !== "object") return c.json({ error: "falta delegation", code: "bad_request" }, 400);
+        let delegation: Delegation;
+        try {
+          delegation = {
+            delegate: wire.delegate as Address,
+            delegator: wire.delegator as Address,
+            authority: (wire.authority ?? ROOT_AUTHORITY) as Hex,
+            caveats: (wire.caveats as Delegation["caveats"]) ?? [],
+            salt: BigInt(wire.salt as string | number),
+            signature: (wire.signature ?? undefined) as Hex | undefined,
+          };
+          if (!isEvmAddr(delegation.delegate) || !isEvmAddr(delegation.delegator)) throw new Error("addr");
+        } catch {
+          return c.json({ error: "delegation mal formada", code: "bad_delegation" }, 422);
+        }
+        if (!isAddressEqual(delegation.delegator, wallet as Address)) {
+          return c.json({ error: "el delegator no es la wallet de la cuenta", code: "delegator_mismatch" }, 403);
+        }
+        if (!isAddressEqual(delegation.delegate, agent)) {
+          return c.json({ error: "delegate no es el agente Weaver", code: "wrong_delegate" }, 422);
+        }
+        // Caveats exigidos por Weaver: cap ERC20 sobre el USDC + expiry real.
+        const cap = delegation.caveats.find((cv) => isAddressEqual(cv.enforcer, ENFORCER_ERC20_TRANSFER_AMOUNT));
+        const ts = delegation.caveats.find((cv) => isAddressEqual(cv.enforcer, ENFORCER_TIMESTAMP));
+        if (!cap) return c.json({ error: "falta caveat ERC20TransferAmount", code: "missing_transfer_cap" }, 422);
+        let capTerms: { token: Address; maxAmount: bigint };
+        let tsTerms: { after: number; before: number };
+        try {
+          capTerms = decodeErc20TransferAmountTerms(cap.terms);
+          tsTerms = ts ? decodeTimestampTerms(ts.terms) : { after: 0, before: 0 };
+        } catch {
+          return c.json({ error: "terms de caveat mal formados", code: "bad_terms" }, 422);
+        }
+        if (tsTerms.before === 0) return c.json({ error: "falta caveat Timestamp con expiry", code: "missing_expiry" }, 422);
+        if (!isAddressEqual(capTerms.token, usdc)) {
+          return c.json({ error: "el cap debe ser sobre el USDC de la red", code: "wrong_token" }, 422);
+        }
+        // Dedup ANTES del engine: validateAndExecute acumula gasto por hash —
+        // un replay llegaría a spending_limit_exceeded en vez del 409 real.
+        const hash = hashDelegation(delegation, chainId);
+        if (await grants.byHash(hash)) {
+          return c.json({ error: "delegación ya canjeada", code: "already_redeemed" }, 409);
+        }
+        // Ejecución sintética = redeem on-chain: transfer(agent, maxAmount).
+        // El engine corre TODAS las caveats con semántica de los enforcers.
+        const data = encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [agent, capTerms.maxAmount],
+        });
+        const check = await engine.validateAndExecute(
+          delegation,
+          { target: usdc, value: 0n, data },
+          { chainId },
+        );
+        if (!check.success) {
+          const code = check.error ?? "delegation_rejected";
+          return c.json({ error: `delegación inválida: ${code}`, code }, code === "invalid_signature" ? 401 : 422);
+        }
+        const stroops = capTerms.maxAmount * 10n; // USDC 6dec → stroops 7dec
+        const saved = await grants.save({
+          hash,
+          accountId: c.get("accountId")!,
+          delegator: delegation.delegator,
+          delegate: delegation.delegate,
+          delegationJson: JSON.stringify({ ...wire, signature: delegation.signature }),
+          amountStroops: stroops,
+          expiresAt: tsTerms.before * 1000,
+          createdAt: Date.now(),
+        });
+        if (!saved) return c.json({ error: "delegación ya canjeada", code: "already_redeemed" }, 409);
+        const credited = ledger ? await ledger.credit(c.get("accountId")!, stroops, `dlg:${hash}`) : false;
+        return c.json(
+          { delegationHash: hash, amountUSDC: Number(capTerms.maxAmount) / 1e6, credited },
+          201,
+        );
+      });
+
+      app.get("/v1/me/delegations", requireAccount, async (c) => {
+        const rows = await grants.byAccount(c.get("accountId")!);
+        return c.json({
+          delegations: rows.map((g) => ({
+            hash: g.hash,
+            delegator: g.delegator,
+            delegate: g.delegate,
+            amountStroops: g.amountStroops.toString(),
+            amountUSDC: Number(g.amountStroops) / 1e7,
+            expiresAt: g.expiresAt,
+            createdAt: g.createdAt,
+            status: g.expiresAt !== null && g.expiresAt < Date.now() ? "expired" : "redeemed",
+          })),
+        });
       });
     }
 

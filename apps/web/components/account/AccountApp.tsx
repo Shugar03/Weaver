@@ -6,7 +6,7 @@
 // Estados: loading skeleton con forma final, errores inline, empty states
 // que enseñan (Doherty / Paradox of the Active User).
 import { useCallback, useEffect, useState } from "react";
-import { Gauge, Key, Receipt, BookOpen, SignOut } from "@phosphor-icons/react";
+import { Gauge, Key, Receipt, BookOpen, SignOut, HandCoins } from "@phosphor-icons/react";
 import {
   accountToken,
   clearAccountToken,
@@ -17,13 +17,15 @@ import { LoginPanel } from "./LoginPanel";
 import { OverviewTab } from "./OverviewTab";
 import { KeysTab } from "./KeysTab";
 import { BillingTab } from "./BillingTab";
+import { DelegationTab } from "./DelegationTab";
 import { DocsTab } from "./DocsTab";
 
-type Tab = "overview" | "keys" | "billing" | "docs";
+type Tab = "overview" | "keys" | "billing" | "delegate" | "docs";
 const TABS: { id: Tab; label: string; icon: typeof Gauge }[] = [
   { id: "overview", label: "OVERVIEW", icon: Gauge },
   { id: "keys", label: "API KEYS", icon: Key },
   { id: "billing", label: "BILLING", icon: Receipt },
+  { id: "delegate", label: "DELEGATE", icon: HandCoins },
   { id: "docs", label: "INTEGRATE", icon: BookOpen },
 ];
 
@@ -145,6 +147,7 @@ export function AccountApp({ base }: { base: string }) {
           {tab === "overview" && <OverviewTab me={me} loading={loading} onRefresh={() => void refresh(token)} onGoKeys={() => setTab("keys")} />}
           {tab === "keys" && <KeysTab base={base} token={token} />}
           {tab === "billing" && <BillingTab base={base} token={token} me={me} />}
+          {tab === "delegate" && <DelegationTab base={base} token={token} me={me} onSpent={() => void refresh(token)} />}
           {tab === "docs" && <DocsTab base={base} token={token} />}
         </section>
       </div>

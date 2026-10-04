@@ -116,3 +116,20 @@ export const creditEvents = pgTable(
   },
   (t) => [uniqueIndex("credit_events_kind_ref").on(t.kind, t.ref)],
 );
+
+// spec 012: grants de delegación MetaMask canjeados. hash = EIP-712
+// delegationHash (PK); amount_stroops = cap acreditado (USDC 6dec → ×10).
+export const delegations = pgTable(
+  "delegations",
+  {
+    hash: text("hash").primaryKey(),
+    accountId: text("account_id").notNull(),
+    delegator: text("delegator").notNull(),
+    delegate: text("delegate").notNull(),
+    delegationJson: text("delegation_json").notNull(),
+    amountStroops: bigint("amount_stroops", { mode: "bigint" }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("delegations_account_idx").on(t.accountId)],
+);

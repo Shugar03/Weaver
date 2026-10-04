@@ -15,6 +15,8 @@ export {
   type CreditLedger,
 } from "./ledger.ts";
 export { PricingBook, pricingFromEnv, type ModelPrice, type Usage } from "./pricing.ts";
+// spec 012: grants de delegación MetaMask canjeados (mint-on-redeem).
+export { InMemoryDelegationGrants, PostgresDelegationGrants, type DelegationGrant, type DelegationGrants } from "./grants.ts";
 export { depositMemoFor, accountByMemo, type MemoResolver } from "./deposit.ts";
 export { DepositWatcher, amountToStroops, type HorizonFetcher, type HorizonOp, type HorizonPage, type WatcherConfig } from "./watcher.ts";
 // ADR-0008: topups via WeaverCredits (Monad) — Deposited(bytes32 account,…)

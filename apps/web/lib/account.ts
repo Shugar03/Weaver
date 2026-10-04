@@ -105,3 +105,38 @@ export const revokeKey = (base: string, t: string, id: string) =>
   req<{ revoked: boolean }>(base, `/v1/me/keys/${id}`, t, { method: "DELETE" });
 export const getBilling = (base: string, t: string) =>
   req<{ balanceStroops: string; balanceUSDC: number; events: LedgerEvent[] }>(base, "/v1/me/billing", t);
+
+// spec 012 — MetaMask delegation spend. El gateway construye el typed data
+// (caveats correctos); el usuario solo firma con eth_signTypedData_v4.
+export type DelegationGrantView = {
+  hash: string;
+  delegator: string;
+  delegate: string;
+  amountStroops: string;
+  amountUSDC: number;
+  expiresAt: number | null;
+  createdAt: number;
+  status: "redeemed" | "expired";
+};
+
+export type DelegationTemplate = {
+  domain: Record<string, unknown>;
+  types: Record<string, unknown>;
+  primaryType: string;
+  message: Record<string, unknown>;
+};
+
+export const delegationTemplate = (base: string, t: string, capUSDC: number, ttlSec: number) =>
+  req<DelegationTemplate>(base, "/v1/me/delegations/template", t, {
+    method: "POST",
+    body: JSON.stringify({ capUSDC, ttlSec }),
+  });
+
+export const redeemDelegation = (base: string, t: string, delegation: Record<string, unknown>) =>
+  req<{ delegationHash: string; amountUSDC: number; credited: boolean }>(base, "/v1/me/delegations", t, {
+    method: "POST",
+    body: JSON.stringify({ delegation }),
+  });
+
+export const listDelegations = (base: string, t: string) =>
+  req<{ delegations: DelegationGrantView[] }>(base, "/v1/me/delegations", t);
