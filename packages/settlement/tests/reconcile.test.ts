@@ -100,14 +100,14 @@ test("crash post-fund: intent sin jobId + Funded on-chain → reconcile libera",
   assert.equal(r.orphans, 0);
 });
 
-test("intent sin Funded on-chain → descartado, jamás auto-fondea", async () => {
+test("intent VIEJO sin Funded on-chain → descartado, jamás auto-fondea", async () => {
   const journal = new InMemoryIntentJournal();
   await journal.recordIntent({
     jobKey: "0xstale",
     worker: WORKER,
     resultHash: hash.toString("hex"),
     forgeSig: sig.toString("hex"),
-    createdAt: Date.now(),
+    createdAt: Date.now() - 10 * 60_000, // viejo: su fundJob ya tuvo tiempo de minar
   });
   const chain = fakeChain();
   const r = await reconcileEvmOrphans({
@@ -121,6 +121,32 @@ test("intent sin Funded on-chain → descartado, jamás auto-fondea", async () =
   assert.equal(r.staleIntents, 1);
   assert.equal(chain.jobs.size, 0, "nunca fondea un trabajo a destiempo");
   assert.deepEqual(await journal.intentsWithoutJob(), [], "intent descartado — no re-advierte");
+});
+
+test("intent FRESCO sin Funded visible → NO se descarta (fund puede estar minando/indexando)", async () => {
+  // Bug live medido: el reconciler descartó un intent cuyo fundJob estaba
+  // in-flight — el evento Funded aún no era visible para getLogs. Discard
+  // marcó failed mientras el attach real resucitaba la fila segundos después
+  // → released con fail_reason="sin Funded" (veredicto contradictorio).
+  const journal = new InMemoryIntentJournal();
+  await journal.recordIntent({
+    jobKey: "0xrace",
+    worker: WORKER,
+    resultHash: hash.toString("hex"),
+    forgeSig: sig.toString("hex"),
+    createdAt: Date.now(), // recién nacido: el evento puede tardar en indexar
+  });
+  const chain = fakeChain();
+  const r = await reconcileEvmOrphans({
+    submitter: chain.submitter,
+    journal,
+    escrow: ESCROW,
+    fetchFunded: async () => [],
+    readJob: chain.readJob,
+  });
+  assert.equal(r.recovered, 0);
+  assert.equal(r.staleIntents, 1, "cuenta como pendiente, no como cerrado");
+  assert.equal((await journal.intentsWithoutJob()).length, 1, "el intent sobrevive — reintenta el próximo ciclo");
 });
 
 test("huérfano puro (Funded sin journal) → reportado, no liberado", async () => {

@@ -259,6 +259,30 @@ describe("Spec 004 — PostgresIntentJournal & PostgresSettleJournal Contract Te
       assert.equal((await journal.intentsWithoutJob()).length, 0);
     });
 
+    test("discard por lag de indexación → attach tardío resucita y LIMPIA el veredicto", async () => {
+      // Race medida live (job 27): el reconciler descartó el intent porque el
+      // evento Funded aún no era visible; el attach real llegó después y la
+      // fila terminó released + fail_reason="sin Funded" — veredicto
+      // contradictorio. attachJob/markReleased limpian failReason: la
+      // evidencia posterior gana.
+      const jobKey = "0x" + "f".repeat(64);
+      const worker = "0x784E0a01c683df116fA5bb5A91180d6Fc06BF5CB";
+      const resultHash = "0x" + "b".repeat(64);
+      const forgeSig = "0x" + "c".repeat(130);
+
+      await journal.recordIntent({ jobKey, worker, resultHash, forgeSig, createdAt: Date.now() });
+      await journal.discardIntent(jobKey, "sin Funded on-chain");
+      // El receipt de fundJob llega tarde: el intent SÍ fue fondeado.
+      await journal.attachJob(jobKey, 27, "0xfund27");
+      await journal.markReleased(27, "0xrel27");
+
+      const rows = await pgDb.select().from(schema.settleIntents);
+      const row = rows.find((r) => r.jobKey === jobKey)!;
+      assert.equal(row.state, "released");
+      assert.equal(row.jobId, 27);
+      assert.equal(row.failReason, null, "el veredicto errado no sobrevive al dato real");
+    });
+
     test("record (compat SettleJournal directo) → persiste funded", async () => {
       await journal.record({
         jobId: 100,

@@ -358,8 +358,12 @@ export async function reconcileEvmOrphans(deps: {
   escrow: Address;
   fetchFunded: (worker?: Address) => Promise<FundedJob[]>;
   readJob: (jobId: number) => Promise<{ state: number; worker: Address } | null>;
+  // Grace anti-lag: un intent recién nacido puede estar mid-fundJob (receipt
+  // aún no llegó) o el evento Funded aún no indexado — descartarlo era un
+  // falso negativo medido live (released con fail_reason="sin Funded").
+  minIntentAgeMs?: number;
 }): Promise<{ recovered: number; orphans: number; staleIntents: number }> {
-  const { submitter, journal, escrow, fetchFunded, readJob } = deps;
+  const { submitter, journal, escrow, fetchFunded, readJob, minIntentAgeMs = 120_000 } = deps;
   const known = new Set(await journal.knownJobIds());
   let recovered = 0;
   let staleIntents = 0;
@@ -407,6 +411,11 @@ export async function reconcileEvmOrphans(deps: {
     }
     if (!matched && !hadUnknown) {
       staleIntents++;
+      if (Date.now() - intent.createdAt < minIntentAgeMs) {
+        // Fresco: el Funded puede estar minando o sin indexar — reintenta
+        // el próximo ciclo en vez de dictaminar muerte prematura.
+        continue;
+      }
       // El proof existe pero no hay Funded on-chain → fundJob nunca minó
       // (receipt perdido incluye el caso tx-droppeado). No se auto-fondea:
       // pagar trabajo ya entregado a destiempo es decisión del operador.

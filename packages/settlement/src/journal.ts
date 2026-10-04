@@ -71,7 +71,7 @@ export interface IntentJournal extends SettleJournal {
 }
 
 export class InMemoryIntentJournal implements IntentJournal {
-  private rows = new Map<string, SettleIntent & { state: string }>();
+  private rows = new Map<string, SettleIntent & { state: string; failReason?: string }>();
 
   async recordIntent(i: Omit<SettleIntent, "jobId" | "fundTx">): Promise<void> {
     // PK semantics idénticas a Postgres: jobKey duplicado es bug del caller
@@ -81,7 +81,10 @@ export class InMemoryIntentJournal implements IntentJournal {
   }
   async attachJob(jobKey: string, jobId: number, fundTx: string): Promise<void> {
     const r = this.rows.get(jobKey);
-    if (r && r.state === "intent") Object.assign(r, { jobId, fundTx, state: "funded" });
+    // Resurrección: si el reconciler descartó por lag de indexación y el
+    // attach real llega después, el fundJob SÍ minó — el veredicto muere.
+    if (r && (r.state === "intent" || r.state === "failed"))
+      Object.assign(r, { jobId, fundTx, state: "funded", failReason: undefined });
   }
   async record(s: PendingSettle): Promise<void> {
     // Compat SettleJournal: registro directo funded (paths que no usan intent).
@@ -109,7 +112,7 @@ export class InMemoryIntentJournal implements IntentJournal {
   }
   async discardIntent(jobKey: string, reason: string): Promise<void> {
     const r = this.rows.get(jobKey);
-    if (r && r.state === "intent") r.state = `failed:${reason.slice(0, 40)}`;
+    if (r && r.state === "intent") Object.assign(r, { state: "failed", failReason: reason.slice(0, 40) });
   }
   async intentsWithoutJob(): Promise<SettleIntent[]> {
     return [...this.rows.values()].filter((r) => r.state === "intent").map(({ state: _, ...i }) => i);
@@ -140,7 +143,7 @@ export class PostgresSettleJournal implements SettleJournal {
     });
   }
   async markReleased(jobId: number, releaseTx: string): Promise<void> {
-    await this.db.update(settleJobs).set({ state: "released", releaseTx }).where(eq(settleJobs.jobId, jobId));
+    await this.db.update(settleJobs).set({ state: "released", releaseTx, failReason: null }).where(eq(settleJobs.jobId, jobId));
   }
   async markFailed(jobId: number, reason: string): Promise<void> {
     await this.db.update(settleJobs).set({ state: "failed", failReason: reason }).where(eq(settleJobs.jobId, jobId));
@@ -197,9 +200,12 @@ export class PostgresIntentJournal implements IntentJournal {
     });
   }
   async attachJob(jobKey: string, jobId: number, fundTx: string): Promise<void> {
+    // Sin guard de estado: si el reconciler descartó por lag de indexación y
+    // el receipt real llega después, attach prueba que el fundJob SÍ minó —
+    // resucita a funded y limpia el veredicto errado (medido live, job 27).
     await this.db
       .update(settleIntents)
-      .set({ jobId, fundTx, state: "funded" })
+      .set({ jobId, fundTx, state: "funded", failReason: null })
       .where(eq(settleIntents.jobKey, jobKey));
   }
   async record(s: PendingSettle): Promise<void> {
@@ -215,7 +221,7 @@ export class PostgresIntentJournal implements IntentJournal {
     });
   }
   async markReleased(jobId: number, releaseTx: string): Promise<void> {
-    await this.db.update(settleIntents).set({ state: "released", releaseTx }).where(eq(settleIntents.jobId, jobId));
+    await this.db.update(settleIntents).set({ state: "released", releaseTx, failReason: null }).where(eq(settleIntents.jobId, jobId));
   }
   async markFailed(jobId: number, reason: string): Promise<void> {
     await this.db.update(settleIntents).set({ state: "failed", failReason: reason }).where(eq(settleIntents.jobId, jobId));
