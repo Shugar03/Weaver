@@ -95,6 +95,11 @@
   messages=0→400, verifyProof sync-throw, erc-8004 claim spoofing ✓
 
 **D9 · 11 Oct**
+- [x] **x402 live E2E completo** (`scripts/e2e-x402.mjs`): cliente EOA nuevo ←
+  0.05 USDC op → 402+accepts → EIP-3009 firmado → 200 SSE real → **dos patas
+  on-chain verificadas**: facilitator settle `0x897d51fe…` blk 67983128 +
+  escrow release `0xa884c2ac…` blk 67983137 ($0.01 op→live2). Machine-payable
+  inference loop cerrado en Monad testnet ✓
 - [ ] Submission en Devfolio: video, write-up, repo, links de contratos
 - [ ] Bounty applications (formulario Devfolio): implementación lista — Mera, MetaMask Delegation, Envio, Alchemy
 
