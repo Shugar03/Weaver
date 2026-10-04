@@ -533,6 +533,13 @@ export function createApp(deps: Deps) {
     const raw = c.req.query("limit") ?? "20";
     const limit = Math.min(50, Math.max(1, Number.parseInt(raw, 10) || 20));
     const forgeId = c.req.query("forgeId");
+    const jobId = c.req.query("jobId");
+    // spec 009: lookup del receipt por jobId — directo al store, no a la
+    // ventana de recent (un job viejo también tiene receipt).
+    if (jobId) {
+      const s = (await deps.telemetry?.findByJobId?.(jobId)) ?? null;
+      return c.json(s ? [s] : []);
+    }
     let list = (await deps.telemetry?.recent(limit * (forgeId ? 4 : 1))) ?? [];
     if (forgeId) list = list.filter((s) => s.forgeId === forgeId).slice(0, limit);
     return c.json(list);
@@ -830,6 +837,22 @@ export function createApp(deps: Deps) {
     let lastStats: ExecStats | null = null;
     // S23: el forge firma su output (Proof L0) — el contrato lo exige en release.
     let proof: Proof | null = null;
+    // spec 009: receipt verificable — viaja en el último frame SSE / response
+    // JSON y se persiste con el sample. Sin proof → el campo falta, jamás null.
+    const receipt = () =>
+      proof
+        ? {
+            weaver_proof: {
+              jobId: id,
+              forgeId: proof.forgeId,
+              resultHash: proof.resultHash.toString("hex"),
+              signature: `0x${proof.signature.toString("hex")}`,
+              ...(deps.forgePubkeyOf?.(proof.forgeId)
+                ? { signer: deps.forgePubkeyOf(proof.forgeId) }
+                : {}),
+            },
+          }
+        : {};
     // Async: el verifyProof EVM (ecrecover) es Promise — los call sites la
     // llaman fire-and-forget, igual que antes (jamás frenan el stream).
     const telRecord = async (ok: boolean) => {
@@ -841,6 +864,14 @@ export function createApp(deps: Deps) {
         ok,
         ts: Date.now(),
         keyId: c.get("keyId"),
+        // spec 009: el receipt se persiste con el sample → /v1/executions?jobId=
+        jobId: id,
+        ...(proof
+          ? {
+              resultHash: proof.resultHash.toString("hex"),
+              proofSig: `0x${proof.signature.toString("hex")}`,
+            }
+          : {}),
         // ETR que el router predijo para este forge en este job — el
         // contraste con el real es la calibración (spec 002). Failover al
         // 2do candidato: la predicción es la del forge que SIRVIÓ.
@@ -995,6 +1026,7 @@ export function createApp(deps: Deps) {
             { index: 0, message: { role: "assistant", content }, finish_reason: "stop" },
           ],
           ...usage,
+          ...receipt(),
         });
       } catch {
         // Abort del cliente no es falla del forge: no ensucia okRate ni settle.
@@ -1074,9 +1106,9 @@ export function createApp(deps: Deps) {
                     })),
                   }),
                 );
-                send(chunk({}, "tool_calls", usage));
+                send(chunk({}, "tool_calls", { ...usage, ...receipt() }));
               } else {
-                send(chunk({}, "stop", usage));
+                send(chunk({}, "stop", { ...usage, ...receipt() }));
               }
               break;
             }

@@ -83,6 +83,17 @@ const getJson = async <T>(url: string): Promise<T | null> => {
   }
 };
 
+// spec 009 — receipt verificable del proof L0 del forge.
+// El cliente verifica: sha256(output) == resultHash &&
+// ecrecover(personal_sign(resultHash)) == signer (registry on-chain).
+export type WeaverProof = {
+  jobId: string;
+  forgeId: string;
+  resultHash: string; // hex, sha256 del output servido
+  signature: string; // 0x…, personal_sign del forge
+  signer?: string; // address on-chain del forge (ausente si no está en registry)
+};
+
 export const getNetworkStats = (base: string) => getJson<NetworkStats>(`${base}/v1/network/stats`);
 export const getLeaderboard = (base: string) => getJson<LeaderboardRow[]>(`${base}/v1/network/leaderboard`);
 export const getReputation = (base: string, agentId: number | string) =>
@@ -163,6 +174,7 @@ type RawToolCall = {
 type StreamEvent =
   | { type: "delta"; delta: ChatDelta }
   | { type: "finish"; reason: string; usage?: { prompt_tokens?: number; completion_tokens?: number } }
+  | { type: "proof"; proof: WeaverProof }
   | { type: "error"; error: string };
 
 // Un request → stream de frames ya parseados. Lo comparten runChat (dashboard,
@@ -200,6 +212,7 @@ async function* streamChat(base: string, body: Record<string, unknown>): AsyncGe
           detail?: string; // causa real del error (OOM/evicción/timeout)
           usage?: { prompt_tokens?: number; completion_tokens?: number };
           choices?: { delta?: ChatDelta; finish_reason?: string | null }[];
+          weaver_proof?: WeaverProof; // spec 009: receipt en el frame final
         };
         try {
           json = JSON.parse(data) as typeof json;
@@ -213,6 +226,7 @@ async function* streamChat(base: string, body: Record<string, unknown>): AsyncGe
         }
         const ch = json.choices?.[0];
         if (ch?.delta && Object.keys(ch.delta).length > 0) yield { type: "delta", delta: ch.delta };
+        if (json.weaver_proof) yield { type: "proof", proof: json.weaver_proof };
         if (ch?.finish_reason) yield { type: "finish", reason: ch.finish_reason, usage: json.usage };
       }
     }
@@ -226,7 +240,7 @@ export type RunCallbacks = {
   // Razonamiento del modelo (qwen3 thinking): llega como delta.reasoning —
   // el UI que lo implementa lo muestra; el que no, no lo pierde del stream.
   onReasoning?: (t: string) => void;
-  onDone: (meta: { forge: string; ttftMs: number; etrMs: number; reason: string }) => void;
+  onDone: (meta: { forge: string; ttftMs: number; etrMs: number; reason: string; proof?: WeaverProof }) => void;
   onError: (msg: string) => void;
 };
 
@@ -239,6 +253,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
   const t0 = performance.now();
   let first = -1;
   let text = "";
+  let proof: WeaverProof | undefined;
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -265,6 +280,8 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
           text += content;
           cb.onToken(content);
         }
+      } else if (ev.type === "proof") {
+        proof = ev.proof;
       } else if (ev.type === "error") {
         throw new Error(ev.error);
       }
@@ -275,6 +292,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
       ttftMs: Math.round(first < 0 ? performance.now() - t0 : first - t0),
       etrMs: decision?.etr_ms ?? 0,
       reason: decision?.reason ?? "sin-decisión",
+      ...(proof ? { proof } : {}),
     });
     return;
   } catch (e) {
@@ -565,6 +583,9 @@ export async function runAgent(
   let first = -1;
   const msgs: AgentMessage[] = [...messages];
   const maxHops = Math.min(8, Math.max(1, opts.maxHops ?? 5));
+  // spec 009: cada hop genera su receipt — nos quedamos el del ÚLTIMO, que
+  // es el output que el usuario ve (los intermedios son llamadas a tools).
+  let proof: WeaverProof | undefined;
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -611,6 +632,8 @@ export async function runAgent(
           finish = ev.reason;
           const u = ev.usage;
           if (u?.prompt_tokens !== undefined) cb.onUsage?.(u.prompt_tokens, u.completion_tokens ?? 0);
+        } else if (ev.type === "proof") {
+          proof = ev.proof;
         } else if (ev.type === "error") {
           throw new Error(ev.error);
         }
@@ -635,6 +658,7 @@ export async function runAgent(
       ttftMs: Math.round(first < 0 ? performance.now() - t0 : first - t0),
       etrMs: decision?.etr_ms ?? 0,
       reason: decision?.reason ?? "sin-decisión",
+      ...(proof ? { proof } : {}),
     });
   } catch (e) {
     cb.onError(e instanceof Error ? e.message : "error de red");

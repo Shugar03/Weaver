@@ -20,6 +20,11 @@ export type Sample = {
   predictedMs?: number;
   // S23: payerTx = cobro x402 del cliente; fundTx/releaseTx = escrow operador→worker.
   settle?: { payerTx?: string; fundTx?: string; releaseTx?: string; status: "pending" | "settled" | "failed" };
+  // spec 009: receipt verificable — el cliente re-hashea su output y compara
+  // con resultHash; ecrecover(proofSig) → signer on-chain del forge.
+  jobId?: string;
+  resultHash?: string; // hex, sha256 del output servido
+  proofSig?: string; // hex, personal_sign del forge sobre resultHash
 };
 
 // S17a — metering: lo consumido por key (o todo el nodo sin key).
@@ -31,6 +36,9 @@ export interface Telemetry {
   // puede contaminar la medición de otro).
   p50(model: string, forgeId: string): Promise<number>;
   recent(n: number): Promise<Sample[]>;
+  // spec 009: lookup de receipt por jobId — no cabe en recent(n): el job
+  // puede haber salido de la ventana. null honesto si no existe.
+  findByJobId?(jobId: string): Promise<Sample | null>;
   usage(keyId?: string): Promise<Usage>;
 }
 
@@ -61,6 +69,9 @@ export class InMemoryTelemetry implements Telemetry {
   }
   async recent(n: number): Promise<Sample[]> {
     return this.samples.slice(-Math.max(1, n)).reverse();
+  }
+  async findByJobId(jobId: string): Promise<Sample | null> {
+    return this.samples.find((s) => s.jobId === jobId) ?? null;
   }
   async usage(keyId?: string): Promise<Usage> {
     const xs = keyId ? this.samples.filter((s) => s.keyId === keyId) : this.samples;

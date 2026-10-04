@@ -17,9 +17,11 @@ import {
   type ForgeView,
   type RunStatus,
   type ToolDef,
+  type WeaverProof,
 } from "../../lib/weaver";
 import { speak, startListening, stopSpeaking, sttSupported, ttsSupported, type SttHandle } from "../../lib/speech";
 import { ThinkingBlock } from "../ThinkingBlock";
+import { ProofChip } from "./ProofChip";
 
 type Msg = {
   role: "user" | "weaver";
@@ -33,6 +35,7 @@ type Msg = {
   ttftMs?: number;
   etrMs?: number;
   reason?: string;
+  proof?: WeaverProof; // spec 009: receipt verificable del forge que sirvió
 };
 
 type Chat = { id: string; title: string; ts: number; messages: Msg[] };
@@ -336,7 +339,7 @@ export function ChatApp({ base }: { base: string }) {
         onDone: (m) => {
           const final: Msg[] = [
             ...withUser,
-            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason },
+            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason, proof: m.proof },
           ];
           setMessages(final);
           setTtfts((prev) => [...prev.slice(-19), m.ttftMs]);
@@ -615,6 +618,12 @@ export function ChatApp({ base }: { base: string }) {
                     {m.etrMs !== undefined && (
                       <>
                         {"  "}ETR <span className="text-white">{m.etrMs} ms</span>
+                      </>
+                    )}
+                    {m.proof && (
+                      <>
+                        {"  "}
+                        <ProofChip proof={m.proof} output={m.text} base={base} />
                       </>
                     )}
                   </div>

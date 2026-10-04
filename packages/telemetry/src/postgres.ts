@@ -23,6 +23,9 @@ export class PostgresTelemetry implements Telemetry {
       fundTx: s.settle?.fundTx ?? null,
       releaseTx: s.settle?.releaseTx ?? null,
       settleStatus: s.settle?.status ?? null,
+      jobId: s.jobId ?? null,
+      resultHash: s.resultHash ?? null,
+      proofSig: s.proofSig ?? null,
     });
   }
 
@@ -41,19 +44,17 @@ export class PostgresTelemetry implements Telemetry {
     return Math.round(rows[0]?.v ?? 0);
   }
 
-  async recent(n: number): Promise<Sample[]> {
-    const rows = await this.db
-      .select()
-      .from(performanceSamples)
-      .orderBy(desc(performanceSamples.id))
-      .limit(Math.min(50, Math.max(1, n)));
-    return rows.map((r) => ({
+  private toSample(r: typeof performanceSamples.$inferSelect): Sample {
+    return {
       forgeId: r.forgeId,
       model: r.model,
       ttftMs: r.ttftMs,
       ok: r.ok,
       ts: r.ts,
       ...(r.keyId ? { keyId: r.keyId } : {}),
+      ...(r.jobId ? { jobId: r.jobId } : {}),
+      ...(r.resultHash ? { resultHash: r.resultHash } : {}),
+      ...(r.proofSig ? { proofSig: r.proofSig } : {}),
       ...(r.settleStatus
         ? {
             settle: {
@@ -64,7 +65,26 @@ export class PostgresTelemetry implements Telemetry {
             },
           }
         : {}),
-    }));
+    };
+  }
+
+  async recent(n: number): Promise<Sample[]> {
+    const rows = await this.db
+      .select()
+      .from(performanceSamples)
+      .orderBy(desc(performanceSamples.id))
+      .limit(Math.min(50, Math.max(1, n)));
+    return rows.map((r) => this.toSample(r));
+  }
+
+  async findByJobId(jobId: string): Promise<Sample | null> {
+    const rows = await this.db
+      .select()
+      .from(performanceSamples)
+      .where(eq(performanceSamples.jobId, jobId))
+      .orderBy(desc(performanceSamples.id))
+      .limit(1);
+    return rows[0] ? this.toSample(rows[0]) : null;
   }
 
   async usage(keyId?: string): Promise<Usage> {

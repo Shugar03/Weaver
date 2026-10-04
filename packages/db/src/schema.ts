@@ -24,8 +24,15 @@ export const performanceSamples = pgTable(
     fundTx: text("fund_tx"),
     releaseTx: text("release_tx"),
     settleStatus: text("settle_status"),
+    // spec 009: receipt verificable — jobId chatcmpl + proof L0 del forge.
+    jobId: text("job_id"),
+    resultHash: text("result_hash"),
+    proofSig: text("proof_sig"),
   },
-  (t) => [index("samples_model_ts_idx").on(t.model, t.ts)],
+  (t) => [
+    index("samples_model_ts_idx").on(t.model, t.ts),
+    index("samples_job_id_idx").on(t.jobId),
+  ],
 );
 
 // S44 (ADR-0006, I3): journal de escrows — referencia durable a todo fund_job
