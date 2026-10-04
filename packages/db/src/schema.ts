@@ -28,6 +28,10 @@ export const performanceSamples = pgTable(
     jobId: text("job_id"),
     resultHash: text("result_hash"),
     proofSig: text("proof_sig"),
+    // spec 015: calibración ETR + stats medidos del engine (spec 002/S28).
+    predictedMs: bigint("predicted_ms", { mode: "number" }),
+    genTokens: bigint("gen_tokens", { mode: "number" }),
+    decodeMs: bigint("decode_ms", { mode: "number" }),
   },
   (t) => [
     index("samples_model_ts_idx").on(t.model, t.ts),

@@ -26,6 +26,11 @@ export class PostgresTelemetry implements Telemetry {
       jobId: s.jobId ?? null,
       resultHash: s.resultHash ?? null,
       proofSig: s.proofSig ?? null,
+      // spec 015: calibración + stats del engine — in-memory ya las guardaba,
+      // pg las dropeaba y la calibración moría solo en prod.
+      predictedMs: s.predictedMs ?? null,
+      genTokens: s.genTokens ?? null,
+      decodeMs: s.decodeMs ?? null,
     });
   }
 
@@ -55,6 +60,9 @@ export class PostgresTelemetry implements Telemetry {
       ...(r.jobId ? { jobId: r.jobId } : {}),
       ...(r.resultHash ? { resultHash: r.resultHash } : {}),
       ...(r.proofSig ? { proofSig: r.proofSig } : {}),
+      ...(r.predictedMs !== null && r.predictedMs !== undefined ? { predictedMs: r.predictedMs } : {}),
+      ...(r.genTokens !== null && r.genTokens !== undefined ? { genTokens: r.genTokens } : {}),
+      ...(r.decodeMs !== null && r.decodeMs !== undefined ? { decodeMs: r.decodeMs } : {}),
       ...(r.settleStatus
         ? {
             settle: {

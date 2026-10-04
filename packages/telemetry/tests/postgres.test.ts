@@ -58,6 +58,32 @@ describe("S16a PostgresTelemetry", () => {
     }
   });
 
+  it("spec 015 — calibration/engine fields round-trip (no se dropean en pg)", { skip: !URL }, async () => {
+    const db = dbFromUrl(URL as string);
+    await db.delete(performanceSamples);
+    try {
+      const t = new PostgresTelemetry(db);
+      await t.record({
+        forgeId: "f1",
+        model: "m",
+        ttftMs: 42,
+        ok: true,
+        ts: 1,
+        predictedMs: 40,
+        genTokens: 120,
+        decodeMs: 800,
+      });
+      const s = (await t.recent(1))[0];
+      // El bug: pg dropeaba estos campos → calibración muerta solo en prod.
+      assert.equal(s.predictedMs, 40);
+      assert.equal(s.genTokens, 120);
+      assert.equal(s.decodeMs, 800);
+    } finally {
+      await db.delete(performanceSamples);
+      await closeDb();
+    }
+  });
+
   it("sin TEST_DATABASE_URL los tests de pg se saltean (CI verde sin DB)", () => {
     // Cuando URL no está, los tests de arriba llevan skip — el archivo queda
     // verde sin Postgres. Cuando está, es una URL postgres válida.
