@@ -597,10 +597,16 @@ const app = createApp({
         : forgeId === "gemma-local" ? gemmaSw
         : forgeId === "image-local" ? imageForgeInner
         : null;
-      if (!target) return false;
-      target.setDead(dead);
-      if (!dead) breaker.ok(forgeId ?? "ollama-local"); // revive = reset del breaker
-      return true;
+      if (target) {
+        target.setDead(dead);
+        if (!dead) breaker.ok(forgeId ?? "ollama-local"); // revive = reset del breaker
+        return true;
+      }
+      // spec 011: forges REMOTOS — mata la sesión WS del pubkey dueño del
+      // instanceId (rig caído → failover real). Sin forgeId en remote-only:
+      // matar toda la fleet no es chaos drill, es autodestrucción → false.
+      if (forgeId === undefined) return false;
+      return forgeWS?.setDead(forgeId, dead) ?? false;
     },
   },
   breaker,

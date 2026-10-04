@@ -24,8 +24,45 @@ export type ForgeWS = {
   remoteExecs: Map<string, ForgeExec>;
   remoteImageExecs: Map<string, ImageExec>;
   sessions: Map<string, ForgeSession>; // pubkey → session
+  // spec 011: chaos kill sobre forges REMOTOS — mata la sesión del pubkey
+  // dueño del instanceId y bloquea su reconexión hasta revive (dead:false).
+  setDead(instanceId: string, dead: boolean): boolean;
   stop(): void;
 };
+
+// spec 011 — el kill switch remoto, puro y testeable sin sockets:
+// resuelve instanceId→pubkey, mantiene el set de matados, cierra la sesión
+// real por callback. El gate de reconexión vive en isKilled (onAuthed lo lee).
+export function makeKillSwitch(deps: {
+  pubkeyOf: (instanceId: string) => string | undefined;
+  closeSession: (pubkey: string) => void;
+}): { setDead(instanceId: string, dead: boolean): boolean; isKilled(pubkey: string): boolean } {
+  const killed = new Set<string>();
+  // instanceId → pubkey recordada al matar: post-kill la instance sale de
+  // views/owner (unregister) — sin este mapa, revive jamás resuelve la pubkey
+  // y el forge queda muerto hasta restart del gateway.
+  const remembered = new Map<string, string>();
+  return {
+    isKilled: (pk) => killed.has(pk),
+    setDead(instanceId, dead) {
+      const pk = deps.pubkeyOf(instanceId) ?? remembered.get(instanceId);
+      if (!pk) return false;
+      if (!dead) {
+        killed.delete(pk);
+        remembered.delete(instanceId);
+        return true;
+      }
+      remembered.set(instanceId, pk);
+      // Idempotente: si la pubkey ya está matada, el objetivo se cumplió —
+      // no hay segunda closeSession (la sesión ya no existe).
+      if (!killed.has(pk)) {
+        killed.add(pk);
+        deps.closeSession(pk);
+      }
+      return true;
+    },
+  };
+}
 
 export function attachForgeWS(
   server: Server,
@@ -37,6 +74,20 @@ export function attachForgeWS(
   const remoteExecs = new Map<string, ForgeExec>();
   const remoteImageExecs = new Map<string, ImageExec>();
   const instanceOwner = new Map<string, ForgeSession>();
+  // spec 011: pubkeys matadas por chaos — reconectar no revive hasta revive.
+  const kill = makeKillSwitch({
+    // instanceId → pubkey: del registry (fuente de verdad post-heartbeat)
+    // o del owner si el view ya no está (kill doble tras expiry).
+    pubkeyOf: (instanceId) => deps.registry.pubkeyOf(instanceId) ?? instanceOwner.get(instanceId)?.pubkey ?? undefined,
+    closeSession: (pk) => {
+      const s = sessions.get(pk);
+      if (s) {
+        s.closed(); // registry.unregister + closeListeners → pending jobs fallan → failover
+        sockets.get(s)?.close(4005, "chaos kill");
+        dropSession(s);
+      }
+    },
+  });
 
   server.on("upgrade", (req, socket, head) => {
     if (req.url !== "/v1/forge/ws") return; // otros upgrades no son nuestros
@@ -53,6 +104,13 @@ export function attachForgeWS(
       verify: deps.verify,
       consumeNonce: (n) => deps.nonces.consume(n),
       onAuthed: (s) => {
+        // spec 011: pubkey matada por chaos → reconectar no revive. El forge
+        // reintenta en loop; revive lo saca del set y la próxima auth entra.
+        if (kill.isKilled(s.pubkey!)) {
+          s.closed();
+          ws.close(4005, "chaos kill");
+          return;
+        }
         // Pubkey ya conectado → kick al viejo (la máquina reintenta tras crash).
         const prev = sessions.get(s.pubkey!);
         if (prev && prev !== s) {
@@ -192,6 +250,7 @@ export function attachForgeWS(
     remoteExecs,
     remoteImageExecs,
     sessions,
+    setDead: (instanceId, dead) => kill.setDead(instanceId, dead),
     stop() {
       clearInterval(pingLoop);
       clearInterval(expireLoop);
