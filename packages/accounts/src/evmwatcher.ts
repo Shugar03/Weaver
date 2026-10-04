@@ -103,15 +103,18 @@ export class EvmDepositWatcher {
       this.log(`log ${ref}: account bytes32 no decodifica a acct_… — ignorado`);
       return;
     }
-    const amount = BigInt(l.data);
-    if (amount <= 0n) return;
+    // El evento Deposited lleva USDC base units (6 dec); el ledger vive en
+    // stroops (7 dec) — ×10 como en spec 012 dlg:. Acreditar el amount crudo
+    // era darle al usuario el 10% de su depósito (bug medido live).
+    const stroops = BigInt(l.data) * 10n;
+    if (stroops <= 0n) return;
     const account = await store.get(accountId);
     if (!account) {
       this.log(`log ${ref}: accountId "${accountId}" sin cuenta — fondos sin acreditar`);
       return;
     }
-    const applied = await ledger.credit(account.id, amount, ref);
-    if (applied) this.log(`acreditado ${amount} base units → ${account.id} (${ref})`);
+    const applied = await ledger.credit(account.id, stroops, ref);
+    if (applied) this.log(`acreditado ${stroops} stroops → ${account.id} (${ref})`);
   }
 
   /** Mueve el cursor — boot en head cuando el operador no quiere rescan. */

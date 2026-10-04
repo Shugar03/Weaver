@@ -120,7 +120,7 @@ export async function getForges(base: string): Promise<ForgeView[] | null> {
 export async function postJobs(base: string, model: string): Promise<JobsDecision> {
   const r = await fetch(`${base}/v1/jobs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeader() },
     body: JSON.stringify({ model }),
   });
   if (!r.ok) throw new Error(`jobs: http ${r.status}`);
@@ -134,6 +134,37 @@ export function operatorKey(): string | null {
     return null;
   }
 }
+
+// spec 016 — API key de la CUENTA para compute (chat/jobs/upload). Distinta de
+// operator-key (admin). Con key → keyId → paywall bypass + billing prepaid.
+export function apiKey(): string | null {
+  try {
+    return localStorage.getItem("weaver:api-key");
+  } catch {
+    return null;
+  }
+}
+
+export function saveApiKey(key: string): void {
+  try {
+    localStorage.setItem("weaver:api-key", key);
+  } catch {
+    /* sin storage */
+  }
+}
+
+export function clearApiKey(): void {
+  try {
+    localStorage.removeItem("weaver:api-key");
+  } catch {
+    /* sin storage */
+  }
+}
+
+const authHeader = (): Record<string, string> => {
+  const k = apiKey();
+  return k ? { authorization: `Bearer ${k}` } : {};
+};
 
 export function saveOperatorKey(key: string): void {
   try {
@@ -187,13 +218,21 @@ async function* streamChat(base: string, body: Record<string, unknown>): AsyncGe
   try {
     res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeader() },
       body: JSON.stringify(body),
     });
   } catch {
     throw new Error("gateway caído — levantá :3001");
   }
-  if (!res.ok || !res.body) throw new Error(`chat: http ${res.status}`);
+  if (!res.ok || !res.body) {
+    // spec 016: key revocada/inválida → se limpia (no repetir el fallo en
+    // cada request) y el error dice dónde crear una nueva.
+    if (res.status === 401 && apiKey()) {
+      clearApiKey();
+      throw new Error("key inválida — crealá en /account");
+    }
+    throw new Error(`chat: http ${res.status}`);
+  }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -368,7 +407,7 @@ export async function uploadDoc(
 ): Promise<{ name: string; chars: number; text: string }> {
   const form = new FormData();
   form.append("file", file);
-  const r = await fetch(`${base}/v1/agent/files`, { method: "POST", body: form });
+  const r = await fetch(`${base}/v1/agent/files`, { method: "POST", headers: authHeader(), body: form });
   const j = (await r.json()) as { name?: string; chars?: number; text?: string; error?: string };
   if (!r.ok || !j.text) throw new Error(j.error ?? `http ${r.status}`);
   return { name: j.name ?? file.name, chars: j.chars ?? j.text.length, text: j.text };

@@ -1,11 +1,13 @@
 "use client";
 
 // Keys — CRUD self-serve. El secreto se muestra UNA vez al crear (modal
-// inline, no se guarda en claro en ningún lado). Revoke con confirm.
+// inline) y queda en localStorage del dispositivo para autenticar el chat
+// (spec 016) — local-first, nunca sale del browser salvo al gateway mismo.
 // Empty state que enseña qué hacer con la key (Paradox of the Active User).
 import { useCallback, useEffect, useState } from "react";
 import { Copy, Check, Trash, Plus, Warning } from "@phosphor-icons/react";
 import { createKey, listKeys, revokeKey, type KeyPublic } from "../../lib/account";
+import { saveApiKey } from "../../lib/weaver";
 
 export function KeysTab({ base, token }: { base: string; token: string }) {
   const [keys, setKeys] = useState<KeyPublic[] | null>(null);
@@ -31,7 +33,11 @@ export function KeysTab({ base, token }: { base: string; token: string }) {
     setBusy(true);
     setErr(null);
     try {
-      setFresh(await createKey(base, token));
+      const k = await createKey(base, token);
+      setFresh(k);
+      // spec 016: la key recién creada alimenta el chat de esta web —
+      // compute autenticado = paywall bypass + billing prepaid por cuenta.
+      saveApiKey(k.secret);
       await reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "error");
@@ -72,7 +78,8 @@ export function KeysTab({ base, token }: { base: string; token: string }) {
             </button>
           </div>
           <p className="mt-2 text-sm text-fog">
-            Guardala en tu cliente (opencode, pi, hermes). Si la perdés, revocá y creá otra.
+            Guardala en tu cliente (opencode, pi, hermes). Si la perdés, revocá y creá otra.{" "}
+            <span className="text-lima">Ya está activa en este chat — el cómputo se debita de tu cuenta.</span>
           </p>
           <button
             onClick={() => setFresh(null)}

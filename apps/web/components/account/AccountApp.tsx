@@ -13,6 +13,7 @@ import {
   getMe,
   type MeInfo,
 } from "../../lib/account";
+import { clearApiKey } from "../../lib/weaver";
 import { LoginPanel } from "./LoginPanel";
 import { OverviewTab } from "./OverviewTab";
 import { KeysTab } from "./KeysTab";
@@ -71,6 +72,7 @@ export function AccountApp({ base }: { base: string }) {
 
   function logout() {
     clearAccountToken();
+    clearApiKey(); // spec 016: la key es secreto del account — sale con él
     setToken(null);
     setMe(null);
   }

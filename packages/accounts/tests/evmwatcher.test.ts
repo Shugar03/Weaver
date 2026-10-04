@@ -36,7 +36,7 @@ describe("EVM accountToBytes32/bytes32ToAccount", () => {
 });
 
 describe("EVM DepositWatcher", () => {
-  it("Deposited con account acct_ → acredita amount exacto", async () => {
+  it("Deposited con account acct_ → acredita en stroops (USDC 6dec ×10)", async () => {
     const store = new InMemoryAccountStore();
     const ledger = new InMemoryCreditLedger();
     const { account } = await store.create();
@@ -48,7 +48,9 @@ describe("EVM DepositWatcher", () => {
       pollMs: 999_999,
     });
     await w.pollOnce();
-    assert.equal(await ledger.balance(account.id), 25_000_000n);
+    // 25 USDC (25e6 units 6dec) → 250e6 stroops (7dec). Acreditar el amount
+    // crudo era dar el 10% del depósito (bug medido live en spec 016).
+    assert.equal(await ledger.balance(account.id), 250_000_000n);
   });
 
   it("dedup por txHash:logIndex — re-poll del mismo log no duplica", async () => {
@@ -62,7 +64,7 @@ describe("EVM DepositWatcher", () => {
     });
     await w.pollOnce();
     await w.pollOnce(); // mismo log otra vez — cursor 100, se re-entrega
-    assert.equal(await ledger.balance(account.id), 10_000_000n);
+    assert.equal(await ledger.balance(account.id), 100_000_000n); // ×10 stroops
   });
 
   it("accountId desconocido → log, sin acreditar, cursor igual avanza", async () => {
@@ -95,7 +97,7 @@ describe("EVM DepositWatcher", () => {
     });
     await w.pollOnce();
     await w.pollOnce();
-    assert.equal(await ledger.balance(account.id), 5n);
+    assert.equal(await ledger.balance(account.id), 50n); // ×10 stroops
   });
 
   it("multi-log en la misma tx: dedup por txHash:logIndex acredita ambos", async () => {
@@ -112,7 +114,7 @@ describe("EVM DepositWatcher", () => {
     });
     await w.pollOnce();
     await w.pollOnce(); // replay: no duplica
-    assert.equal(await ledger.balance(account.id), 10n);
+    assert.equal(await ledger.balance(account.id), 100n); // (3+7) ×10 stroops
   });
 
   it("reorg: log con removed:true jamás acredita", async () => {
