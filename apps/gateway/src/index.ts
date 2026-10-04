@@ -1088,9 +1088,13 @@ export function createApp(deps: Deps) {
       const proofOk =
         !(ok && servedProof && worker && deps.verifyProof) ||
         (await (async () => deps.verifyProof!(worker!, servedProof!.resultHash, servedProof!.signature))().catch(() => false));
+      // Un fallo de record se loguea — el catch mudo ya escondió un bug real
+      // (float en bigint): job settleado on-chain sin sample = auditoría perdida.
+      const rec = (s: Parameters<NonNullable<Deps["telemetry"]>["record"]>[0]) =>
+        deps.telemetry?.record(s).catch((e) => console.warn("telemetry.record falló:", e));
       if (!proofOk) {
         deps.breaker?.fail(servedProof!.forgeId);
-        deps.telemetry?.record({ ...base, settle: { status: "failed" } }).catch(() => {});
+        await rec({ ...base, settle: { status: "failed" } });
         return;
       }
       // S38: audit probabilístico — re-attestation del forge que sirvió
@@ -1098,7 +1102,7 @@ export function createApp(deps: Deps) {
       // undefined); fire-and-forget, nunca bloquea el settle.
       if (ok && servedProof && worker) deps.audit?.(servedProof.forgeId, body.model);
       if (!ok || (!deps.settlement && !payerHeader)) {
-        deps.telemetry?.record(base).catch(() => {});
+        await rec(base);
         return;
       }
       const settlement = deps.settlement;
@@ -1119,22 +1123,18 @@ export function createApp(deps: Deps) {
         // S17b+S22/23: pata worker — escrow operador→worker exige result_hash
         // + firma del forge. Sin proof no hay pago (trabajo no probado).
         if (!settlement) {
-          await deps.telemetry
-            ?.record({ ...base, settle: { payerTx, status: payerOk ? "settled" : "failed" } })
-            .catch(() => {});
+          await rec({ ...base, settle: { payerTx, status: payerOk ? "settled" : "failed" } });
           return;
         }
         if (!servedProof) {
-          await deps.telemetry
-            ?.record({ ...base, settle: { payerTx, status: "failed" } })
-            .catch(() => {});
+          await rec({ ...base, settle: { payerTx, status: "failed" } });
           return;
         }
         try {
           const r = idemKey
             ? await settleOnce(settlement, idemKey, servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined)
             : await settlement.settleJob(servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined);
-          await deps.telemetry?.record({
+          await rec({
             ...base,
             settle: { payerTx, fundTx: r.fundTx, releaseTx: r.releaseTx, status: payerOk ? "settled" : "failed" },
           });
@@ -1146,9 +1146,7 @@ export function createApp(deps: Deps) {
           // El settle falló post-serve: el error se loguea — un catch mudo
           // escondería escrow bugs con plata de por medio.
           console.warn(`settleJob falló (job ${id}):`, e);
-          await deps.telemetry
-            ?.record({ ...base, settle: { payerTx, status: "failed" } })
-            .catch(() => {});
+          await rec({ ...base, settle: { payerTx, status: "failed" } });
         }
       })();
     };

@@ -84,6 +84,34 @@ describe("S16a PostgresTelemetry", () => {
     }
   });
 
+  it("spec 015 — floats del engine se redondean a bigint (regresión: sample perdido post-settle)", { skip: !URL }, async () => {
+    const db = dbFromUrl(URL as string);
+    await db.delete(performanceSamples);
+    try {
+      const t = new PostgresTelemetry(db);
+      // Ollama reporta decodeMs fraccionario — un float crudo reventaba el
+      // insert bigint y el job settleado quedaba sin sample (bug live real).
+      await t.record({
+        forgeId: "f1",
+        model: "m",
+        ttftMs: 376.3947368421052,
+        ok: true,
+        ts: 1791077843510.2,
+        decodeMs: 812.9,
+        predictedMs: 40.4,
+        genTokens: 33.7,
+      });
+      const s = (await t.recent(1))[0];
+      assert.equal(s.ttftMs, 376);
+      assert.equal(s.decodeMs, 813);
+      assert.equal(s.predictedMs, 40);
+      assert.equal(s.genTokens, 34);
+    } finally {
+      await db.delete(performanceSamples);
+      await closeDb();
+    }
+  });
+
   it("sin TEST_DATABASE_URL los tests de pg se saltean (CI verde sin DB)", () => {
     // Cuando URL no está, los tests de arriba llevan skip — el archivo queda
     // verde sin Postgres. Cuando está, es una URL postgres válida.

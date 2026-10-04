@@ -11,13 +11,21 @@ export class PostgresTelemetry implements Telemetry {
     this.db = db;
   }
 
+  // Las columnas ms/tokens son bigint: un float del engine (Ollama reporta
+  // decodeMs fraccionario) revienta el insert con invalid input syntax — y
+  // el caller es fire-and-forget, así que el job settleado quedaba sin
+  // sample (bug medido live: settle ok, telemetría perdida).
+  private static int(v: number | undefined): number | null {
+    return v === undefined || !Number.isFinite(v) ? null : Math.round(v);
+  }
+
   async record(s: Sample): Promise<void> {
     await this.db.insert(performanceSamples).values({
       forgeId: s.forgeId,
       model: s.model,
-      ttftMs: s.ttftMs,
+      ttftMs: PostgresTelemetry.int(s.ttftMs) ?? 0,
       ok: s.ok,
-      ts: s.ts,
+      ts: PostgresTelemetry.int(s.ts) ?? Date.now(),
       keyId: s.keyId ?? null,
       payerTx: s.settle?.payerTx ?? null,
       fundTx: s.settle?.fundTx ?? null,
@@ -28,9 +36,9 @@ export class PostgresTelemetry implements Telemetry {
       proofSig: s.proofSig ?? null,
       // spec 015: calibración + stats del engine — in-memory ya las guardaba,
       // pg las dropeaba y la calibración moría solo en prod.
-      predictedMs: s.predictedMs ?? null,
-      genTokens: s.genTokens ?? null,
-      decodeMs: s.decodeMs ?? null,
+      predictedMs: PostgresTelemetry.int(s.predictedMs),
+      genTokens: PostgresTelemetry.int(s.genTokens),
+      decodeMs: PostgresTelemetry.int(s.decodeMs),
     });
   }
 
