@@ -100,6 +100,16 @@
   on-chain verificadas**: facilitator settle `0x897d51fe…` blk 67983128 +
   escrow release `0xa884c2ac…` blk 67983137 ($0.01 op→live2). Machine-payable
   inference loop cerrado en Monad testnet ✓
+- [x] **Mixed fleet live dual-settle** (`SETTLE_CHAIN=dual`, :3501): un mismo
+  gateway settlea por formato de pubkey — `gemma4:e2b` → xlm1 (`G…` ed25519)
+  → release **Stellar** `fc84045e…` ledger 5010975 SUCCESS; `qwen3:4b` →
+  live2 (`0x…` secp256k1) → release **Monad** `0xc27ac5b4…`. Mismo boot,
+  mismo account, dos chains — dispatch por worker, no por env ✓
+- [x] Fix telemetría (c9f4521): floats del engine reventaban insert bigint
+  de pg — jobs settleados quedaban sin sample. Coerce en el store + warn
+  en vez de catch mudo + regresión PGlite. Detectado live.
+- [x] Fix forge CLI: `up --gateway` figuraba en usage pero nunca se aplicaba
+  — conectaba siempre al gateway del `init`.
 - [ ] Submission en Devfolio: video, write-up, repo, links de contratos
 - [ ] Bounty applications (formulario Devfolio): implementación lista — Mera, MetaMask Delegation, Envio, Alchemy
 

@@ -229,6 +229,10 @@ siguiente paso: weaver-forge up`);
   console.log(`forge registrado on-chain — pubkey ${cfg.pubkey.slice(0, 16)}… tx ${tx}`);
 } else if (cmd === "up") {
   const cfg = loadConfig(cfgPath);
+  // --gateway sobreescribe el del config — el flag figuraba en usage pero
+  // nunca se aplicaba (conectaba siempre al gateway del init).
+  const gw = arg("--gateway");
+  if (gw) cfg.gateway = gw;
   const instances = makeInstances(cfg);
   // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
   const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
