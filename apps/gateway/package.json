@@ -21,6 +21,7 @@
     "@weaver/scheduler": "workspace:*",
     "@weaver/settlement": "workspace:*",
     "@weaver/telemetry": "workspace:*",
+    "drizzle-orm": "0.45.2",
     "hono": "^4.0.0",
     "mammoth": "^1.12.3",
     "unpdf": "^1.8.1",
@@ -28,6 +29,7 @@
     "ws": "8.18.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@types/ws": "8.18.1"
   }
 }

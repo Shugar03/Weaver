@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { createApp, type CatalogMeta } from "./index.ts";
+import { PgIndexerStore } from "./indexerstore.ts";
 import { createAgentHost } from "./agent.ts";
 import { Auditor } from "./audit.ts";
 import { FakeForgeExec, FluxKleinForge, OllamaMLXAdapter, ProvenForgeExec, RoutedExec, SwitchableExec, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
@@ -205,6 +206,12 @@ const evmCursor = evmOn
   ? process.env.DATABASE_URL
     ? new PostgresScanCursor(dbFromUrl(process.env.DATABASE_URL), "evm-reconcile")
     : new InMemoryScanCursor()
+  : undefined;
+
+// spec 008: lectura del índice Envio — otra DB (weaver_indexer, el envio
+// escribe donde dice ENVIO_PG_*). Sin env → /v1/network/* 404 honesto.
+const indexerStore = process.env.INDEXER_DATABASE_URL
+  ? new PgIndexerStore(dbFromUrl(process.env.INDEXER_DATABASE_URL))
   : undefined;
 // Los mapas los crea attachForgeWS al levantar el server; antes de eso el
 // registry simplemente no tiene remotos (probeAll/forges los ignoran).
@@ -613,6 +620,7 @@ const app = createApp({
   telemetry,
   node: { version: "0.1.0", startedAt: Date.now() },
   apiKeys,
+  indexerStore,
   // Spec 002: la predicción que el router hizo para (job, forge servido) —
   // el sample la persiste y la calibración se vuelve medible.
   predictedEtrOf: (jobId, forgeId) => jobEtrs.get(jobId)?.get(forgeId),

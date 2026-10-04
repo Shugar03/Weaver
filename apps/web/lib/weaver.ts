@@ -31,6 +31,63 @@ export type ForgeView = {
 
 export type JobsDecision = { forge: string; etr_ms: number; reason: string };
 
+// spec 008 — /v1/network/* (índice Envio). Bigint viaja como string.
+export type NetworkStats = {
+  funded: number;
+  released: number;
+  refunded: number;
+  volumeUsdc: string;
+  depositedUsdc: string;
+  feedbacks: number;
+  indexedAtBlock: number;
+};
+
+export type LeaderboardRow = {
+  worker: string;
+  signer: string;
+  registeredTx: string;
+  registeredAtBlock: number;
+  earnedUsdc: string;
+  completedJobs: number;
+  refundedJobs: number;
+};
+
+export type Reputation = {
+  agentId: string;
+  owner: string | null;
+  agentURI: string | null;
+  count: number;
+  avgScore: number | null; // null honesto si no hay feedbacks válidos
+  feedbacks: {
+    clientAddress: string;
+    feedbackIndex: string;
+    value: string;
+    valueDecimals: number;
+    tag1: string;
+    tag2: string;
+    endpoint: string;
+    feedbackURI: string;
+    feedbackHash: string;
+    txHash: string;
+    blockNumber: string;
+    revoked: boolean;
+  }[];
+};
+
+const getJson = async <T>(url: string): Promise<T | null> => {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    return r.ok ? ((await r.json()) as T) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const getNetworkStats = (base: string) => getJson<NetworkStats>(`${base}/v1/network/stats`);
+export const getLeaderboard = (base: string) => getJson<LeaderboardRow[]>(`${base}/v1/network/leaderboard`);
+export const getReputation = (base: string, agentId: number | string) =>
+  getJson<Reputation>(`${base}/v1/network/reputation?agentId=${agentId}`);
+
 export type RunStatus =
   | "idle"
   | "connecting"

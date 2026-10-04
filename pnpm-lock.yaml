@@ -87,6 +87,9 @@ importers:
       '@weaver/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+      drizzle-orm:
+        specifier: 0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.8)(postgres@3.4.9)
       hono:
         specifier: ^4.0.0
         version: 4.13.7
@@ -103,6 +106,9 @@ importers:
         specifier: 8.18.3
         version: 8.18.3
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: 0.5.8
+        version: 0.5.8
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1

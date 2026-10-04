@@ -92,6 +92,9 @@ type Deps = {
   // S48: metadata declarada por modelo para el marketplace (env MODEL_CATALOG).
   // Solo lo que el operador declara — nada se infiere ni se inventa.
   catalog?: Record<string, CatalogMeta>;
+  // spec 008: lectura del índice Envio (stats/leaderboard/reputation).
+  // Ausente = endpoints /v1/network/* devuelven 404 (indexer no corre).
+  indexerStore?: import("./indexerstore.ts").IndexerStore;
   // ETR predicho que el router computó para (jobId, forgeId) — serve.ts lo
   // llena en el order() de RoutedExec. El sample lo persiste → calibración.
   predictedEtrOf?: (jobId: string, forgeId: string) => number | undefined;
@@ -534,6 +537,69 @@ export function createApp(deps: Deps) {
     if (forgeId) list = list.filter((s) => s.forgeId === forgeId).slice(0, limit);
     return c.json(list);
   });
+
+  // spec 008 — stats/leaderboard/reputation del índice Envio. Datos
+  // on-chain puros: sin indexerStore → 404; sin fila → zeros honestos.
+  // BigInt → string para que el JSON viaje sin pérdida.
+  if (deps.indexerStore) {
+    const store = deps.indexerStore;
+    app.get("/v1/network/stats", async (c) => {
+      const { metric, indexedAtBlock } = await store.stats();
+      return c.json({
+        funded: metric.totalJobsFunded,
+        released: metric.totalJobsReleased,
+        refunded: metric.totalJobsRefunded,
+        volumeUsdc: metric.totalVolumeUsdc.toString(),
+        depositedUsdc: metric.totalDepositedUsdc.toString(),
+        feedbacks: metric.totalFeedbacks,
+        indexedAtBlock,
+      });
+    });
+    app.get("/v1/network/leaderboard", async (c) => {
+      const rows = (await store.forges()).map((f) => ({
+        worker: f.worker,
+        signer: f.signer,
+        registeredTx: f.registeredTx,
+        registeredAtBlock: Number(f.registeredAtBlock),
+        earnedUsdc: f.totalEarnedUsdc.toString(),
+        completedJobs: f.completedJobsCount,
+        refundedJobs: f.refundedJobsCount,
+      }));
+      return c.json(rows);
+    });
+    app.get("/v1/network/reputation", async (c) => {
+      const raw = c.req.query("agentId");
+      if (!raw || !/^\d+$/.test(raw)) return c.json({ error: "agentId inválido", code: "bad_request" }, 400);
+      const agentId = BigInt(raw);
+      const [agent, fbs] = await Promise.all([store.agent(agentId), store.feedbacks(agentId)]);
+      const valid = fbs.filter((f) => !f.revoked);
+      const avgScore =
+        valid.length === 0
+          ? null
+          : Math.round((valid.reduce((a, f) => a + Number(f.value) / 10 ** f.valueDecimals, 0) / valid.length) * 100) / 100;
+      return c.json({
+        agentId: agentId.toString(),
+        owner: agent?.owner ?? null,
+        agentURI: agent?.agentURI ?? null,
+        count: fbs.length,
+        avgScore,
+        feedbacks: fbs.map((f) => ({
+          clientAddress: f.clientAddress,
+          feedbackIndex: f.feedbackIndex.toString(),
+          value: f.value.toString(),
+          valueDecimals: f.valueDecimals,
+          tag1: f.tag1,
+          tag2: f.tag2,
+          endpoint: f.endpoint,
+          feedbackURI: f.feedbackURI,
+          feedbackHash: f.feedbackHash,
+          txHash: f.txHash,
+          blockNumber: f.blockNumber.toString(),
+          revoked: f.revoked,
+        })),
+      });
+    });
+  }
 
   // S17a: metering por key (o nodo). spent = ok × $0.01 (JOB_PRICE_USDC).
   app.get("/v1/usage", async (c) => {

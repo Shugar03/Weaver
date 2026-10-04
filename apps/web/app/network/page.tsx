@@ -1,6 +1,8 @@
 import { Pipeline } from "../../components/network/Pipeline";
 import { SettleFeed } from "../../components/network/SettleFeed";
 import { LedgerFeed } from "../../components/network/LedgerFeed";
+import { StatsStrip } from "../../components/network/StatsStrip";
+import { Leaderboard } from "../../components/network/Leaderboard";
 import { ProofSection } from "../../components/ProofSection";
 import { SectionHead } from "../../components/SectionHead";
 import { SiteHeader } from "../../components/SiteHeader";
@@ -56,6 +58,10 @@ export default async function NetworkPage() {
             </p>
           </div>
 
+          {/* spec 008 — contadores del protocolo indexados por Envio (solo
+              si el indexer corre; sin /v1/network/stats la tira no sale) */}
+          <StatsStrip base={GATEWAY} />
+
           <Pipeline base={GATEWAY} initialForges={forges} lastTx={lastTx} />
 
           {/* 04 — SETTLE */}
@@ -67,6 +73,7 @@ export default async function NetworkPage() {
             />
             <ProofSection deployment={deployment} />
             <SettleFeed base={GATEWAY} />
+            <Leaderboard base={GATEWAY} />
           </section>
 
           {/* 05 — LEDGER */}
