@@ -28,6 +28,12 @@ Tres niveles distintos, que NO hay que confundir:
 
 - **Implementado:** nivel 1 + el adapter OpenAI-compatible que habilita
   nivel 2 vía software externo (vLLM tensor-parallel, llama.cpp RPC server).
+- **Verificado live (nivel 2):** `ggml-rpc-server` ×2 + `llama-server
+  --rpc host1,host2 --split-mode layer` sirviendo qwen3-4b Q4_K_M con capas
+  repartidas entre dos procesos. `OpenAICompatAdapter` lo sirvió como UN
+  forge (probe/resident/exec 1.1s reales). Prueba de distribución real:
+  matar un worker crasheó el front — el cómputo estaba delegado, no
+  replicado. En LAN los workers son máquinas distintas con el mismo binario.
 - **Especificado acá:** nivel 3 (stage federation). No implementado — la
   honestidad exige decirlo: el pitch no puede vender "GPUs de desconocidos
   combinadas" hasta que este ADR tenga código detrás.
