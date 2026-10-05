@@ -21,7 +21,7 @@ export function ProofChip({
 }: {
   proof: WeaverProof;
   output: string;
-  input?: { model: string; messages: CanonicalMessage[] };
+  input?: { model: string; messages: CanonicalMessage[]; resume?: string };
   base: string;
 }) {
   const [verdict, setVerdict] = useState<Verdict>("checking");
@@ -32,7 +32,10 @@ export function ProofChip({
     void (async () => {
       // 1) El hash ata el receipt al texto servido — si no matchea, el
       //    receipt no es de ESTE output (o el stream fue alterado).
-      const digest = await sha256hex(output);
+      //    Con resume mid-stream, el proof ata solo el SUFIJO que generó
+      //    el forge que completó (el prefijo vive atado en el promptHash).
+      const served = input?.resume !== undefined ? output.slice(input.resume.length) : output;
+      const digest = await sha256hex(served);
       // Commitment era: resultHash = sha256(promptHash‖outputHash). Legacy:
       // resultHash era el output hash directo. Se soportan ambos.
       const committed = Boolean(proof.promptHash && proof.outputHash);

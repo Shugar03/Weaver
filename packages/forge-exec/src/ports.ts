@@ -55,11 +55,18 @@ export type ExecRequest = {
   options?: ExecOptions;
   // Tools OpenAI-shaped, verbatim al engine (el puerto no conoce el schema).
   tools?: unknown[];
+  // Mid-stream resume (S45): otro forge ya emitió `prefix` de contenido
+  // visible y murió. El adapter continúa DESDE ese texto — el proof ata
+  // solo el sufijo que ESTE forge generó + el prefijo en el promptHash.
+  resume?: { prefix: string };
   onForge?: (forgeId: string) => void;
   // S27: un forge intentó y falló (pre-token o mid-stream). Alimenta el
   // circuit breaker del gateway — telemetría por request no ve intentos
   // absorbidos por failover, así que el dato tiene que nacer acá.
   onFail?: (forgeId: string) => void;
+  // Resume mid-stream efectivo: otro forge tomó con prefijo. `prefixChars`
+  // = chars de contenido ya emitidos (boundary para verificación cliente).
+  onResume?: (forgeId: string, prefixChars: number) => void;
   onProof?: (proof: Proof) => void;
   // signal: cancelación del cliente (se fue mid-stream). Los adapters que hacen
   // red real la propagan a su fetch; si aborta, NO es falla del forge ni retry.

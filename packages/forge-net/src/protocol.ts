@@ -74,6 +74,10 @@ export type JobAssignMsg = {
   messages?: { role: string; content: string; tool_calls?: unknown; name?: string }[];
   options?: ExecOptions;
   tools?: unknown[];
+  // Mid-stream resume: prefijo visible ya servido por un forge que murió —
+  // el daemon lo pasa al exec para continuar desde ahí, y entra al
+  // promptHash canónico (el proof ata "continuó desde este texto").
+  resume?: { prefix: string };
 };
 export type ImageAssignMsg = {
   type: "image.assign";

@@ -1,5 +1,7 @@
-// S3 — gateway sobrevive a forge muerto vía FailoverForgeExec.
-// Mid-stream → evento error explícito, SIN [DONE] (nada de truncar en silencio).
+// S3/S45 — gateway sobrevive a forge muerto vía FailoverForgeExec.
+// Pre-token → salta al siguiente. Mid-stream → el siguiente RESUME desde el
+// prefijo ya emitido (frame weaver_route con resumedPrefixLen). Sin sucesor
+// vivo → evento error explícito, SIN [DONE] (nada de truncar en silencio).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/index.ts";
@@ -53,8 +55,30 @@ describe("S3 gateway failover", () => {
     assert.ok(text.includes("[DONE]"));
   });
 
-  it("muerte mid-stream → evento error y sin [DONE]", async () => {
+  it("muerte mid-stream → el sucesor RESUME el stream (prefijo + weaver_route)", async () => {
     const app = createApp({ forges, exec: new FailoverForgeExec([new FlakyExec(), new OkExec()]) });
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: chatBody,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    // El stream sobrevive: prefijo del muerto + sufijo del que retomó + DONE.
+    assert.ok(text.includes("parcial"), "el prefijo del forge muerto sigue servido");
+    assert.ok(text.includes("ok-secondary"), "el sucesor continuó el stream");
+    assert.ok(text.includes("[DONE]"), "el stream cierra completo tras resume");
+    // Frame meta mid-stream: resumedPrefixLen marca el boundary del sufijo firmado.
+    const route = text.match(/data: (\{"weaver_route":[^\n]*\})/);
+    assert.ok(route, "falta el frame weaver_route del resume");
+    const j = JSON.parse(route![1]) as { weaver_route: { failed: string[]; serving: string; resumedPrefixLen?: number } };
+    assert.deepEqual(j.weaver_route.failed, ["flaky"]);
+    assert.equal(j.weaver_route.serving, "ok");
+    assert.equal(j.weaver_route.resumedPrefixLen, "parcial".length);
+  });
+
+  it("muerte mid-stream SIN sucesor → evento error y sin [DONE]", async () => {
+    const app = createApp({ forges: () => [forges()[0]], exec: new FailoverForgeExec([new FlakyExec()]) });
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },

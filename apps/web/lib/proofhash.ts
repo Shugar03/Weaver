@@ -9,9 +9,16 @@ const sha256hex = async (data: string | Uint8Array) => {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-export function promptHashInput(input: { model: string; prompt?: string; messages?: CanonicalMessage[] }): Promise<string> {
+export function promptHashInput(input: {
+  model: string;
+  prompt?: string;
+  messages?: CanonicalMessage[];
+  resume?: string; // prefijo servido por un forge que murió mid-stream (S45)
+}): Promise<string> {
   const messages = input.messages ?? [{ role: "user", content: input.prompt ?? "" }];
-  return sha256hex(JSON.stringify({ model: input.model, messages }));
+  return sha256hex(
+    JSON.stringify({ model: input.model, messages, ...(input.resume !== undefined ? { resume: input.resume } : {}) }),
+  );
 }
 
 const hexToBytes = (hex: string) => new Uint8Array(hex.match(/../g)!.map((b) => parseInt(b, 16)));

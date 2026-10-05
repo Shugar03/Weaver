@@ -35,7 +35,12 @@ export class ProvenForgeExec implements ForgeExec {
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     // El input se hashea ANTES de iterar: el commitment ata al request
     // despachado, no al que el forge quiera declarar después.
-    const promptHash = promptHashOf({ model: req.model, prompt: req.prompt, ...(req.messages ? { messages: req.messages } : {}) });
+    const promptHash = promptHashOf({
+      model: req.model,
+      prompt: req.prompt,
+      ...(req.messages ? { messages: req.messages } : {}),
+      ...(req.resume ? { resume: req.resume.prefix } : {}),
+    });
     const hasher = createHash("sha256");
     // El proof lo emite ESTE wrapper (firmado) — se suprime el del inner para que
     // un FakeForgeExec dentro no reporte dos recibos del mismo output.

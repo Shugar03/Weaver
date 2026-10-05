@@ -198,7 +198,12 @@ export class ForgeDaemon {
     // Commitment input+output (proofhash.ts): el hash del prompt es sobre lo
     // que ESTE assign trajo — el gateway lo recomputa y compara, así que el
     // forge no puede reclamar que le llegó otro input.
-    const promptHash = promptHashOf({ model: m.model, prompt: m.prompt, ...(m.messages ? { messages: m.messages } : {}) });
+    const promptHash = promptHashOf({
+      model: m.model,
+      prompt: m.prompt,
+      ...(m.messages ? { messages: m.messages } : {}),
+      ...(m.resume ? { resume: m.resume.prefix } : {}),
+    });
     const hasher = createHash("sha256");
     let midStream = false;
     try {
@@ -209,6 +214,7 @@ export class ForgeDaemon {
         ...(m.messages ? { messages: m.messages } : {}),
         ...(m.options ? { options: m.options } : {}),
         ...(m.tools ? { tools: m.tools } : {}),
+        ...(m.resume ? { resume: m.resume } : {}),
       })) {
         if (!c.done) {
           midStream = true;

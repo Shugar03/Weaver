@@ -14,9 +14,18 @@ import { createHash } from "node:crypto";
 
 export type CanonicalMessage = { role: string; content: string; tool_calls?: unknown; name?: string };
 
-export function promptHashOf(input: { model: string; prompt: string; messages?: CanonicalMessage[] }): Buffer {
+export function promptHashOf(input: {
+  model: string;
+  prompt: string;
+  messages?: CanonicalMessage[];
+  resume?: string; // prefijo visible ya servido por otro forge (mid-stream resume)
+}): Buffer {
   const messages = input.messages ?? [{ role: "user", content: input.prompt }];
-  return createHash("sha256").update(JSON.stringify({ model: input.model, messages }), "utf8").digest();
+  // resume viaja en el canónico: el commitment ata también "continuó DESDE
+  // este prefijo" — nadie puede sustituir qué texto se continuó.
+  return createHash("sha256")
+    .update(JSON.stringify({ model: input.model, messages, ...(input.resume !== undefined ? { resume: input.resume } : {}) }), "utf8")
+    .digest();
 }
 
 export function commitProof(promptHash: Buffer, outputHash: Buffer): Buffer {

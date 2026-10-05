@@ -635,12 +635,16 @@ export function ChatApp({ base }: { base: string }) {
                     )}
                     {m.route && (
                       <>
-                        {"  "}FAILOVER{" "}
+                        {"  "}
+                        {m.route.resumedPrefixLen !== undefined ? "RESUMED" : "FAILOVER"}{" "}
                         <span className="text-danger">
                           {m.route.failed.join(", ")}
                         </span>
                         {" → "}
                         <span className="text-lima">{m.route.serving ?? "?"}</span>
+                        {m.route.resumedPrefixLen !== undefined && (
+                          <span className="text-fog"> @{m.route.resumedPrefixLen}ch</span>
+                        )}
                       </>
                     )}
                   </div>

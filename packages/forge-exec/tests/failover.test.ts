@@ -1,6 +1,7 @@
-// S3 — FailoverForgeExec: failover en dispatch (<500ms), error explícito mid-stream.
+// S3 — FailoverForgeExec: failover en dispatch (<500ms) + resume mid-stream.
 // Contrato: primario muerto ANTES del primer token → se prueba el siguiente.
-// Muerto DESPUÉS → se propaga (reintentar duplicaría tokens ya enviados).
+// Muerto DESPUÉS → el siguiente continúa DESDE el prefijo ya emitido (S45).
+// Sin sucesor vivo → el error propaga explícito, jamás [DONE] trucho.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { FailoverForgeExec } from "../src/failover.ts";
@@ -52,10 +53,70 @@ describe("S3 failover dispatch", () => {
   });
 });
 
-describe("S3 mid-stream explícito", () => {
-  it("muerte a mitad → propaga error, no trunca en silencio", async () => {
+describe("S45 resume mid-stream", () => {
+  it("muerte a mitad → el siguiente continúa con resume.prefix, no trunca", async () => {
     const f = new FailoverForgeExec([new FlakyExec(), new OkExec()]);
+    assert.equal(await collect(f), "parcialok-secondary");
+  });
+
+  it("el sucesor recibe req.resume con el prefijo visible ya emitido", async () => {
+    let seenResume: { prefix: string } | undefined;
+    class Continues extends OkExec {
+      override async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+        seenResume = req.resume;
+        yield* super.execute(req);
+      }
+    }
+    const f = new FailoverForgeExec([new FlakyExec(), new Continues()]);
+    await collect(f);
+    assert.deepEqual(seenResume, { prefix: "parcial" });
+  });
+
+  it("onResume reporta el forge que retomó y el boundary en chars", async () => {
+    const resumed: [string, number][] = [];
+    const f = new FailoverForgeExec([new FlakyExec(), new OkExec()]);
+    for await (const _ of f.execute({
+      jobId: "j", model: "m", prompt: "h",
+      onResume: (id, n) => resumed.push([id, n]),
+    })) void _;
+    assert.deepEqual(resumed, [["ok", "parcial".length]]);
+  });
+
+  it("tokens think del forge muerto NO entran al prefijo de resume", async () => {
+    class ThinksDies implements ForgeExec {
+      readonly forgeId = "thinkdie";
+      readonly model = "m";
+      async *execute(): AsyncIterable<StreamChunk> {
+        yield { token: "razonó", done: false, kind: "think" };
+        yield { token: "vis", done: false, kind: "content" };
+        throw new Error("murió tras pensar");
+      }
+    }
+    let seenResume: { prefix: string } | undefined;
+    class Continues extends OkExec {
+      override async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+        seenResume = req.resume;
+        yield* super.execute(req);
+      }
+    }
+    const f = new FailoverForgeExec([new ThinksDies(), new Continues()]);
+    const out = await collect(f);
+    assert.equal(out, "razonóvisok-secondary");
+    assert.deepEqual(seenResume, { prefix: "vis" });
+  });
+
+  it("muerte a mitad SIN sucesor → propaga error, no silencio", async () => {
+    const f = new FailoverForgeExec([new FlakyExec()]);
     await assert.rejects(collect(f), /mitad/);
+  });
+
+  it("dos muertes seguidas → el tercero resume con el prefijo acumulado", async () => {
+    class AlsoFlaky extends FlakyExec {
+      override readonly forgeId = "flaky2";
+    }
+    const f = new FailoverForgeExec([new FlakyExec(), new AlsoFlaky(), new OkExec()]);
+    // flaky: "parcial" + muere → flaky2: "parcial" + muere → ok resume.
+    assert.equal(await collect(f), "parcialparcialok-secondary");
   });
 });
 
@@ -136,9 +197,9 @@ describe("S27 onFail — el breaker ve cada intento fallido", () => {
     assert.deepEqual(served, ["ok"]);
   });
 
-  it("muerte mid-stream → onFail del forge que moría + error propaga", async () => {
+  it("muerte mid-stream sin sucesor → onFail del forge que moría + error propaga", async () => {
     const failed: string[] = [];
-    const f = new FailoverForgeExec([new FlakyExec(), new OkExec()]);
+    const f = new FailoverForgeExec([new FlakyExec()]);
     await assert.rejects(async () => {
       for await (const _ of f.execute({
         jobId: "j",
@@ -147,6 +208,20 @@ describe("S27 onFail — el breaker ve cada intento fallido", () => {
         onFail: (id) => failed.push(id),
       })) void _;
     }, /mitad/);
+    assert.deepEqual(failed, ["flaky"]);
+  });
+
+  it("muerte mid-stream con sucesor → onFail del muerto + el stream sobrevive", async () => {
+    const failed: string[] = [];
+    const f = new FailoverForgeExec([new FlakyExec(), new OkExec()]);
+    let out = "";
+    for await (const c of f.execute({
+      jobId: "j",
+      model: "m",
+      prompt: "h",
+      onFail: (id) => failed.push(id),
+    })) out += c.token;
+    assert.equal(out, "parcialok-secondary");
     assert.deepEqual(failed, ["flaky"]);
   });
 

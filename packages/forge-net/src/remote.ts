@@ -141,9 +141,13 @@ export class RemoteForgeExec implements ForgeExec {
           const declared = Buffer.from(m.resultHash, "hex");
           const servedOut = served.digest();
           const proofOk = m.promptHash
-            ? promptHashOf({ model: req.model, prompt: req.prompt, ...(req.messages ? { messages: req.messages } : {}) }).equals(
-                  Buffer.from(m.promptHash, "hex"),
-                ) && commitProof(Buffer.from(m.promptHash, "hex"), servedOut).equals(declared)
+            ? promptHashOf({
+                  model: req.model,
+                  prompt: req.prompt,
+                  ...(req.messages ? { messages: req.messages } : {}),
+                  ...(req.resume ? { resume: req.resume.prefix } : {}),
+                }).equals(Buffer.from(m.promptHash, "hex")) &&
+              commitProof(Buffer.from(m.promptHash, "hex"), servedOut).equals(declared)
             : servedOut.equals(declared);
           if (!proofOk) {
             fail(new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al input/output servido`));
@@ -189,6 +193,7 @@ export class RemoteForgeExec implements ForgeExec {
         ...(req.messages ? { messages: req.messages } : {}),
         ...(req.options ? { options: req.options } : {}),
         ...(req.tools ? { tools: req.tools } : {}),
+        ...(req.resume ? { resume: req.resume } : {}),
       });
       await withTimeout(ack, this.ackTimeoutMs, `forge ${this.forgeId}: assign sin ack`);
       let first = true;

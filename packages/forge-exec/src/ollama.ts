@@ -76,7 +76,14 @@ export class OllamaMLXAdapter implements ForgeExec {
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
     // messages verbatim si el cliente los mandó (system/roles intactos);
     // si no, el prompt como un solo user message (camino histórico).
-    const messages = req.messages?.length ? req.messages : [{ role: "user", content: req.prompt }];
+    let messages = req.messages?.length ? req.messages : [{ role: "user", content: req.prompt }];
+    // Mid-stream resume: el forge que murió ya emitió `prefix` — se cuelga
+    // como mensaje assistant y el modelo continúa DESDE ese texto. El proof
+    // ata solo el sufijo que genera ESTE forge (el prefijo vive en el
+    // promptHash canónico, no en el outputHash).
+    if (req.resume?.prefix) {
+      messages = [...messages, { role: "assistant", content: req.resume.prefix }];
+    }
     const o = req.options;
     const res = await this.fetchFn(`${this.baseUrl}/api/chat`, {
       method: "POST",

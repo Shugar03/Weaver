@@ -89,35 +89,52 @@ export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
   return channel;
 }
 
-// Loop de servicio: conecta → daemon corre → si el socket muere, backoff y
-// re-auth (nonce nuevo). cancel() para shutdown limpio.
+// Backoff exponencial con jitter: 1s→2s→4s… cap 30s, ±50% random.
+// Conexión que vivió >30s no cuenta como falla — un drop de una sesión
+// sana resetea el contador (reconecta rápido); un gateway muerto o auth
+// rechazado escala hasta el cap (sin martillar).
+export function nextBackoff(failures: number, rand: () => number = Math.random): number {
+  const base = Math.min(30_000, 1000 * 2 ** Math.min(failures, 5));
+  return Math.round(base * (0.5 + rand()));
+}
+
 export function connectLoop(
   cfg: ForgeConfig,
   makeDaemon: (channel: DaemonChannel) => { start(): void; stop(): void },
   log: (msg: string) => void = console.log,
+  deps: { connect?: typeof connect; rand?: () => number } = {},
 ): { cancel(): void } {
+  const connectFn = deps.connect ?? connect;
+  const rand = deps.rand ?? Math.random;
   let cancelled = false;
   let current: { stop(): void } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let failures = 0;
 
   const run = async () => {
     while (!cancelled) {
       try {
-        const channel = await connect(cfg);
+        const channel = await connectFn(cfg);
         log(`forge conectado a ${cfg.gateway} como ${cfg.pubkey.slice(0, 12)}…`);
         const d = makeDaemon(channel);
         current = d;
         d.start();
+        const connectedAt = Date.now();
         await new Promise<void>((res) => channel.onClose(res));
         d.stop();
         current = null;
-        if (!cancelled) log("conexión perdida — reintentando en 3s");
+        // Sesión sana que cayó ≠ flapping: reset. Una que murió al toque
+        // (auth ok + close inmediato, p.ej. kill-chaos) sí escala.
+        failures = Date.now() - connectedAt > 30_000 ? 0 : failures + 1;
+        if (!cancelled) log(`conexión perdida — reintento #${failures}`);
       } catch (e) {
-        if (!cancelled) log(`connect falló: ${e instanceof Error ? e.message : e} — reintentando en 3s`);
+        failures++;
+        if (!cancelled) log(`connect falló: ${e instanceof Error ? e.message : e} — reintento #${failures}`);
       }
       if (!cancelled) {
+        const wait = nextBackoff(failures, rand);
         await new Promise<void>((r) => {
-          timer = setTimeout(r, 3_000);
+          timer = setTimeout(r, wait);
         });
       }
     }

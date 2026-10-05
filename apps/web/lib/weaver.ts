@@ -207,7 +207,13 @@ type RawToolCall = {
   function?: { name?: string; arguments?: string };
 };
 
-export type WeaverRoute = { failed: string[]; serving: string | null };
+export type WeaverRoute = {
+  failed: string[];
+  serving: string | null;
+  // S45: resume mid-stream — chars de contenido ya emitidos cuando el nuevo
+  // forge tomó. El proof del que completó ata solo el sufijo desde acá.
+  resumedPrefixLen?: number;
+};
 
 type StreamEvent =
   | { type: "delta"; delta: ChatDelta }
@@ -299,8 +305,13 @@ export type RunCallbacks = {
     proof?: WeaverProof;
     route?: WeaverRoute;
     // input del request servido (snapshot del último hop) — el chip lo usa
-    // para recomputar promptHash del commitment.
-    input?: { model: string; messages: { role: string; content: string; tool_calls?: unknown; name?: string }[] };
+    // para recomputar promptHash del commitment. `resume`: prefijo servido
+    // por un forge que murió mid-stream — el proof ata solo el sufijo.
+    input?: {
+      model: string;
+      messages: { role: string; content: string; tool_calls?: unknown; name?: string }[];
+      resume?: string;
+    };
   }) => void;
   onError: (msg: string) => void;
 };
@@ -316,6 +327,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
   let text = "";
   let proof: WeaverProof | undefined;
   let route: WeaverRoute | undefined; // spec 014: último failover reportado
+  let resumePrefix: string | undefined; // S45: prefijo servido por el forge muerto
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -344,6 +356,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
         }
       } else if (ev.type === "route") {
         route = ev.route;
+        if (ev.route.resumedPrefixLen !== undefined) resumePrefix = text.slice(0, ev.route.resumedPrefixLen);
         cb.onRoute?.(ev.route);
       } else if (ev.type === "proof") {
         proof = ev.proof;
@@ -359,7 +372,11 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
       reason: decision?.reason ?? "sin-decisión",
       ...(proof ? { proof } : {}),
       ...(route ? { route } : {}),
-      input: { model, messages: [{ role: "user", content: prompt }] },
+      input: {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        ...(resumePrefix !== undefined ? { resume: resumePrefix } : {}),
+      },
     });
     return;
   } catch (e) {
@@ -656,7 +673,13 @@ export async function runAgent(
   // spec 014: el failover de cada hop se reporta en vivo (cb.onRoute); el del
   // último hop queda en la meta para el badge persistente del mensaje.
   let route: WeaverRoute | undefined;
-  let lastInput: { model: string; messages: { role: string; content: string; tool_calls?: unknown; name?: string }[] } | undefined;
+  let lastInput:
+    | {
+        model: string;
+        messages: { role: string; content: string; tool_calls?: unknown; name?: string }[];
+        resume?: string;
+      }
+    | undefined;
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -664,6 +687,7 @@ export async function runAgent(
     for (let hop = 0; hop < maxHops; hop++) {
       let finish = "stop";
       const calls: ToolCall[] = [];
+      let hopText = ""; // contenido del hop — boundary del resume mid-stream
       // El proof ata el input DESPACHADO — snapshot por hop: el último
       // request servido es el que quedó firmado (msgs muta post-tool).
       lastInput = { model, messages: [...msgs] };
@@ -689,6 +713,7 @@ export async function runAgent(
               first = performance.now();
               cb.onStatus("streaming");
             }
+            hopText += content;
             cb.onToken(content);
           }
           for (const tc of tool_calls ?? []) {
@@ -708,6 +733,12 @@ export async function runAgent(
           if (u?.prompt_tokens !== undefined) cb.onUsage?.(u.prompt_tokens, u.completion_tokens ?? 0);
         } else if (ev.type === "route") {
           route = ev.route;
+          // S45: resume mid-stream — el proof ata solo el sufijo; el chip
+          // necesita el prefijo (texto ya emitido al boundary) para el
+          // promptHash canónico.
+          if (ev.route.resumedPrefixLen !== undefined) {
+            lastInput = { ...lastInput!, resume: hopText.slice(0, ev.route.resumedPrefixLen) };
+          }
           cb.onRoute?.(ev.route);
         } else if (ev.type === "proof") {
           proof = ev.proof;

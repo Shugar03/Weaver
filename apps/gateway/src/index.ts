@@ -1011,6 +1011,9 @@ export function createApp(deps: Deps) {
     // spec 014: intentos fallidos pre-token — el failover se reporta al
     // cliente (weaver_route) en vez de quedar invisible. Solo ids reales.
     const failedForges: string[] = [];
+    // S45: si hubo resume mid-stream, el boundary en chars — el proof ata
+    // solo el sufijo; el cliente lo necesita para verificar input+output.
+    let resumedPrefixLen: number | undefined;
     // S28: stats del frame done → el sample lleva genTokens/decodeMs medidos.
     let lastStats: ExecStats | null = null;
     // S23: el forge firma su output (Proof L0) — el contrato lo exige en release.
@@ -1177,6 +1180,9 @@ export function createApp(deps: Deps) {
             failedForges.push(fid);
             deps.breaker?.fail(fid);
           },
+          onResume: (_fid, prefixChars) => {
+            resumedPrefixLen = prefixChars;
+          },
           onProof: (p) => {
             proof = p;
           },
@@ -1208,9 +1214,16 @@ export function createApp(deps: Deps) {
             { index: 0, message: { role: "assistant", content }, finish_reason: "stop" },
           ],
           ...usage,
-          // spec 014: el failover también es visible en el response bufferizado.
+          // spec 014/S45: el failover también es visible en el response
+          // bufferizado — resumedPrefixLen marca dónde empieza el sufijo firmado.
           ...(failedForges.length
-            ? { weaver_route: { failed: failedForges, serving: servedForgeId } }
+            ? {
+                weaver_route: {
+                  failed: failedForges,
+                  serving: servedForgeId,
+                  ...(resumedPrefixLen !== undefined ? { resumedPrefixLen } : {}),
+                },
+              }
             : {}),
           ...receipt(),
         });
@@ -1260,6 +1273,15 @@ export function createApp(deps: Deps) {
             onFail: (fid) => {
               failedForges.push(fid);
               deps.breaker?.fail(fid); // intento fallido (pre-token o mid-stream)
+            },
+            // S45: resume mid-stream — el forge nuevo tomó con prefijo ya
+            // emitido. Frame meta AHORA (no al primer token): el cliente ve
+            // "murió X → retomó Y desde N chars" y el chip sabe dónde empieza
+            // el sufijo que firmó este forge.
+            onResume: (fid, prefixChars) => {
+              send(
+                `data: ${JSON.stringify({ weaver_route: { failed: [...failedForges], serving: fid, resumedPrefixLen: prefixChars } })}\n\n`,
+              );
             },
             onProof: (p) => {
               proof = p;
