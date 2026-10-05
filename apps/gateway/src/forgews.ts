@@ -68,7 +68,9 @@ export function attachForgeWS(
   server: Server,
   deps: { registry: ForgeRegistry; nonces: NonceStore; verify: VerifyFn },
 ): ForgeWS {
-  const wss = new WebSocketServer({ noServer: true });
+  // maxPayload 1MiB: chunks/done son KBs — un frame gigante de un daemon
+  // malicioso no puede inflar memoria del gateway (default ws = 100MiB).
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const sessions = new Map<string, ForgeSession>();
   const sockets = new Map<ForgeSession, WebSocket>();
   const remoteExecs = new Map<string, ForgeExec>();

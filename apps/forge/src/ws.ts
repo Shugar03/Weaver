@@ -69,7 +69,9 @@ export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
   const { nonce } = (await ch.json()) as { nonce: string };
 
   const wsUrl = `${urls.ws}/v1/forge/ws`;
-  const ws = new WebSocket(wsUrl);
+  // maxPayload 8MiB: un assign puede llevar contexto largo, pero un gateway
+  // malicioso no puede DoSear el daemon con frames infinitos (default 100MiB).
+  const ws = new WebSocket(wsUrl, { maxPayload: 8 * 1024 * 1024 });
   await new Promise<void>((res, rej) => {
     ws.once("open", res);
     ws.once("error", rej);

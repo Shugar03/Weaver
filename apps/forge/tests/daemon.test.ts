@@ -200,6 +200,31 @@ test("job.cancel → el exec en vuelo recibe el abort (GPU liberada)", async () 
   d.stop();
 });
 
+test("job.assign con jobId en vuelo → job.fail (no pisa el AbortController)", async () => {
+  // Sin el guard, un segundo assign con el mismo jobId reemplazaba el entry
+  // del running map: un job.cancel posterior solo abortaba el segundo job.
+  let resolveBlock!: () => void;
+  const block = new Promise<void>((r) => (resolveBlock = r));
+  class Slow extends FakeForgeExec {
+    override async *execute(): AsyncIterable<import("@weaver/forge-exec").StreamChunk> {
+      yield { token: "t1", done: false };
+      await block;
+      yield { token: "", done: true };
+    }
+  }
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({ channel: ch, instances: [inst(new Slow({ forgeId: "gpu0", model: "m" }))], sign });
+  d.start();
+  ch.inject({ type: "job.assign", jobId: "jDUP", instanceId: "gpu0", model: "m", prompt: "p" });
+  await new Promise((r) => setTimeout(r, 30));
+  ch.inject({ type: "job.assign", jobId: "jDUP", instanceId: "gpu0", model: "m", prompt: "p2" });
+  await new Promise((r) => setTimeout(r, 30));
+  const fail = ch.sent.filter((m) => m.type === "job.fail").at(-1)!;
+  assert.match("error" in fail ? fail.error : "", /ya en vuelo/);
+  resolveBlock();
+  d.stop();
+});
+
 test("job.assign a instanceId desconocido → job.fail (no cuelga el gateway)", async () => {
   const ch = new FakeChannel();
   const d = new ForgeDaemon({ channel: ch, instances: [inst(new FakeForgeExec({ forgeId: "gpu0" }))], sign });

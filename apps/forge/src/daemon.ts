@@ -199,6 +199,11 @@ export class ForgeDaemon {
     if (!i || i.capability !== "text") {
       return this.fail(m.jobId, `instance ${m.instanceId} desconocida o no-text`, false);
     }
+    // jobId duplicado pisaría el AbortController del job en vuelo — un
+    // job.cancel llegaría solo al segundo y el primero quedaría incancelable.
+    if (this.running.has(m.jobId)) {
+      return this.fail(m.jobId, `jobId ${m.jobId} ya en vuelo`, false);
+    }
     this.channel.send({ type: "job.ack", jobId: m.jobId });
     // Commitment input+output (proofhash.ts): el hash del prompt es sobre lo
     // que ESTE assign trajo — el gateway lo recomputa y compara, así que el
