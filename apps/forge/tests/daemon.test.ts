@@ -172,6 +172,34 @@ test("job.assign con resume → el exec recibe el prefijo y el promptHash lo ata
   d.stop();
 });
 
+test("job.cancel → el exec en vuelo recibe el abort (GPU liberada)", async () => {
+  // Sin este wire, un cliente que se va dejaba al forge terminando el job en
+  // vacío. El daemon expone AbortController por jobId → req.signal aborta.
+  let aborted = false;
+  let resolveBlock!: () => void;
+  const block = new Promise<void>((r) => (resolveBlock = r));
+  class Slow extends FakeForgeExec {
+    override async *execute(r: import("@weaver/forge-exec").ExecRequest): AsyncIterable<import("@weaver/forge-exec").StreamChunk> {
+      yield { token: "t1", done: false };
+      await block; // queda colgado hasta el cancel
+      aborted = r.signal?.aborted ?? false;
+      yield { token: "nunca", done: false };
+    }
+  }
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({ channel: ch, instances: [inst(new Slow({ forgeId: "gpu0", model: "m" }))], sign });
+  d.start();
+  ch.inject({ type: "job.assign", jobId: "jC", instanceId: "gpu0", model: "m", prompt: "p" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(ch.last("job.chunk")); // el job está en vuelo
+  ch.inject({ type: "job.cancel", jobId: "jC" });
+  await new Promise((r) => setTimeout(r, 10));
+  resolveBlock();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(aborted, true, "req.signal debe estar abortado post job.cancel");
+  d.stop();
+});
+
 test("job.assign a instanceId desconocido → job.fail (no cuelga el gateway)", async () => {
   const ch = new FakeChannel();
   const d = new ForgeDaemon({ channel: ch, instances: [inst(new FakeForgeExec({ forgeId: "gpu0" }))], sign });

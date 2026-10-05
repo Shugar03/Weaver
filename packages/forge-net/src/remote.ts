@@ -181,6 +181,7 @@ export class RemoteForgeExec implements ForgeExec {
           break;
         }
         case "job.fail":
+          completed = true; // el job terminó — no mandar job.cancel al salir
           fail(new Error(m.error));
           break;
         default:
@@ -192,6 +193,10 @@ export class RemoteForgeExec implements ForgeExec {
       ackReject(e);
       if (!queue.some((c) => "err" in c || c.done)) fail(e);
     });
+    // Abort del cliente (req.signal): corta el stream local — el finally
+    // manda job.cancel al daemon para liberar la GPU del forge.
+    const onAbort = () => fail(new Error("abortado por el cliente"));
+    req.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       this.channel.send({
         type: "job.assign",
@@ -226,10 +231,19 @@ export class RemoteForgeExec implements ForgeExec {
         if (c.done) return;
       }
     } finally {
+      // Consumidor abortó con job vivo (cliente se fue mid-stream): avisamos
+      // al daemon para que corte el cómputo — antes el forge terminaba el job
+      // en vacío quemando GPU que nadie iba a pagar.
+      if (!completed && this.channel.isAlive()) {
+        try {
+          this.channel.send({ type: "job.cancel", jobId });
+        } catch {
+          /* canal muriendo — el daemon lo nota por su lado */
+        }
+      }
       un();
       unClose();
-      // Job cancelado por el consumidor (break): queda unsubscripted — el
-      // daemon termina el job en vacío. Sin job.cancel en v1 (declarado).
+      req.signal?.removeEventListener("abort", onAbort);
     }
   }
 }

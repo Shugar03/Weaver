@@ -359,6 +359,63 @@ describe("S31 RemoteForgeExec", () => {
     assert.equal(proof, null);
   });
 
+  it("consumidor aborta mid-stream → job.cancel viaja al daemon (no GPU en vacío)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "parcial" });
+      // nunca llega job.done — el consumidor corta acá
+    }, 10);
+    for await (const _ of it) break; // aborta tras el primer chunk
+    const cancel = ch.sent.find((m) => m.type === "job.cancel");
+    assert.ok(cancel && "jobId" in cancel && cancel.jobId === "j1");
+  });
+
+  it("req.signal aborta mid-stream → job.cancel al daemon (cliente se fue)", async () => {
+    // El gateway pasa ac.signal del request HTTP: abort del cliente debe
+    // cortar el cómputo remoto, no solo el relay local.
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const ac = new AbortController();
+    const it = ex.execute(req({ signal: ac.signal }));
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "p" });
+      setTimeout(() => ac.abort(), 5); // cliente se fue a mitad de stream
+    }, 10);
+    await assert.rejects(() => drain(it), /abortado/);
+    assert.ok(ch.sent.some((m) => m.type === "job.cancel"));
+  });
+
+  it("stream que terminó bien NO manda job.cancel (ruido cero)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const h = createHash("sha256").update("fin").digest("hex");
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "fin" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: h, signature: "aa".repeat(65) });
+    }, 10);
+    await drain(it);
+    assert.equal(ch.sent.some((m) => m.type === "job.cancel"), false);
+  });
+
+  it("job.fail recibido → no manda job.cancel redundante al salir", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "x" });
+      ch.emit({ type: "job.fail", jobId: "j1", error: "engine murió", midStream: true });
+    }, 10);
+    await assert.rejects(() => drain(it), /engine murió/);
+    assert.equal(ch.sent.some((m) => m.type === "job.cancel"), false);
+  });
+
   it("job sin chunks (output vacío / preimagen vacía) rechaza y no emite proof", async () => {
     const ch = new FakeChannel();
     const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });

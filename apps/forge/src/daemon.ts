@@ -57,6 +57,7 @@ export class ForgeDaemon {
   private readonly agentId?: number; // ERC-8004 (EVM) — viaja en el heartbeat
   private readonly probes: BudgetProbes;
   private readonly tok = new Map<string, { tok: number; ms: number }[]>();
+  private readonly running = new Map<string, AbortController>(); // jobId → cancel
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private unMsg: (() => void) | null = null;
 
@@ -155,6 +156,10 @@ export class ForgeDaemon {
       case "job.assign":
         await this.runJob(m);
         break;
+      case "job.cancel":
+        // El consumidor se fue — corta el cómputo del job en vuelo.
+        this.running.get(m.jobId)?.abort();
+        break;
       case "image.assign":
         await this.runImage(m);
         break;
@@ -206,11 +211,14 @@ export class ForgeDaemon {
     });
     const hasher = createHash("sha256");
     let midStream = false;
+    const ac = new AbortController(); // job.cancel → aborta el exec en vuelo
+    this.running.set(m.jobId, ac);
     try {
       for await (const c of (i.exec as ForgeExec).execute({
         jobId: m.jobId,
         model: m.model,
         prompt: m.prompt,
+        signal: ac.signal,
         ...(m.messages ? { messages: m.messages } : {}),
         ...(m.options ? { options: m.options } : {}),
         ...(m.tools ? { tools: m.tools } : {}),
@@ -245,6 +253,8 @@ export class ForgeDaemon {
       }
     } catch (e) {
       this.fail(m.jobId, e instanceof Error ? e.message : String(e), midStream);
+    } finally {
+      this.running.delete(m.jobId);
     }
   }
 

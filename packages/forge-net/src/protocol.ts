@@ -94,8 +94,11 @@ export type AuthFailMsg = { type: "auth.fail"; error: string };
 // on-chain ligado a ESTE worker. El daemon puede self-claimear firmando el
 // resultHash de nuevo (la firma del proof no expira).
 export type JobFundedMsg = { type: "job.funded"; chainJobId: number; resultHash: string };
+// El consumidor del stream abortó (cliente se fue): libera el cómputo del
+// forge YA — sin esto el daemon terminaba el job en vacío quemando GPU.
+export type JobCancelMsg = { type: "job.cancel"; jobId: string };
 
-export type GatewayMsg = JobAssignMsg | ImageAssignMsg | PingMsg | AuthOkMsg | AuthFailMsg | JobFundedMsg;
+export type GatewayMsg = JobAssignMsg | ImageAssignMsg | PingMsg | AuthOkMsg | AuthFailMsg | JobFundedMsg | JobCancelMsg;
 
 // ---------- codec ----------
 
@@ -209,6 +212,9 @@ export function decodeGateway(raw: string): GatewayMsg | null {
     case "job.funded":
       if (!isNum(m.chainJobId) || !isStr(m.resultHash)) return null;
       return { type: "job.funded", chainJobId: m.chainJobId, resultHash: m.resultHash };
+    case "job.cancel":
+      if (!isStr(m.jobId)) return null;
+      return { type: "job.cancel", jobId: m.jobId };
     default:
       return null;
   }
