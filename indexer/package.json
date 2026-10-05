@@ -6,12 +6,14 @@
   "scripts": {
     "codegen": "envio codegen",
     "dev": "envio dev",
-    "deploy": "envio deploy"
+    "deploy": "envio deploy",
+    "test": "tsx --test tests/"
   },
   "dependencies": {
     "envio": "3.12.1"
   },
   "devDependencies": {
+    "tsx": "4.21.0",
     "typescript": "^5.9.0"
   },
   "pnpm": {
