@@ -2,6 +2,7 @@
 // Recibe dependencias, no las crea (testeabilidad). Idempotency-Key para fallback.
 import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import { DEAD_QUEUE_MS, EtrScheduler } from "@weaver/scheduler";
 import { imageDims } from "@weaver/forge-net";
 import type { ForgeView } from "@weaver/scheduler";
@@ -184,6 +185,16 @@ export function createApp(deps: Deps) {
   // Abierto por ser red local de demo; producción lo acota (declarado, no olvidado).
   // S15a: con corsOrigins solo esos orígenes reciben ACAO.
   app.use("/*", cors(deps.corsOrigins?.length ? { origin: deps.corsOrigins } : undefined));
+
+  // Body cap: un POST gigante a /v1/chat/completions inflaría memoria del
+  // gateway antes de cualquier validación. 4MiB alcanza contextos largos.
+  app.use(
+    "/v1/*",
+    bodyLimit({
+      maxSize: 4 * 1024 * 1024,
+      onError: (c) => c.json({ error: "payload demasiado grande", code: "payload_too_large" }, 413),
+    }),
+  );
 
   // S10a: API keys estilo provider. Válida abre e identifica (metering);
   // trucha → 401; ausente → sigue al paywall. Sin apiKeys en Deps, todo pasa.

@@ -113,4 +113,16 @@ describe("edge: caps de input (413 antes de tocar la fleet)", () => {
     const res = await post({ model: "qwen3:4b", messages: [{ content: 42 }, null, "x"] });
     assert.equal(res.status, 400);
   });
+
+  it("body >4MiB → 413 payload_too_large antes de parsear (DoS de memoria)", async () => {
+    // El bodyLimit corta a nivel transporte: ni siquiera entra al parser.
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "qwen3:4b", messages: [{ role: "user", content: "x".repeat(5 * 1024 * 1024) }] }),
+    });
+    assert.equal(res.status, 413);
+    const j = (await res.json()) as { code?: string };
+    assert.equal(j.code, "payload_too_large");
+  });
 });
