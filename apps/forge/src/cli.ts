@@ -18,7 +18,7 @@ import {
   registerForgeEvm,
   RpcSubmitter,
 } from "@weaver/settlement";
-import { FluxKleinForge, OllamaMLXAdapter, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
+import { FluxKleinForge, OllamaMLXAdapter, OpenAICompatAdapter, TrackedExec, TrackedImageExec } from "@weaver/forge-exec";
 import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
 import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
 import { connectLoop } from "./ws.ts";
@@ -58,13 +58,42 @@ async function detectOllama(base = "http://localhost:11434"): Promise<InstanceCf
   }
 }
 
+// Auto-detect OpenAI-compatible: /v1/models lista lo que el server tiene
+// cargado (vLLM carga al boot — la lista ES la capacidad, honesta).
+async function detectOpenAI(base: string, apiKey?: string): Promise<InstanceCfg[]> {
+  try {
+    const r = await fetch(`${base.replace(/\/$/, "")}/v1/models`, {
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+    });
+    const { data } = (await r.json()) as { data: { id: string }[] };
+    return (data ?? []).map((m, i) => ({
+      instanceId: `oai${i}-${m.id.replace(/[^a-z0-9]/gi, "-").slice(0, 20)}`,
+      model: m.id,
+      capability: "text",
+      maxConcurrent: 8, // vLLM sirve batch real — cap mayor que Ollama local
+      loadTimeMs: 0, // modelo ya residente en el server
+    }));
+  } catch {
+    return [];
+  }
+}
+
 function makeInstances(cfg: ForgeConfig): DaemonInstance[] {
   return cfg.instances.map((c) => ({
     ...c,
     exec:
       c.capability === "image"
         ? new TrackedImageExec(new FluxKleinForge({ forgeId: c.instanceId, model: c.model }))
-        : new TrackedExec(new OllamaMLXAdapter({ forgeId: c.instanceId, model: c.model, keepAlive: -1 })),
+        : c.backend?.type === "openai"
+          ? new TrackedExec(
+              new OpenAICompatAdapter({
+                forgeId: c.instanceId,
+                model: c.model,
+                baseUrl: c.backend.baseUrl,
+                ...(c.backend.apiKey ? { apiKey: c.backend.apiKey } : {}),
+              }),
+            )
+          : new TrackedExec(new OllamaMLXAdapter({ forgeId: c.instanceId, model: c.model, keepAlive: -1 })),
   }));
 }
 
@@ -174,9 +203,16 @@ if (cmd === "init") {
     };
   });
   if (instances.length === 0) {
-    instances = await detectOllama();
+    // Con --openai-url el inventario honesto es /v1/models DE ESE server;
+    // sin flag, auto-detect Ollama local como siempre.
+    const oaiUrl = arg("--openai-url");
+    instances = oaiUrl ? await detectOpenAI(oaiUrl, arg("--openai-key")) : await detectOllama();
     if (instances.length === 0) {
-      console.error("no detecté modelos Ollama y no pasaste --instance — nada que servir");
+      console.error(
+        oaiUrl
+          ? `no detecté modelos en ${oaiUrl}/v1/models y no pasaste --instance — nada que servir`
+          : "no detecté modelos Ollama y no pasaste --instance — nada que servir",
+      );
       process.exit(1);
     }
   }
@@ -184,6 +220,21 @@ if (cmd === "init") {
     ...(process.argv.includes("--idle-only") ? { idleOnly: true } : {}),
     ...(arg("--max-vram-gb") ? { maxVramGb: Number(arg("--max-vram-gb")) } : {}),
   };
+  // --openai-url: todas las instances de texto hablan contra ese server
+  // OpenAI-compatible (vLLM, llama.cpp-server, LM Studio). Modelos grandes
+  // multi-GPU sin cambiar el protocolo — el forge es el front honesto.
+  const openaiUrl = arg("--openai-url");
+  if (openaiUrl) {
+    for (const i of instances) {
+      if (i.capability === "text") {
+        i.backend = {
+          type: "openai",
+          baseUrl: openaiUrl,
+          ...(arg("--openai-key") ? { apiKey: arg("--openai-key") } : {}),
+        };
+      }
+    }
+  }
   // --chain evm (Monad, ADR-0008) | stellar (default) — la chain la fija
   // init y el resto de los comandos la respetan desde el config.
   const chainArg = arg("--chain") ?? "stellar";
@@ -288,6 +339,8 @@ siguiente paso: weaver-forge up`);
   up        conecta al gateway y sirve jobs (--contract auto-registra)
 flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:image]
        --chain stellar|evm  solo en init — el resto lee la chain del config
+       --openai-url URL   backend OpenAI-compatible para text (vLLM/llama.cpp-server)
+       --openai-key KEY   bearer opcional para ese backend
        --idle-only        solo computar cuando la máquina está idle (>60s sin input)
        --max-vram-gb N    instances COLD solo se ofrecen si su carga entra en N GB`);
 }

@@ -14,6 +14,10 @@ export type InstanceCfg = {
   maxConcurrent: number;
   loadTimeMs: number;
   vramGb?: number; // footprint estimado — init lo llena desde /api/tags size
+  // Backend del engine: ausente = Ollama local. "openai" = cualquier server
+  // /v1/chat/completions (vLLM multi-GPU, llama.cpp-server/cluster RPC,
+  // LM Studio…). El forge se anuncia igual: una identidad, un proof.
+  backend?: { type: "openai"; baseUrl: string; apiKey?: string };
 };
 
 export type ForgeChain = "stellar" | "evm";
