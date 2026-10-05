@@ -14,9 +14,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { extractText as pdfExtractText } from "unpdf";
 import mammoth from "mammoth";
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 export type AgentToolDef = {
   type: "function";
@@ -193,10 +193,14 @@ async function scanSkills(dirs: string[]): Promise<{ list: (SkillInfo & { path: 
 // subcomandos/flags permitidos; cwd fijado al repo del gateway; corre con los
 // permisos del operador (es SU máquina — por eso es exec-only, jamás en Plan).
 
-const CMD_ALLOW: Record<string, { sub?: Set<string>; deny?: RegExp }> = {
-  ls: {}, cat: {}, head: {}, tail: {}, wc: {}, pwd: {}, date: {}, echo: {},
-  uname: {}, df: {}, du: {}, jq: {}, rg: {}, grep: {}, which: {}, file: {},
-  find: { deny: /^-(exec|execdir|ok|okdir|delete)$/ },
+// paths:true → binario que lee filesystem: todo arg no-flag debe resolver
+// dentro de cwd (sin traversal, absolutos ni escapes por symlink).
+const CMD_ALLOW: Record<string, { sub?: Set<string>; deny?: RegExp; paths?: boolean }> = {
+  ls: { paths: true }, cat: { paths: true }, head: { paths: true }, tail: { paths: true },
+  wc: { paths: true }, pwd: {}, date: {}, echo: {},
+  uname: {}, df: { paths: true }, du: { paths: true }, jq: { paths: true },
+  rg: { paths: true }, grep: { paths: true }, which: {}, file: { paths: true },
+  find: { deny: /^-(exec|execdir|ok|okdir|delete)$/, paths: true },
   git: {
     sub: new Set([
       "status", "diff", "log", "show", "branch", "blame", "ls-files",
@@ -205,7 +209,7 @@ const CMD_ALLOW: Record<string, { sub?: Set<string>; deny?: RegExp }> = {
     ]),
   },
   pnpm: { sub: new Set(["test", "build", "lint", "run", "list", "why", "--version"]) },
-  node: { deny: /^(-e|--eval|-p|--print|--interactive|-i)$/ },
+  node: { deny: /^(-e|--eval|-p|--print|--interactive|-i)$/, paths: true },
   ollama: { sub: new Set(["list", "ls", "ps", "show", "--version"]) },
 };
 
@@ -244,6 +248,22 @@ async function runCommand(cwd: string, cmd: string, timeoutMs: number): Promise<
   }
   if (spec.deny && args.some((a) => spec.deny!.test(a))) {
     return `${bin}: flag peligroso en args`;
+  }
+  if (spec.paths) {
+    // El cwd es el sandbox: ningún arg puede salir. realpath caza symlinks que
+    // lexicalmente parecen adentro pero apuntan afuera (sub/link → /etc).
+    const root = await realpath(cwd).catch(() => cwd);
+    for (const a of args) {
+      if (a.startsWith("-")) continue;
+      const resolved = resolve(root, a);
+      if (resolved !== root && !resolved.startsWith(root + sep)) {
+        return `${bin}: path fuera del workspace — ${a}`;
+      }
+      const real = await realpath(resolved).catch(() => resolved);
+      if (real !== root && !real.startsWith(root + sep)) {
+        return `${bin}: path fuera del workspace (symlink) — ${a}`;
+      }
+    }
   }
   const timeout = Math.min(120_000, Math.max(1_000, timeoutMs || 30_000));
   return new Promise((resolve) => {
