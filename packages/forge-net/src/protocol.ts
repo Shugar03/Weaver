@@ -107,11 +107,19 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+// Bounds anti-abuse (P0-4): un daemon es UNA máquina — máx 16 instances por
+// heartbeat (cada una dispara attestation real en el gateway). ids/models
+// ≤128 chars y los numéricos que alimentan al scheduler en rangos creíbles:
+// un price negativo o tokPerSec absurdo sesgaba selección y billing.
+const MAX_INSTANCES = 16;
+const isId = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= 128;
+const inRange = (v: unknown, lo: number, hi: number): v is number => isNum(v) && v >= lo && v <= hi;
+
 function instanceReport(v: unknown): InstanceReport | null {
   if (!isObj(v)) return null;
-  if (!isStr(v.instanceId) || !isStr(v.model)) return null;
+  if (!isId(v.instanceId) || !isId(v.model)) return null;
   if (v.capability !== "text" && v.capability !== "image") return null;
-  if (!isBool(v.hot) || !isNum(v.inFlight) || !isBool(v.saturated) || !isNum(v.loadTimeMs)) return null;
+  if (!isBool(v.hot) || !inRange(v.inFlight, 0, 1024) || !isBool(v.saturated) || !inRange(v.loadTimeMs, 0, 600_000)) return null;
   const r: InstanceReport = {
     instanceId: v.instanceId,
     model: v.model,
@@ -121,8 +129,14 @@ function instanceReport(v: unknown): InstanceReport | null {
     saturated: v.saturated,
     loadTimeMs: v.loadTimeMs,
   };
-  if (isNum(v.tokPerSec)) r.tokPerSec = v.tokPerSec;
-  if (isNum(v.price)) r.price = v.price;
+  if (isNum(v.tokPerSec)) {
+    if (!inRange(v.tokPerSec, 0, 10_000)) return null;
+    r.tokPerSec = v.tokPerSec;
+  }
+  if (isNum(v.price)) {
+    if (!inRange(v.price, 0, 1_000_000)) return null;
+    r.price = v.price;
+  }
   return r;
 }
 
@@ -140,7 +154,7 @@ export function decode(raw: string): ForgeMsg | null {
       if (!isStr(m.pubkey) || !isStr(m.nonce) || !isStr(m.signature)) return null;
       return { type: "auth", pubkey: m.pubkey, nonce: m.nonce, signature: m.signature };
     case "heartbeat": {
-      if (!Array.isArray(m.instances)) return null;
+      if (!Array.isArray(m.instances) || m.instances.length > MAX_INSTANCES) return null;
       const instances = m.instances.map(instanceReport);
       if (instances.some((i) => i === null)) return null;
       if (m.agentId !== undefined && !isNum(m.agentId)) return null;

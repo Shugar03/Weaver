@@ -56,3 +56,46 @@ describe("S30 protocol decodeGateway (gateway→daemon)", () => {
     assert.equal(decodeGateway("{{"), null);
   });
 });
+
+describe("P0-4 heartbeat bounds (anti-amplificación)", () => {
+  const inst = (over: Record<string, unknown> = {}) => ({
+    instanceId: "i0",
+    model: "qwen3.5:4b",
+    capability: "text",
+    hot: true,
+    inFlight: 0,
+    saturated: false,
+    loadTimeMs: 100,
+    ...over,
+  });
+  const hb = (instances: unknown[]) =>
+    decode(JSON.stringify({ type: "heartbeat", instances }));
+
+  it("17+ instances → null: un daemon es UNA máquina, no 10k slots", () => {
+    // Cada instance dispara una attestation real en el gateway — sin cap un
+    // heartbeat forjado amplificaba jobs gratis contra la fleet.
+    assert.notEqual(hb(Array.from({ length: 16 }, (_, i) => inst({ instanceId: `i${i}` }))), null);
+    assert.equal(hb(Array.from({ length: 17 }, (_, i) => inst({ instanceId: `i${i}` }))), null);
+  });
+
+  it("strings acotados: instanceId/model vacíos o >128 → null", () => {
+    assert.equal(hb([inst({ instanceId: "" })]), null);
+    assert.equal(hb([inst({ instanceId: "x".repeat(129) })]), null);
+    assert.equal(hb([inst({ model: "" })]), null);
+    assert.equal(hb([inst({ model: "m".repeat(129) })]), null);
+    assert.notEqual(hb([inst({ instanceId: "x".repeat(128) })]), null);
+  });
+
+  it("numéricos que gaman el scheduler → null", () => {
+    // El registry confía estos números al scheduler/ETR: negativos o absurdos
+    // sesgaban selección y billing.
+    assert.equal(hb([inst({ inFlight: -1 })]), null);
+    assert.equal(hb([inst({ inFlight: 2048 })]), null);
+    assert.equal(hb([inst({ loadTimeMs: -1 })]), null);
+    assert.equal(hb([inst({ loadTimeMs: 3_600_000 })]), null);
+    assert.equal(hb([inst({ tokPerSec: -5 })]), null);
+    assert.equal(hb([inst({ tokPerSec: 1e9 })]), null);
+    assert.equal(hb([inst({ price: -1 })]), null);
+    assert.equal(hb([inst({ price: 1e9 })]), null);
+  });
+});

@@ -41,6 +41,19 @@ async function parseJson<T>(c: Context): Promise<T | null> {
 }
 const badJson = { error: "json inválido", code: "bad_json" };
 
+// Ventana/minuto por caller — la usan el rate-limit global y el signup.
+// Devuelve true cuando el caller YA pasó el máximo en esta ventana.
+const minuteHit = (map: Map<string, { window: number; count: number }>, who: string, max: number): boolean => {
+  const w = Math.floor(Date.now() / 60_000);
+  if (map.size > 5000) for (const [k, v] of map) if (v.window < w) map.delete(k);
+  const b = map.get(who);
+  if (!b || b.window !== w) {
+    map.set(who, { window: w, count: 1 });
+    return false;
+  }
+  return ++b.count > max;
+};
+
 // network: red del x402 (default stellar:testnet; "eip155:10143" en Monad).
 // requirements: campos extra del paymentRequirements (EVM v2 canónico:
 // asset/amount/maxTimeoutSeconds/extra/resource — sin ellos el facilitador
@@ -228,17 +241,8 @@ export function createApp(deps: Deps) {
     const buckets = new Map<string, { window: number; count: number }>();
     app.use("/v1/*", async (c, next) => {
       const caller = c.get("keyId") ?? deps.clientIp?.(c) ?? "anon";
-      const window = Math.floor(Date.now() / 60000);
-      if (buckets.size > 5000) {
-        for (const [k, v] of buckets) if (v.window < window) buckets.delete(k);
-      }
-      const b = buckets.get(caller);
-      if (b && b.window === window) {
-        b.count++;
-        if (b.count > rpm)
-          return c.json({ error: "demasiados requests", code: "rate_limited" }, 429);
-      } else {
-        buckets.set(caller, { window, count: 1 });
+      if (minuteHit(buckets, caller, rpm)) {
+        return c.json({ error: "demasiados requests", code: "rate_limited" }, 429);
       }
       await next();
     });
@@ -362,7 +366,13 @@ export function createApp(deps: Deps) {
       await next();
     };
 
+    // Signup abierto por producto pero no infinito: 10 cuentas/min por IP —
+    // una IP mintiendo miles de rows por minuto solo puede ser drain del store.
+    const acctBuckets = new Map<string, { window: number; count: number }>();
     app.post("/v1/accounts", async (c) => {
+      if (minuteHit(acctBuckets, deps.clientIp?.(c) ?? "anon", 10)) {
+        return c.json({ error: "demasiadas cuentas por minuto", code: "rate_limited" }, 429);
+      }
       const { account, mgmtToken } = await accounts.create();
       return c.json({ accountId: account.id, mgmtToken, depositMemo: depositMemoFor(account) }, 201);
     });
@@ -879,7 +889,8 @@ export function createApp(deps: Deps) {
   if (deps.imageExecs) {
     const imageExecs = deps.imageExecs;
     app.post("/v1/images/generations", async (c) => {
-      const body = await c.req.json<{ model?: string; prompt?: string; size?: string; n?: number }>();
+      const body = await parseJson<{ model?: string; prompt?: string; size?: string; n?: number }>(c);
+      if (!body) return c.json(badJson, 400);
       if (!body.model || !body.prompt?.trim()) {
         return c.json({ error: "faltan model/prompt", code: "bad_request" }, 400);
       }
@@ -977,11 +988,33 @@ export function createApp(deps: Deps) {
     // S11: caps anti-DoS (un request gigante ahoga Ollama). 413 con código, jamás 500 ni OOM.
     // Dimensionados para el agente: system + persona + historial + tool results
     // caben en un num_ctx de 16k (≈60k chars) sin dejar el request abierto a OOM.
-    if (messages.length > 60 || prompt.length > 60_000) {
+    // Los tools serializados cuentan contra el mismo budget — antes se podían
+    // colar 48 schemas gigantes sin pagar cap.
+    const tools = Array.isArray(body.tools) ? body.tools : undefined;
+    const toolsLen = tools ? JSON.stringify(tools).length : 0;
+    if (messages.length > 60 || prompt.length + toolsLen > 60_000 || (tools && tools.length > 48)) {
       return c.json({ error: "prompt demasiado grande", code: "prompt_too_large" }, 413);
     }
-    // Tools verbatim al engine; cap acotado para no inflar el prompt de sistema.
-    const tools = Array.isArray(body.tools) && body.tools.length <= 48 ? body.tools : undefined;
+    // Bounds de generación: el cliente pide pero el forge paga — un num_ctx
+    // gigante reventaba la KV por request. Finite + entero + rango, si no 400.
+    const intIn = (v: unknown, lo: number, hi: number): v is number =>
+      typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
+    const finIn = (v: unknown, lo: number, hi: number): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
+    if (
+      (body.num_ctx !== undefined && !intIn(body.num_ctx, 1, 65_536)) ||
+      (body.max_tokens !== undefined && !intIn(body.max_tokens, 1, 32_768)) ||
+      (body.temperature !== undefined && !finIn(body.temperature, 0, 2)) ||
+      (body.top_p !== undefined && !finIn(body.top_p, 0, 1)) ||
+      (body.think !== undefined && typeof body.think !== "boolean")
+    ) {
+      return c.json({ error: "opción de generación inválida", code: "bad_request" }, 400);
+    }
+    // La key indexa el settleCache post-serve — sin cap infla el Map (los
+    // headers no pasan por bodyLimit). Rechazo temprano, antes del fleet check.
+    if ((c.req.header("idempotency-key")?.length ?? 0) > 128) {
+      return c.json({ error: "idempotency-key demasiado largo", code: "bad_request" }, 400);
+    }
     // Whitelist OpenAI→engine: lo que el cliente no mande, no se inventa.
     const options = {
       ...(body.max_tokens !== undefined ? { maxTokens: body.max_tokens } : {}),
