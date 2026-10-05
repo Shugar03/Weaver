@@ -4,7 +4,7 @@
 // importa (chat real contra Ollama, failover real vía kill).
 // Uso: node scripts/e2e-army.mjs [--keep] [--headed] [--only nombre]
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { openSync, mkdirSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
@@ -18,12 +18,30 @@ const OPERATOR_KEY = "wvr_e2e_army_operator";
 const WORKER_SECRET = "0x" + "0".repeat(63) + "1";
 const KEEP = process.argv.includes("--keep");
 const HEADED = process.argv.includes("--headed");
+const VIDEO = process.argv.includes("--video"); // .webm por test en test-videos/
 const ONLY = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : null;
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const VID_DIR = `${ROOT}/test-videos`;
 const results = [];
+// Grabación: contexts abiertos por el test en curso — se cierran (y el .webm
+// se finaliza) al terminar cada test, renombrados con el slug del test.
+const openCtxs = [];
+let curTest = "boot";
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "test";
+let vidIdx = 0;
+const flushVideos = async () => {
+  if (!VIDEO) { for (const { ctx } of openCtxs.splice(0)) await ctx.close().catch(() => {}); return; }
+  for (const r of openCtxs.splice(0)) {
+    const video = r.page.video();
+    await r.ctx.close().catch(() => {});
+    const src = await video?.path().catch(() => null);
+    if (src) renameSync(src, `${VID_DIR}/${String(r.idx).padStart(2, "0")}-${slug(r.test)}.webm`);
+  }
+};
 const t = async (name, fn) => {
   if (ONLY && !name.includes(ONLY)) return;
+  curTest = name;
   const t0 = Date.now();
   try {
     await fn();
@@ -32,6 +50,8 @@ const t = async (name, fn) => {
   } catch (e) {
     results.push({ name, ok: false, ms: Date.now() - t0, err: e.message });
     console.log(`  ✖ ${name} — ${e.message?.slice(0, 160)}`);
+  } finally {
+    await flushVideos();
   }
 };
 const assert = (cond, msg) => {
@@ -120,9 +140,15 @@ await waitFor(async () => (await fetch(WEB)).ok, { timeout: 60_000, label: "web 
 console.log(`web :${WEB_PORT} arriba`);
 
 const browser = await chromium.launch({ headless: !HEADED });
+if (VIDEO) mkdirSync(VID_DIR, { recursive: true });
 const newPage = async () => {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  return ctx.newPage();
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    ...(VIDEO ? { recordVideo: { dir: VID_DIR, size: { width: 1440, height: 900 } } } : {}),
+  });
+  const page = await ctx.newPage();
+  openCtxs.push({ ctx, page, test: curTest, idx: vidIdx++ });
+  return page;
 };
 
 // ═══ A · superficie API ═══
