@@ -252,7 +252,9 @@ export function createApp(deps: Deps) {
     app.use("/v1/*", async (c, next) => {
       const paidRoute =
         c.req.method === "POST" &&
-        (c.req.path === "/v1/jobs" || c.req.path === "/v1/chat/completions");
+        (c.req.path === "/v1/jobs" ||
+        c.req.path === "/v1/chat/completions" ||
+        c.req.path === "/v1/images/generations");
       if (!paidRoute) {
         await next();
         return;
@@ -823,12 +825,24 @@ export function createApp(deps: Deps) {
   if (deps.agent) {
     const agent = deps.agent;
     app.get("/v1/agent/manifest", async (c) => c.json(await agent.manifest()));
+    // readonly viene del manifest (el flag del def es la fuente única): lo que
+    // no es readonly (run_command, mcp__*, desconocidas) ejecuta side-effects
+    // en la máquina del operador → exige keyOwner "operator". Cacheado al
+    // primer call; fail closed ante nombres que el manifest no declara.
+    let ro: Set<string> | undefined;
+    const readonly = async () =>
+      (ro ??= new Set((await agent.manifest()).tools.filter((t) => t.readonly).map((t) => t.function.name)));
     app.post("/v1/agent/tools/call", async (c) => {
-      const body = await c.req.json<{ name?: string; arguments?: Record<string, unknown> }>();
+      const body = await parseJson<{ name?: string; arguments?: Record<string, unknown> }>(c);
+      if (!body) return c.json(badJson, 400);
       if (!body.name || typeof body.name !== "string") {
         return c.json({ error: "falta name", code: "bad_request" }, 400);
       }
-      const result = await agent.call(body.name.slice(0, 120), body.arguments ?? {});
+      const name = body.name.slice(0, 120);
+      if (!(await readonly()).has(name) && c.get("keyOwner") !== "operator") {
+        return c.json({ error: "tool requiere operador", code: "forbidden" }, 403);
+      }
+      const result = await agent.call(name, body.arguments ?? {}, { auth: c.req.header("authorization") });
       return c.json({ result });
     });
 

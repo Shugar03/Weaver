@@ -587,9 +587,11 @@ export function makeToolExecutor(
   return async (name, args) => {
     try {
       if (serverTools?.has(name) || name.startsWith("mcp__")) {
+        // tools/call exige operador para no-readonly — viaja la key que haya.
+        const key = apiKey() ?? operatorKey();
         const r = await fetch(`${base}/v1/agent/tools/call`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
           body: JSON.stringify({ name, arguments: args }),
         });
         if (!r.ok) return `server-tool ${name}: http ${r.status}`;

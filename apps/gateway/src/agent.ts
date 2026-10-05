@@ -29,7 +29,7 @@ export type McpServerInfo = { name: string; status: "ok" | "failed" | "down"; to
 
 export type AgentHost = {
   manifest(): Promise<{ persona: string | null; skills: SkillInfo[]; tools: AgentToolDef[]; mcp: McpServerInfo[] }>;
-  call(name: string, args: Record<string, unknown>): Promise<string>;
+  call(name: string, args: Record<string, unknown>, ctx?: { auth?: string }): Promise<string>;
   close(): Promise<void>;
 };
 
@@ -87,11 +87,14 @@ async function webSearch(q: string): Promise<string> {
 }
 
 // ---------- web_fetch ----------
-// GET + HTML→texto. Guard SSRF mínimo: nada de metadata cloud ni loopback —
+// GET + HTML→texto. Guard SSRF: nada de metadata cloud, loopback ni RFC1918 —
 // el gateway corre en la máquina del operador, un URL trucho no debe pivotear
 // a servicios internos. Cap de 1MB y texto truncado a 4000 chars.
+// IPv6 en URL viene con corchetes: ::1/::/::ffff: (v4 mapeado) + ULA fc-fd +
+// link-local fe80-febf. .local/.internal cubren mDNS y metadata de cloud.
 
-const BLOCKED_HOST = /^(localhost|127\.|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1|.*\.local$)/i;
+const BLOCKED_HOST =
+  /^(localhost|127\.|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|.*\.(local|internal)$|\[(::|fe[89ab]|fc|fd))/i;
 
 function stripTags(html: string): string {
   return html
@@ -116,21 +119,38 @@ async function webFetch(url: string): Promise<string> {
   } catch {
     return "url inválida";
   }
-  if (!/^https?:$/.test(u.protocol)) return "solo http/https";
-  if (BLOCKED_HOST.test(u.hostname)) return "host bloqueado (interno/loopback)";
-  try {
-    const r = await fetch(u, {
-      headers: { "user-agent": DDG_UA, accept: "text/html,text/plain,application/json,*/*" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(12_000),
-    });
+  // Redirects manuales: CADA hop se re-valida — un 302 de un host público a
+  // 169.254.169.254 era bypass del guard cuando fetch seguía solo (follow).
+  for (let hop = 0; ; hop++) {
+    if (!/^https?:$/.test(u.protocol)) return "solo http/https";
+    if (BLOCKED_HOST.test(u.hostname)) return "host bloqueado (interno/loopback)";
+    let r: Response;
+    try {
+      r = await fetch(u, {
+        headers: { "user-agent": DDG_UA, accept: "text/html,text/plain,application/json,*/*" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(12_000),
+      });
+    } catch (e) {
+      return `web_fetch falló: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    if (r.status >= 300 && r.status < 400) {
+      void r.body?.cancel();
+      const loc = r.headers.get("location");
+      if (!loc) return `redirect ${r.status} sin location`;
+      if (hop >= 5) return "demasiados redirects (>5)";
+      try {
+        u = new URL(loc, u);
+      } catch {
+        return "redirect con location inválido";
+      }
+      continue;
+    }
     if (!r.ok) return `http ${r.status}`;
     const buf = await r.arrayBuffer();
     if (buf.byteLength > 1_000_000) return "documento demasiado grande (>1MB)";
     const text = stripTags(new TextDecoder().decode(buf));
     return text.length > 4000 ? `${text.slice(0, 4000)}\n…[truncado ${text.length} chars]` : text || "(vacío)";
-  } catch (e) {
-    return `web_fetch falló: ${e instanceof Error ? e.message : String(e)}`;
   }
 }
 
@@ -516,7 +536,7 @@ export function createAgentHost(opts: { cwd: string; env?: NodeJS.ProcessEnv; ga
       };
     },
 
-    async call(name, args) {
+    async call(name, args, ctx) {
       if (name === "web_search") return webSearch(String(args.query ?? ""));
       if (name === "web_fetch") return webFetch(String(args.url ?? ""));
       if (name === "run_command") {
@@ -524,9 +544,10 @@ export function createAgentHost(opts: { cwd: string; env?: NodeJS.ProcessEnv; ga
       }
       if (name === "generate_image") {
         // Loopback a la ruta ruteada: una sola fuente de verdad (scheduler + telemetría).
+        // El Authorization del caller viaja → billing/paywall le cae a quien pidió.
         const r = await fetch(`${gw}/v1/images/generations`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...(ctx?.auth ? { authorization: ctx.auth } : {}) },
           body: JSON.stringify({
             model: "flux2-klein-4b",
             prompt: String(args.prompt ?? "").slice(0, 2000),
