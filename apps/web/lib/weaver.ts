@@ -224,13 +224,14 @@ type StreamEvent =
 
 // Un request → stream de frames ya parseados. Lo comparten runChat (dashboard,
 // un solo hop) y runAgent (loop de tools multi-hop).
-async function* streamChat(base: string, body: Record<string, unknown>): AsyncGenerator<StreamEvent> {
+async function* streamChat(base: string, body: Record<string, unknown>, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
   let res: Response;
   try {
     res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", ...authHeader() },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
   } catch {
     throw new Error("gateway caído — levantá :3001");
@@ -657,6 +658,7 @@ export async function runAgent(
     think?: boolean;
     numCtx?: number;
     maxHops?: number;
+    signal?: AbortSignal;
     callTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
   },
   cb: AgentCallbacks,
@@ -698,7 +700,7 @@ export async function runAgent(
         ...(opts.tools?.length ? { tools: opts.tools } : {}),
         ...(opts.think !== undefined ? { think: opts.think } : {}),
         ...(opts.numCtx !== undefined ? { num_ctx: opts.numCtx } : {}),
-      })) {
+      }, opts.signal)) {
         if (ev.type === "delta") {
           const { reasoning, content, tool_calls } = ev.delta;
           if (reasoning) {
@@ -771,6 +773,12 @@ export async function runAgent(
       ...(lastInput ? { input: lastInput } : {}),
     });
   } catch (e) {
+    // El abort del usuario corta el fetch; el gateway propaga job.cancel al
+    // forge — no es un fallo, es una detención honesta.
+    if (opts.signal?.aborted) {
+      cb.onError("detenido");
+      return;
+    }
     cb.onError(e instanceof Error ? e.message : "error de red");
   }
 }

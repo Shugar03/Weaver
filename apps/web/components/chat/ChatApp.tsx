@@ -44,6 +44,7 @@ type Msg = {
 type Chat = { id: string; title: string; ts: number; messages: Msg[] };
 
 const LS_KEY = "weaver:chat:recents";
+const LS_ACTIVE = "weaver:chat:active";
 const DEFAULT_MODEL = "qwen3:4b";
 
 // Modos del agente: Ask = conversación pura (sin tools); Plan = solo lectura
@@ -184,6 +185,7 @@ export function ChatApp({ base }: { base: string }) {
   const [speech, setSpeech] = useState({ stt: false, tts: false });
   useEffect(() => setSpeech({ stt: sttSupported, tts: ttsSupported }), []);
   const sttRef = useRef<SttHandle | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -191,14 +193,27 @@ export function ChatApp({ base }: { base: string }) {
   useEffect(() => () => {
     sttRef.current?.stop();
     stopSpeaking();
+    // Salir de /chat a mitad de stream también libera el forge (job.cancel).
+    abortRef.current?.abort();
   }, []);
 
   useEffect(() => {
-    setChats(loadRecents());
+    const recents = loadRecents();
+    setChats(recents);
     // ?model= desde el marketplace (/models/[id] → TRY IN CHAT). El efecto de
     // forges corrige si el id no es servido por ningún forge de texto.
     const q = new URLSearchParams(window.location.search).get("model");
-    if (q) setModel(q);
+    if (q) {
+      setModel(q);
+    } else {
+      // Rehidrata el último chat activo: recargar no te saca de tu
+      // conversación — los recents ya viven on-device.
+      const last = recents.find((c) => c.id === localStorage.getItem(LS_ACTIVE));
+      if (last) {
+        setActiveId(last.id);
+        setMessages(last.messages);
+      }
+    }
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -208,6 +223,15 @@ export function ChatApp({ base }: { base: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // El chat activo también vive on-device: así el reload puede reabrirlo.
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_ACTIVE, activeId);
+    } catch {
+      /* almacenamiento lleno */
+    }
+  }, [activeId]);
 
   useEffect(() => {
     let alive = true;
@@ -277,6 +301,9 @@ export function ChatApp({ base }: { base: string }) {
     setMessages(withUser);
     const chatId = activeId;
     const title = withUser.find((m) => m.role === "user")?.text.slice(0, 42) ?? "New chat";
+    // Persisto apenas sale el mensaje: un reload a mitad de stream conserva al
+    // menos lo que escribiste (el stream muere con la página — job.cancel).
+    persist(chatId, title, withUser);
     // Historial real al modelo: persona (AGENT.md del nodo) + instrucciones del
     // modo + índice de skills + memoria local + últimos mensajes (sin thinking —
     // el razonamiento no se re-envía, ahorra contexto).
@@ -305,6 +332,8 @@ export function ChatApp({ base }: { base: string }) {
     ];
     setCtxTokens(estimateContextTokens(history, tools));
     const callTool = makeToolExecutor(base, new Set(serverTools.map((t) => t.function.name)));
+    const ac = new AbortController();
+    abortRef.current = ac;
     let acc = "";
     let accThink = "";
     const toolList: string[] = [];
@@ -320,7 +349,7 @@ export function ChatApp({ base }: { base: string }) {
       base,
       model,
       history,
-      { tools, numCtx: numCtxFor(history, tools), callTool },
+      { tools, numCtx: numCtxFor(history, tools), callTool, signal: ac.signal },
       {
         onStatus: (s, detail) => {
           setStatus(s);
@@ -364,15 +393,19 @@ export function ChatApp({ base }: { base: string }) {
           setStatus("idle");
           setStatusDetail("");
           setBusy(false);
+          abortRef.current = null;
           persist(chatId, title, final);
           if (voiceOn && acc) speak(acc);
         },
         onError: (msg) => {
-          const final: Msg[] = [...withUser, { role: "weaver", text: `■ ${msg}` }];
+          // Texto parcial servido antes del corte (error o stop): se conserva
+          // — tirarlo sería mentir sobre lo que el forge ya entregó.
+          const final: Msg[] = [...withUser, { role: "weaver", text: acc ? `${acc}\n\n■ ${msg}` : `■ ${msg}` }];
           setMessages(final);
           setStatus("idle");
           setStatusDetail("");
           setBusy(false);
+          abortRef.current = null;
           persist(chatId, title, final);
         },
       },
@@ -786,12 +819,12 @@ export function ChatApp({ base }: { base: string }) {
                 </select>
               </span>
               <button
-                onClick={() => send()}
-                disabled={busy || (!input.trim() && !attachedDoc)}
-                title="Enviar"
-                className="bg-lima px-3.5 py-1 text-xl font-bold text-black transition-transform active:translate-y-[1px] disabled:opacity-40"
+                onClick={() => (busy ? abortRef.current?.abort() : send())}
+                disabled={!busy && !input.trim() && !attachedDoc}
+                title={busy ? "Detener (job.cancel al forge)" : "Enviar"}
+                className={`px-3.5 py-1 text-xl font-bold transition-transform active:translate-y-[1px] disabled:opacity-40 ${busy ? "bg-danger text-black" : "bg-lima text-black"}`}
               >
-                ↑
+                {busy ? "■" : "↑"}
               </button>
             </div>
           </div>
