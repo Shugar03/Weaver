@@ -96,6 +96,9 @@ export class ForgeDaemon {
     this.hbTimer = null;
     this.unMsg?.();
     this.unMsg = null;
+    // Suelta el socket: connectLoop.onClose resuelve, cancel() no deja el
+    // daemon colgado con una conexión zombie.
+    this.channel.close?.();
   }
 
   private async beat(): Promise<void> {

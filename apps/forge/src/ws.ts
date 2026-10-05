@@ -43,6 +43,9 @@ class WsDaemonChannel implements DaemonChannel {
   isAlive(): boolean {
     return this.alive;
   }
+  close(): void {
+    this.ws.close();
+  }
 }
 
 // Normaliza el gateway URL para cada transporte: http(s) para REST,

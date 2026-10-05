@@ -1,0 +1,24 @@
+{
+  "name": "@weaver/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.ts",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@weaver/forge": "workspace:*",
+    "@weaver/forge-exec": "workspace:*",
+    "@weaver/forge-net": "workspace:*",
+    "@weaver/gateway": "workspace:*",
+    "@weaver/scheduler": "workspace:*",
+    "@weaver/settlement": "workspace:*",
+    "@hono/node-server": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

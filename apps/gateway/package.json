@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./forgews": "./src/forgews.ts"
+  },
   "scripts": {
     "dev": "node --watch src/serve.ts",
     "build": "tsc --noEmit -p tsconfig.json",

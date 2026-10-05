@@ -36,6 +36,10 @@ export interface DaemonChannel {
   onMessage(cb: (msg: GatewayMsg) => void): () => void;
   onClose(cb: () => void): () => void;
   isAlive(): boolean;
+  // Cierre iniciado por el daemon (stop) — onClose dispara igual. Sin él el
+  // socket quedaba abierto tras daemon.stop(): leak de handle en tests y un
+  // forge "parado" seguía conectado en prod.
+  close?(): void;
 }
 
 const withTimeout = <T>(p: Promise<T>, ms: number, msg: string): Promise<T> =>
