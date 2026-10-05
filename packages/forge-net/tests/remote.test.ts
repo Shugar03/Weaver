@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { RemoteForgeExec, RemoteImageExec, type ForgeChannel } from "../src/remote.ts";
 import type { ExecRequest, ImageRequest, StreamChunk } from "@weaver/forge-exec";
+import { commitProof, promptHashOf } from "@weaver/forge-exec";
 import type { ForgeMsg, GatewayMsg } from "../src/protocol.ts";
 
 class FakeChannel implements ForgeChannel {
@@ -140,6 +141,75 @@ describe("S31 RemoteForgeExec", () => {
     }, 10);
     await drain(it);
     assert.equal(proof!.resultHash.toString("hex"), h);
+  });
+
+  it("chunks think no entran al hash verificado — el gateway excluye razonamiento", async () => {
+    // Regresión del fix content-only: el daemon excluye kind:think del hash;
+    // si el gateway los incluyera, todo forge thinking fallaría verify.
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
+    let proof: { resultHash: Buffer } | null = null;
+    const it = ex.execute(req({ onProof: (p) => (proof = p) }));
+    const h = createHash("sha256").update("respuesta", "utf8").digest("hex");
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "pensando…", kind: "think" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "respuesta", kind: "content" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: h, signature: "dd".repeat(32) });
+    }, 10);
+    const chunks = await drain(it);
+    assert.equal(chunks.map((c) => c.token).join(""), "pensando…respuesta");
+    assert.equal(proof!.resultHash.toString("hex"), h);
+  });
+
+  it("commitment era: promptHash+outputHash → firma ata input+output servido", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "qwen3:4b" });
+    let proof: { resultHash: Buffer; promptHash?: Buffer; outputHash?: Buffer } | null = null;
+    const it = ex.execute(req({ onProof: (p) => (proof = p) }));
+    const pH = promptHashOf({ model: "qwen3:4b", prompt: "hola" });
+    const oH = createHash("sha256").update("ok", "utf8").digest();
+    const commit = commitProof(pH, oH);
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok", kind: "content" });
+      ch.emit({
+        type: "job.done",
+        jobId: "j1",
+        resultHash: commit.toString("hex"),
+        promptHash: pH.toString("hex"),
+        outputHash: oH.toString("hex"),
+        signature: "ee".repeat(32),
+      });
+    }, 10);
+    await drain(it);
+    assert.equal(proof!.resultHash.toString("hex"), commit.toString("hex"));
+    assert.equal(proof!.promptHash?.toString("hex"), pH.toString("hex"));
+    assert.equal(proof!.outputHash?.toString("hex"), oH.toString("hex"));
+  });
+
+  it("forge declara promptHash de OTRO input → proof rechazado (ata al despachado)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "qwen3:4b" });
+    let proof: unknown = null;
+    const it = ex.execute(req({ onProof: (p) => (proof = p) }));
+    // El forge hashea un input que NO es el que el gateway le mandó.
+    const pH = promptHashOf({ model: "qwen3:4b", prompt: "otro prompt inventado" });
+    const oH = createHash("sha256").update("ok", "utf8").digest();
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok", kind: "content" });
+      ch.emit({
+        type: "job.done",
+        jobId: "j1",
+        resultHash: commitProof(pH, oH).toString("hex"),
+        promptHash: pH.toString("hex"),
+        outputHash: oH.toString("hex"),
+        signature: "ee".repeat(32),
+      });
+    }, 10);
+    await assert.rejects(() => drain(it), /proof hash mismatch/);
+    assert.equal(proof, null);
   });
 
   it("probe = canal vivo; resident = reporte inyectado", async () => {

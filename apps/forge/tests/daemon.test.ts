@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { FakeForgeExec, TrackedExec } from "@weaver/forge-exec";
+import { FakeForgeExec, TrackedExec, promptHashOf, commitProof } from "@weaver/forge-exec";
 import type { DaemonChannel, ForgeMsg, GatewayMsg } from "@weaver/forge-net";
 import { ForgeDaemon, type DaemonInstance } from "../src/daemon.ts";
 
@@ -102,9 +102,15 @@ test("job.assign → ack → chunks → done con hash+firma del output", async (
   assert.deepEqual(ch.last("job.ack"), { type: "job.ack", jobId: "job1" });
   const done = ch.last("job.done")!;
   assert.equal(done.jobId, "job1");
-  const expectHash = createHash("sha256").update("echo:hola", "utf8").digest();
-  assert.equal(done.resultHash, expectHash.toString("hex"));
-  assert.equal(done.signature, sign(expectHash).toString("hex"));
+  // Commitment era: resultHash = sha256(promptHash‖outputHash) — firma ata
+  // input+output. outputHash es sha256 del contenido visible.
+  const outHash = createHash("sha256").update("echo:hola", "utf8").digest();
+  const pH = promptHashOf({ model: "qwen3:4b", prompt: "hola" });
+  const expectCommit = commitProof(pH, outHash);
+  assert.equal(done.outputHash, outHash.toString("hex"));
+  assert.equal(done.promptHash, pH.toString("hex"));
+  assert.equal(done.resultHash, expectCommit.toString("hex"));
+  assert.equal(done.signature, sign(expectCommit).toString("hex"));
   d.stop();
 });
 
@@ -126,7 +132,10 @@ test("job con chunks think → resultHash ata solo el contenido visible", async 
   await new Promise((r) => setTimeout(r, 50));
   const done = ch.last("job.done")!;
   const expectHash = createHash("sha256").update("echo:hola", "utf8").digest();
-  assert.equal(done.resultHash, expectHash.toString("hex"), "think fuera del hash — el receipt ata lo leído");
+  assert.equal(done.outputHash, expectHash.toString("hex"), "think fuera del outputHash — el receipt ata lo leído");
+  // commitment = sha256(promptHash‖outputHash) — el input también ata.
+  const pH = promptHashOf({ model: "qwen3:4b", prompt: "hola" });
+  assert.equal(done.resultHash, commitProof(pH, expectHash).toString("hex"));
   d.stop();
 });
 

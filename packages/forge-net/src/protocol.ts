@@ -38,9 +38,13 @@ export type JobDoneMsg = {
   // Tool calls del engine viajan en el done — paridad con StreamChunk local:
   // el gateway las ejecuta y re-envía con role:"tool" (multi-hop remoto).
   toolCalls?: { name: string; arguments: Record<string, unknown> }[];
-  // Proof L0 viaja por el wire: sha256 del output + firma ed25519 del forge
-  // (hex). El gateway NO re-firma — el proof lo emite quien ejecutó.
+  // Proof L0 viaja por el wire: firma del forge (hex) sobre el commitment
+  // sha256(promptHash‖outputHash) — resultHash ES ese commitment. promptHash
+  // y outputHash viajan para verificación transparente; forges legacy mandan
+  // resultHash = sha256(output) sin los campos extra (gateway acepta ambos).
   resultHash: string;
+  promptHash?: string;
+  outputHash?: string;
   signature: string;
 };
 // midStream=true: falló DESPUÉS de emitir tokens — no reintentable en
@@ -153,6 +157,8 @@ export function decode(raw: string): ForgeMsg | null {
         jobId: m.jobId,
         resultHash: m.resultHash,
         signature: m.signature,
+        ...(isStr(m.promptHash) ? { promptHash: m.promptHash } : {}),
+        ...(isStr(m.outputHash) ? { outputHash: m.outputHash } : {}),
         ...(isObj(m.stats) ? { stats: m.stats as ExecStats } : {}),
         ...(Array.isArray(m.toolCalls) ? { toolCalls: m.toolCalls as JobDoneMsg["toolCalls"] } : {}),
       };

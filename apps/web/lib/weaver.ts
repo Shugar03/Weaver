@@ -84,13 +84,18 @@ const getJson = async <T>(url: string): Promise<T | null> => {
 };
 
 // spec 009 — receipt verificable del proof L0 del forge.
-// El cliente verifica: sha256(output) == resultHash &&
-// ecrecover(personal_sign(resultHash)) == signer (registry on-chain).
+// Commitment era: resultHash = sha256(promptHash‖outputHash) — la firma ata
+// input+output. El cliente verifica: outputHash == sha256(texto leído),
+// promptHash == sha256(input enviado), commitment == resultHash, y
+// ecrecover(personal_sign(resultHash)) == signer. Legacy: sin promptHash,
+// resultHash era sha256(output) directo — el chip soporta ambos.
 export type WeaverProof = {
   jobId: string;
   forgeId: string;
-  resultHash: string; // hex, sha256 del output servido
-  signature: string; // 0x…, personal_sign del forge
+  resultHash: string; // hex — commitment (o outputHash en receipts legacy)
+  signature: string; // 0x…, personal_sign del forge sobre resultHash
+  promptHash?: string; // hex — sha256 del input despachado
+  outputHash?: string; // hex — sha256 del output visible
   signer?: string; // address on-chain del forge (ausente si no está en registry)
 };
 
@@ -286,7 +291,17 @@ export type RunCallbacks = {
   onReasoning?: (t: string) => void;
   // spec 014: failover real — el gateway reporta quién murió y quién sirvió.
   onRoute?: (route: WeaverRoute) => void;
-  onDone: (meta: { forge: string; ttftMs: number; etrMs: number; reason: string; proof?: WeaverProof; route?: WeaverRoute }) => void;
+  onDone: (meta: {
+    forge: string;
+    ttftMs: number;
+    etrMs: number;
+    reason: string;
+    proof?: WeaverProof;
+    route?: WeaverRoute;
+    // input del request servido (snapshot del último hop) — el chip lo usa
+    // para recomputar promptHash del commitment.
+    input?: { model: string; messages: { role: string; content: string; tool_calls?: unknown; name?: string }[] };
+  }) => void;
   onError: (msg: string) => void;
 };
 
@@ -344,6 +359,7 @@ export async function runChat(base: string, model: string, prompt: string, cb: R
       reason: decision?.reason ?? "sin-decisión",
       ...(proof ? { proof } : {}),
       ...(route ? { route } : {}),
+      input: { model, messages: [{ role: "user", content: prompt }] },
     });
     return;
   } catch (e) {
@@ -640,6 +656,7 @@ export async function runAgent(
   // spec 014: el failover de cada hop se reporta en vivo (cb.onRoute); el del
   // último hop queda en la meta para el badge persistente del mensaje.
   let route: WeaverRoute | undefined;
+  let lastInput: { model: string; messages: { role: string; content: string; tool_calls?: unknown; name?: string }[] } | undefined;
   try {
     void decisionP.then((d) => {
       if (d) cb.onStatus("forge-selected", d.forge);
@@ -647,6 +664,9 @@ export async function runAgent(
     for (let hop = 0; hop < maxHops; hop++) {
       let finish = "stop";
       const calls: ToolCall[] = [];
+      // El proof ata el input DESPACHADO — snapshot por hop: el último
+      // request servido es el que quedó firmado (msgs muta post-tool).
+      lastInput = { model, messages: [...msgs] };
       for await (const ev of streamChat(base, {
         model,
         messages: msgs,
@@ -717,6 +737,7 @@ export async function runAgent(
       reason: decision?.reason ?? "sin-decisión",
       ...(proof ? { proof } : {}),
       ...(route ? { route } : {}),
+      ...(lastInput ? { input: lastInput } : {}),
     });
   } catch (e) {
     cb.onError(e instanceof Error ? e.message : "error de red");

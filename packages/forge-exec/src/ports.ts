@@ -30,9 +30,19 @@ export type ExecOptions = {
   think?: boolean; // false = el engine no razona (TTFT content mínimo)
   numCtx?: number; // ventana de contexto del engine (Ollama default 4096)
 };
-// Proof L0 (S23): recibo del forge — sha256 de SU output + firma ed25519.
-// El contrato lo verifica en release: pago condicionado a entrega probada.
-export type Proof = { forgeId: string; resultHash: Buffer; signature: Buffer };
+// Proof L0 (S23): recibo del forge — firma del commitment que ata
+// prompt+output (ver proofhash.ts). El contrato lo verifica en release:
+// pago condicionado a entrega probada DEL INPUT DESPACHADO.
+// resultHash = commitment firmado. promptHash/outputHash viajan para
+// verificación transparente (chip muestra ambos); forges legacy sin
+// promptHash firman outputHash directo — el gateway acepta ambos contratos.
+export type Proof = {
+  forgeId: string;
+  resultHash: Buffer;
+  signature: Buffer;
+  promptHash?: Buffer;
+  outputHash?: Buffer;
+};
 // onForge: quién emitió el primer token. onProof: recibo firmado al completar.
 // Ambos por request — sin estado compartido entre requests concurrentes.
 // messages: si el cliente mandó el array OpenAI, viaja verbatim (roles + system

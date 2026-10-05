@@ -4,6 +4,7 @@
 // El signer es una función inyectada (forge-exec no conoce stellar-sdk).
 import { createHash } from "node:crypto";
 import type { ExecRequest, ForgeExec, StreamChunk } from "./ports.ts";
+import { commitProof, promptHashOf } from "./proofhash.ts";
 
 // EVM: el signer puede ser async (viem signMessage es Promise) — el Soroban
 // ed25519 era sync; se acepta cualquiera de los dos.
@@ -32,15 +33,21 @@ export class ProvenForgeExec implements ForgeExec {
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+    // El input se hashea ANTES de iterar: el commitment ata al request
+    // despachado, no al que el forge quiera declarar después.
+    const promptHash = promptHashOf({ model: req.model, prompt: req.prompt, ...(req.messages ? { messages: req.messages } : {}) });
     const hasher = createHash("sha256");
     // El proof lo emite ESTE wrapper (firmado) — se suprime el del inner para que
     // un FakeForgeExec dentro no reporte dos recibos del mismo output.
     for await (const chunk of this.inner.execute({ ...req, onProof: undefined })) {
       if (chunk.done) {
-        const resultHash = hasher.digest();
+        const outputHash = hasher.digest();
+        const resultHash = commitProof(promptHash, outputHash);
         req.onProof?.({
           forgeId: this.inner.forgeId,
           resultHash,
+          promptHash,
+          outputHash,
           signature: await this.sign(resultHash),
         });
       } else {

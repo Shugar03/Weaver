@@ -204,25 +204,55 @@ await t("landing / renderiza con nav", async () => {
   assert(/weaver/i.test(body), "landing sin marca weaver");
   await page.close();
 });
+// ASK = sin tools → single-hop determinístico. EXEC puede hacer N hops
+// (tool_calls) y un modelo thinking tarda minutos — legítimo pero no
+// determinístico para e2e. El path de tools queda para smoke manual.
+const askMode = async (page) => {
+  const btn = page.getByRole("button", { name: "ask", exact: true });
+  if (await btn.isVisible().catch(() => false)) await btn.click();
+};
+// Determinismo e2e: ollama-local (modelo real + num_ctx=16k) tarda minutos
+// bajo presión de RAM — el path de modelo REAL ya se ejercita en los tests
+// API. En browser, matamos ollama-local primero: forge-sim-01 sirve al
+// instante y pasa por el MISMO ProvenForgeExec (commitment firmado real).
+const killForge = (forgeId, dead) =>
+  fetch(`${GW}/v1/admin/kill`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${OPERATOR_KEY}` },
+    body: JSON.stringify({ forgeId, dead }),
+  });
 await t("/chat: enviar → stream → FORGE meta visible", async () => {
+  await killForge("ollama-local", true);
   const page = await newPage();
-  await page.goto(`${WEB}/chat`, { waitUntil: "networkidle", timeout: 60_000 });
-  await page.getByPlaceholder("Escribe un mensaje...").fill("decí solo: ok");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(() => /FORGE\s/.test(document.body.innerText), undefined, { timeout: 180_000 });
-  const forge = await page.evaluate(() => document.body.innerText.match(/FORGE\s+(\S+)/)?.[1]);
-  assert(forge, "FORGE meta ausente");
-  console.log(`    ↳ served by ${forge}`);
-  await page.close();
+  try {
+    await page.goto(`${WEB}/chat`, { waitUntil: "networkidle", timeout: 60_000 });
+    await askMode(page);
+    await page.getByPlaceholder("Escribe un mensaje...").fill("decí solo: ok");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /FORGE\s/.test(document.body.innerText), undefined, { timeout: 60_000 });
+    const forge = await page.evaluate(() => document.body.innerText.match(/FORGE\s+(\S+)/)?.[1]);
+    assert(forge, "FORGE meta ausente");
+    console.log(`    ↳ served by ${forge}`);
+  } finally {
+    await killForge("ollama-local", false);
+    await page.close();
+  }
 });
 await t("/chat: PROOF chip verifica (PROOF ✓)", async () => {
+  await killForge("ollama-local", true);
   const page = await newPage();
-  await page.goto(`${WEB}/chat`, { waitUntil: "networkidle", timeout: 60_000 });
-  await page.getByPlaceholder("Escribe un mensaje...").fill("decí solo: ok");
-  await page.keyboard.press("Enter");
-  // WORKER_SECRET está set → embedded firma → el chip debe verificar client-side
-  await page.waitForFunction(() => document.body.innerText.includes("PROOF ✓"), undefined, { timeout: 180_000 });
-  await page.close();
+  try {
+    await page.goto(`${WEB}/chat`, { waitUntil: "networkidle", timeout: 60_000 });
+    await askMode(page);
+    await page.getByPlaceholder("Escribe un mensaje...").fill("decí solo: ok");
+    await page.keyboard.press("Enter");
+    // WORKER_SECRET está set → embedded firma → el chip verifica el
+    // commitment (promptHash+outputHash+firma) client-side.
+    await page.waitForFunction(() => document.body.innerText.includes("PROOF ✓"), undefined, { timeout: 60_000 });
+  } finally {
+    await killForge("ollama-local", false);
+    await page.close();
+  }
 });
 await t("/chat: kill ollama-local → sim sirve y NO inventa badge failover", async () => {
   // spec 014 end-to-end (caso honesto): el forge matado queda último en el
@@ -237,6 +267,7 @@ await t("/chat: kill ollama-local → sim sirve y NO inventa badge failover", as
   const page = await newPage();
   try {
     await page.goto(`${WEB}/chat`, { waitUntil: "networkidle", timeout: 60_000 });
+    await askMode(page);
     await page.getByPlaceholder("Escribe un mensaje...").fill("decí solo: ok");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => /FORGE\s/.test(document.body.innerText), undefined, { timeout: 60_000 });

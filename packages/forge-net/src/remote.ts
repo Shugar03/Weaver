@@ -8,6 +8,7 @@
 // - job.fail midStream o desconexión con job en vuelo → propaga explícito,
 //   jamás [DONE] falso ni retry silencioso.
 import { createHash } from "node:crypto";
+import { commitProof, promptHashOf } from "@weaver/forge-exec";
 import type {
   ExecRequest,
   ForgeExec,
@@ -118,7 +119,10 @@ export class RemoteForgeExec implements ForgeExec {
           ackResolve();
           break;
         case "job.chunk":
-          served.update(m.token, "utf8");
+          // think fuera del hash (contrato proofhash): el output verificable
+          // es el contenido visible. Los chunks sí cuentan para billing —
+          // el razonamiento es trabajo real medido gateway-side.
+          if (m.kind !== "think") served.update(m.token, "utf8");
           servedChunks++;
           queue.push({ token: m.token, done: false, ...(m.kind ? { kind: m.kind } : {}) });
           wakeUp();
@@ -131,15 +135,25 @@ export class RemoteForgeExec implements ForgeExec {
             break;
           }
           // Proof L0 del wire — el gateway NO re-firma; el recibo es del forge.
+          // Commitment moderno (promptHash presente): resultHash =
+          // sha256(promptHash‖outputHash) y el promptHash debe matchear el
+          // input que ESTE gateway despachó. Legacy: resultHash=outputHash.
           const declared = Buffer.from(m.resultHash, "hex");
-          if (!served.digest().equals(declared)) {
-            fail(new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al output servido`));
+          const servedOut = served.digest();
+          const proofOk = m.promptHash
+            ? promptHashOf({ model: req.model, prompt: req.prompt, ...(req.messages ? { messages: req.messages } : {}) }).equals(
+                  Buffer.from(m.promptHash, "hex"),
+                ) && commitProof(Buffer.from(m.promptHash, "hex"), servedOut).equals(declared)
+            : servedOut.equals(declared);
+          if (!proofOk) {
+            fail(new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al input/output servido`));
             break;
           }
           req.onProof?.({
             forgeId: this.forgeId,
             resultHash: declared,
             signature: Buffer.from(m.signature, "hex"),
+            ...(m.promptHash ? { promptHash: Buffer.from(m.promptHash, "hex"), outputHash: servedOut } : {}),
           });
           queue.push({
             token: "",

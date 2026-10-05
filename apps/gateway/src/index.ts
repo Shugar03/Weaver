@@ -1024,6 +1024,11 @@ export function createApp(deps: Deps) {
               jobId: id,
               forgeId: proof.forgeId,
               resultHash: proof.resultHash.toString("hex"),
+              // Commitment era: signature ata sha256(promptHash‖outputHash).
+              // Los sub-hashes viajan para que el cliente verifique las DOS
+              // puntas (input despachado + output leído) sin trust.
+              ...(proof.promptHash ? { promptHash: proof.promptHash.toString("hex") } : {}),
+              ...(proof.outputHash ? { outputHash: proof.outputHash.toString("hex") } : {}),
               signature: `0x${proof.signature.toString("hex")}`,
               ...(deps.forgePubkeyOf?.(proof.forgeId)
                 ? { signer: deps.forgePubkeyOf(proof.forgeId) }

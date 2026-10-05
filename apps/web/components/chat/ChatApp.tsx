@@ -37,6 +37,7 @@ type Msg = {
   etrMs?: number;
   reason?: string;
   proof?: WeaverProof; // spec 009: receipt verificable del forge que sirvió
+  proofInput?: { model: string; messages: { role: string; content: string; tool_calls?: unknown; name?: string }[] };
   route?: WeaverRoute; // spec 014: failover real reportado por el gateway
 };
 
@@ -345,7 +346,7 @@ export function ChatApp({ base }: { base: string }) {
         onDone: (m) => {
           const final: Msg[] = [
             ...withUser,
-            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason, proof: m.proof, route: m.route },
+            { ...liveMsg(), forge: m.forge, ttftMs: m.ttftMs, etrMs: m.etrMs, reason: m.reason, proof: m.proof, proofInput: m.input, route: m.route },
           ];
           setMessages(final);
           setTtfts((prev) => [...prev.slice(-19), m.ttftMs]);
@@ -629,7 +630,7 @@ export function ChatApp({ base }: { base: string }) {
                     {m.proof && (
                       <>
                         {"  "}
-                        <ProofChip proof={m.proof} output={m.text} base={base} />
+                        <ProofChip proof={m.proof} output={m.text} input={m.proofInput} base={base} />
                       </>
                     )}
                     {m.route && (

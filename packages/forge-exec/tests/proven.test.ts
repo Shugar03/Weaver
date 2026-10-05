@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { FakeForgeExec } from "../src/ports.ts";
 import { FailoverForgeExec } from "../src/failover.ts";
 import { ProvenForgeExec } from "../src/proven.ts";
+import { commitProof, promptHashOf } from "../src/proofhash.ts";
 import type { ExecRequest, ForgeExec, Proof, StreamChunk } from "../src/ports.ts";
 
 const fakeSign = (h: Buffer) => Buffer.concat([Buffer.from("SIG:"), h]);
@@ -24,9 +25,26 @@ describe("S23 ProvenForgeExec", () => {
     assert.equal(out, "echo:hola");
     assert.equal(proofs.length, 1);
     assert.equal(proofs[0].forgeId, "f-real");
-    assert.deepEqual(proofs[0].resultHash, createHash("sha256").update("echo:hola").digest());
+    // Commitment era: resultHash = sha256(promptHash‖outputHash) — la firma
+    // ata input+output. El outputHash sigue siendo sha256 del contenido.
+    const outputHash = createHash("sha256").update("echo:hola").digest();
+    const promptHash = promptHashOf({ model: "m", prompt: "hola" });
+    assert.deepEqual(proofs[0].outputHash, outputHash);
+    assert.deepEqual(proofs[0].promptHash, promptHash);
+    assert.deepEqual(proofs[0].resultHash, commitProof(promptHash, outputHash));
     assert.equal(proofs[0].signature.subarray(0, 4).toString(), "SIG:");
-    assert.equal(proofs[0].signature.length, 36); // "SIG:" + 32B hash
+    assert.equal(proofs[0].signature.length, 36); // "SIG:" + 32B commitment
+  });
+
+  it("el commitment ata el INPUT: mismo output, otro prompt → otro resultHash", async () => {
+    const proofs: Proof[] = [];
+    const exec = new ProvenForgeExec(new FakeForgeExec({ forgeId: "f" }), fakeSign);
+    // FakeForgeExec devuelve echo:<prompt[:24]> — mismo prompt en ambos →
+    // para aislar el binding de input, chequeamos promptHash directo.
+    await collect(exec, { onProof: (p) => proofs.push(p), prompt: "hola" });
+    await collect(exec, { onProof: (p) => proofs.push(p), prompt: "chau" });
+    assert.notDeepEqual(proofs[0].promptHash, proofs[1].promptHash);
+    assert.notDeepEqual(proofs[0].resultHash, proofs[1].resultHash);
   });
 
   it("tokens think NO entran al hash — el receipt ata la respuesta visible", async () => {
@@ -47,10 +65,13 @@ describe("S23 ProvenForgeExec", () => {
     await collect(exec, { onProof: (p) => proofs.push(p) });
     assert.equal(proofs.length, 1);
     assert.deepEqual(
-      proofs[0].resultHash,
+      proofs[0].outputHash,
       createHash("sha256").update("respuesta visible").digest(),
-      "el hash ata solo el contenido — el think es efímero y no verificable client-side",
+      "el outputHash ata solo el contenido — el think es efímero y no verificable client-side",
     );
+    // y el commitment queda consistente con ese outputHash + el input.
+    const pH = promptHashOf({ model: "m", prompt: "hola" });
+    assert.deepEqual(proofs[0].resultHash, commitProof(pH, proofs[0].outputHash!));
   });
 
   it("muerte mid-stream → sin proof (trabajo no completado no se firma)", async () => {

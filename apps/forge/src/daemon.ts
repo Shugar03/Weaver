@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import type { DaemonChannel, GatewayMsg, InstanceReport } from "@weaver/forge-net";
 import type { ForgeExec, ImageExec } from "@weaver/forge-exec";
+import { commitProof, promptHashOf } from "@weaver/forge-exec";
 import { ollamaVramUsedGb, osIdleMs } from "./budgets.ts";
 
 export type DaemonInstance = {
@@ -194,6 +195,10 @@ export class ForgeDaemon {
       return this.fail(m.jobId, `instance ${m.instanceId} desconocida o no-text`, false);
     }
     this.channel.send({ type: "job.ack", jobId: m.jobId });
+    // Commitment input+output (proofhash.ts): el hash del prompt es sobre lo
+    // que ESTE assign trajo — el gateway lo recomputa y compara, así que el
+    // forge no puede reclamar que le llegó otro input.
+    const promptHash = promptHashOf({ model: m.model, prompt: m.prompt, ...(m.messages ? { messages: m.messages } : {}) });
     const hasher = createHash("sha256");
     let midStream = false;
     try {
@@ -218,11 +223,14 @@ export class ForgeDaemon {
             if (xs.length > TOK_WINDOW) xs.shift();
             this.tok.set(i.instanceId, xs);
           }
-          const hash = hasher.digest();
+          const outputHash = hasher.digest();
+          const hash = commitProof(promptHash, outputHash);
           this.channel.send({
             type: "job.done",
             jobId: m.jobId,
             resultHash: hash.toString("hex"),
+            promptHash: promptHash.toString("hex"),
+            outputHash: outputHash.toString("hex"),
             signature: (await this.sign(hash)).toString("hex"),
             ...(c.stats ? { stats: c.stats } : {}),
             ...(c.toolCalls ? { toolCalls: c.toolCalls } : {}),

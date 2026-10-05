@@ -8,16 +8,22 @@
 import { useEffect, useState } from "react";
 import { verifyMessage } from "viem";
 import { short, txUrl } from "../../lib/site";
+import { commitProof, promptHashInput, sha256hex, type CanonicalMessage } from "../../lib/proofhash";
 import type { WeaverProof } from "../../lib/weaver";
 
 type Verdict = "checking" | "ok" | "bad" | "unverifiable";
 
-const sha256hex = async (text: string) => {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-};
-
-export function ProofChip({ proof, output, base }: { proof: WeaverProof; output: string; base: string }) {
+export function ProofChip({
+  proof,
+  output,
+  input,
+  base,
+}: {
+  proof: WeaverProof;
+  output: string;
+  input?: { model: string; messages: CanonicalMessage[] };
+  base: string;
+}) {
   const [verdict, setVerdict] = useState<Verdict>("checking");
   const [releaseTx, setReleaseTx] = useState<string | undefined>();
 
@@ -27,9 +33,26 @@ export function ProofChip({ proof, output, base }: { proof: WeaverProof; output:
       // 1) El hash ata el receipt al texto servido — si no matchea, el
       //    receipt no es de ESTE output (o el stream fue alterado).
       const digest = await sha256hex(output);
-      if (digest !== proof.resultHash) {
+      // Commitment era: resultHash = sha256(promptHash‖outputHash). Legacy:
+      // resultHash era el output hash directo. Se soportan ambos.
+      const committed = Boolean(proof.promptHash && proof.outputHash);
+      if (committed ? digest !== proof.outputHash : digest !== proof.resultHash) {
         if (alive) setVerdict("bad");
         return;
+      }
+      if (committed) {
+        // El receipt también ata el INPUT: recomputamos el hash del request
+        // que mandamos — un forge que respondió a OTRO prompt produce otro
+        // commitment. Sin input (receipt viejo de otro flujo) no se puede
+        // recomputar → la firma sigue verificable, el binding no.
+        const commitmentOk =
+          input !== undefined &&
+          (await promptHashInput(input)) === proof.promptHash &&
+          (await commitProof(proof.promptHash!, proof.outputHash!)) === proof.resultHash;
+        if (!commitmentOk) {
+          if (alive) setVerdict("bad");
+          return;
+        }
       }
       // 2) La firma ata al signer on-chain. Sin signer en el receipt (forge
       //    no registrado) o firma no-EVM: hash ok, identidad no verificable.
@@ -61,7 +84,7 @@ export function ProofChip({ proof, output, base }: { proof: WeaverProof; output:
     return () => {
       alive = false;
     };
-  }, [proof, output, base]);
+  }, [proof, output, input, base]);
 
   const style =
     verdict === "ok"

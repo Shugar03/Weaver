@@ -1,5 +1,7 @@
 // Module ForgeExec — única superficie pública.
 export { FakeForgeExec } from "./ports.ts";
+export { promptHashOf, commitProof } from "./proofhash.ts";
+export type { CanonicalMessage } from "./proofhash.ts";
 export { FailoverForgeExec } from "./failover.ts";
 export { OllamaMLXAdapter } from "./ollama.ts";
 export { FluxKleinForge } from "./image.ts";
