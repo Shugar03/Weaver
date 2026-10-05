@@ -51,7 +51,17 @@ const DEFAULT_MODEL = "qwen3:4b";
 // skills); Exec = todo, incluido chaos (kill/revive), memoria y tools MCP
 // (side-effects ajenos → jamás en Plan).
 type Mode = "ask" | "plan" | "exec";
-const NUM_CTX = 16384; // qwen3:4b aguanta mucho más; 16k cubre agente+historial sin inflar KV cache
+// num_ctx adaptativo (S46): el KV cache escala con el contexto pedido —
+// 16k fijo inflaba cada request (medido live: 7s → >2min bajo presión de
+// RAM en Ollama). Pedimos el bucket que cubre historial+tools+salida,
+// no el máximo siempre. El medidor muestra el máximo posible.
+const NUM_CTX = 16384;
+const numCtxFor = (msgs: AgentMessage[], tools: ToolDef[]): number => {
+  // ×1.3 por los hops de tools que acumulan resultados + 1024 de salida.
+  const need = Math.ceil(estimateContextTokens(msgs, tools) * 1.3) + 1024;
+  for (const b of [2048, 4096, 8192]) if (need <= b) return b;
+  return NUM_CTX;
+};
 function toolsForMode(mo: Mode, server: ToolDef[]): ToolDef[] {
   if (mo === "ask") return [];
   if (mo === "plan") return [...PLAN_TOOLS, ...server.filter((t) => t.readonly)];
@@ -310,7 +320,7 @@ export function ChatApp({ base }: { base: string }) {
       base,
       model,
       history,
-      { tools, numCtx: NUM_CTX, callTool },
+      { tools, numCtx: numCtxFor(history, tools), callTool },
       {
         onStatus: (s, detail) => {
           setStatus(s);
