@@ -60,6 +60,7 @@ export class ForgeDaemon {
   private readonly running = new Map<string, AbortController>(); // jobId → cancel
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private unMsg: (() => void) | null = null;
+  private unClose: (() => void) | null = null;
 
   constructor(deps: {
     channel: DaemonChannel;
@@ -86,6 +87,11 @@ export class ForgeDaemon {
 
   start(): void {
     this.unMsg = this.channel.onMessage((m) => void this.onMsg(m));
+    // Canal muerto = el output ya no puede entregarse — abortar los jobs en
+    // vuelo o el engine sigue quemando GPU para nadie (kill/chaos/drop).
+    this.unClose = this.channel.onClose(() => {
+      for (const ac of this.running.values()) ac.abort();
+    });
     void this.beat();
     this.hbTimer = setInterval(() => void this.beat(), this.heartbeatMs);
     this.hbTimer.unref?.();
@@ -96,9 +102,14 @@ export class ForgeDaemon {
     this.hbTimer = null;
     this.unMsg?.();
     this.unMsg = null;
+    // Abort manual: channel.close() dispara 'close' async y el onClose puede
+    // ya estar desuscripto — el abort es idempotente.
+    for (const ac of this.running.values()) ac.abort();
     // Suelta el socket: connectLoop.onClose resuelve, cancel() no deja el
     // daemon colgado con una conexión zombie.
     this.channel.close?.();
+    this.unClose?.();
+    this.unClose = null;
   }
 
   private async beat(): Promise<void> {
