@@ -34,6 +34,7 @@ necesita un proceso largo.
    | `DEPOSIT_ADDRESS` + `USDC_ISSUER` | G… | deposit watcher → acredita topups USDC |
    | `SETTLEMENT_SECRET` + `SETTLEMENT_CONTRACT` | S…/C… | escrow on-chain (deploy v5 primero) |
    | `CORS_ORIGIN` | `https://tu-app.vercel.app` | cuando la web exista |
+   | `RATE_LIMIT_RPM` | `120` | por caller (key o IP); default ya activo — `0` lo apaga |
    | `TLS_CERT` + `TLS_KEY` | paths a pem | TLS nativo (wss:// para forges); Railway termina TLS en el proxy — solo si exponés el puerto directo |
 
    `PORT` lo inyecta Railway — no setear.

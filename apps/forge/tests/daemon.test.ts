@@ -139,6 +139,39 @@ test("job con chunks think → resultHash ata solo el contenido visible", async 
   d.stop();
 });
 
+test("job.assign con resume → el exec recibe el prefijo y el promptHash lo ata", async () => {
+  // Mid-stream resume: el gateway re-despacha con resume.prefix — el daemon
+  // debe pasarlo al exec (el adapter lo convierte en continuación) y meterlo
+  // en el commitment, o el gateway rechaza el proof como mintiendo el input.
+  let seen: string | undefined;
+  class Spy extends FakeForgeExec {
+    override async *execute(r: import("@weaver/forge-exec").ExecRequest): AsyncIterable<import("@weaver/forge-exec").StreamChunk> {
+      seen = r.resume?.prefix;
+      yield { token: "continúa", done: false, kind: "content" };
+      yield { token: "", done: true };
+    }
+  }
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({ channel: ch, instances: [inst(new Spy({ forgeId: "gpu0", model: "qwen3:4b" }))], sign });
+  d.start();
+  ch.inject({
+    type: "job.assign",
+    jobId: "jR",
+    instanceId: "gpu0",
+    model: "qwen3:4b",
+    prompt: "hola",
+    resume: { prefix: "el otro dijo: " },
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(seen, "el otro dijo: ");
+  const done = ch.last("job.done")!;
+  const pH = promptHashOf({ model: "qwen3:4b", prompt: "hola", resume: "el otro dijo: " });
+  const oH = createHash("sha256").update("continúa", "utf8").digest();
+  assert.equal(done.promptHash, pH.toString("hex"));
+  assert.equal(done.resultHash, commitProof(pH, oH).toString("hex"));
+  d.stop();
+});
+
 test("job.assign a instanceId desconocido → job.fail (no cuelga el gateway)", async () => {
   const ch = new FakeChannel();
   const d = new ForgeDaemon({ channel: ch, instances: [inst(new FakeForgeExec({ forgeId: "gpu0" }))], sign });

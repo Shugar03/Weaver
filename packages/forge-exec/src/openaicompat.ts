@@ -21,6 +21,7 @@ type OaiDelta = {
   role?: string;
   content?: string | null;
   reasoning_content?: string | null; // vLLM/DeepSeek: thinking del modelo
+  reasoning?: string | null; // OpenRouter/otros: misma semántica, otro campo
   tool_calls?: {
     index?: number;
     id?: string;
@@ -139,7 +140,8 @@ export class OpenAICompatAdapter implements ForgeExec {
         }
         if (json.usage) usage = json.usage;
         const d = json.choices?.[0]?.delta;
-        if (d?.reasoning_content) yield { token: d.reasoning_content, done: false, kind: "think" };
+        const think = d?.reasoning_content ?? d?.reasoning;
+        if (think) yield { token: think, done: false, kind: "think" };
         if (d?.content) yield { token: d.content, done: false, kind: "content" };
         for (const tc of d?.tool_calls ?? []) {
           const idx = tc.index ?? 0;

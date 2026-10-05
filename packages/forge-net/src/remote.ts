@@ -153,10 +153,19 @@ export class RemoteForgeExec implements ForgeExec {
             fail(new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al input/output servido`));
             break;
           }
+          // La firma también se sanea acá: un hex malformado produce un
+          // buffer de longitud rara que el contrato rechaza on-chain —
+          // mejor fallar antes que pagar el gas de un release inválido.
+          // Válidas: 64B ed25519 (stellar) o 65B secp256k1 (evm).
+          const sigBytes = Buffer.from(m.signature, "hex");
+          if (sigBytes.length !== 64 && sigBytes.length !== 65) {
+            fail(new Error(`forge ${this.forgeId}: firma malformada (${sigBytes.length}B)`));
+            break;
+          }
           req.onProof?.({
             forgeId: this.forgeId,
             resultHash: declared,
-            signature: Buffer.from(m.signature, "hex"),
+            signature: sigBytes,
             ...(m.promptHash ? { promptHash: Buffer.from(m.promptHash, "hex"), outputHash: servedOut } : {}),
           });
           queue.push({

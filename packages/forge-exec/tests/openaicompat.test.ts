@@ -44,6 +44,42 @@ describe("OpenAICompatAdapter (vLLM/llama.cpp-server)", () => {
     assert.equal(done.stats?.genTokens, 7);
   });
 
+  it("variante `reasoning` (OpenRouter) también mapea a kind think", async () => {
+    const a = new OpenAICompatAdapter({
+      model: "big-model",
+      fetchFn: async () =>
+        sse([
+          { choices: [{ delta: { reasoning: "piensa" } }] },
+          { choices: [{ delta: { content: "ok" } }] },
+          { choices: [{ delta: {}, finish_reason: "stop" }] },
+          "DONE",
+        ]),
+    });
+    const chunks = await collect(a);
+    assert.equal(chunks[0].kind, "think");
+    assert.equal(chunks[0].token, "piensa");
+    assert.equal(chunks[1].kind, "content");
+  });
+
+  it("frame SSE partido a mitad de línea → el buffer recompone antes de parsear", async () => {
+    // TCP corta donde quiere: un JSON puede llegar en 2 reads. El parser
+    // acumula por \n — un frame truncado NO debe romper ni perder tokens.
+    const full = `data: ${JSON.stringify({ choices: [{ delta: { content: "partido" } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const bytes = new TextEncoder().encode(full);
+    const half = bytes.length >> 1;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(bytes.slice(0, half));
+        c.enqueue(bytes.slice(half));
+        c.close();
+      },
+    });
+    const a = new OpenAICompatAdapter({ model: "m", fetchFn: async () => new Response(stream, { status: 200 }) });
+    const chunks = await collect(a);
+    assert.equal(chunks[0].token, "partido");
+    assert.ok(chunks.at(-1)!.done);
+  });
+
   it("tool_calls llegan por delta indexado → completos en done", async () => {
     const a = new OpenAICompatAdapter({
       model: "big-model",
