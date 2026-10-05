@@ -20,6 +20,8 @@
 // Uso: `node apps/gateway/src/serve.ts` (dejar corriendo en una terminal).
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { createApp, type CatalogMeta } from "./index.ts";
 import { PgIndexerStore } from "./indexerstore.ts";
@@ -833,12 +835,26 @@ if (evmOn && process.env.EVM_CREDITS) {
 
 const port = Number(process.env.PORT ?? 3001);
 const hostname = process.env.HOST ?? "127.0.0.1";
-// S15a: público exige HOST=0.0.0.0 explícito; el default sigue siendo loopback (S11).
-const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
-  console.log(`weaver-gateway en http://${info.address}:${info.port}`);
+// TLS nativo (S47): TLS_CERT + TLS_KEY → https server → el canal forge↔gateway
+// viaja por wss:// (el daemon deriva wss de https:// automáticamente). Sin certs
+// sigue http:// — en hosted deploy se termina TLS acá o en proxy, pero JAMÁS
+// prompt en claro por WAN: el warning abajo lo dice explícito.
+const tlsCert = process.env.TLS_CERT;
+const tlsKey = process.env.TLS_KEY;
+const tls = tlsCert && tlsKey
+  ? {
+      createServer: createHttpsServer,
+      serverOptions: { cert: readFileSync(tlsCert), key: readFileSync(tlsKey) },
+    }
+  : undefined;
+const server = serve({ fetch: app.fetch, port, hostname, ...(tls ?? {}) }, (info) => {
+  console.log(`weaver-gateway en ${tls ? "https" : "http"}://${info.address}:${info.port}`);
   console.log(
-    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"} settle=${process.env.SETTLEMENT_SECRET ? `ON(${SETTLE_CHAIN})` : "OFF"} db=${process.env.DATABASE_URL ? "pg" : "mem"}`,
+    `config: cors=${corsOrigins.length ? corsOrigins.join(",") : "abierto(dev)"} paywall=${payTo ? "ON" : "OFF"} rateLimit=${rpm > 0 ? `${rpm}/min` : "OFF"} settle=${process.env.SETTLEMENT_SECRET ? `ON(${SETTLE_CHAIN})` : "OFF"} db=${process.env.DATABASE_URL ? "pg" : "mem"} tls=${tls ? "ON" : "OFF"}`,
   );
+  if (!tls && hostname !== "127.0.0.1" && hostname !== "localhost") {
+    console.warn("⚠ TLS OFF + HOST público: prompts y proof auth viajan en claro — poné TLS_CERT/TLS_KEY o un proxy TLS delante");
+  }
 });
 
 // S31 (ADR-0005): forges remotos entran por WS outbound→inbound al gateway.

@@ -45,6 +45,15 @@ class WsDaemonChannel implements DaemonChannel {
   }
 }
 
+// Normaliza el gateway URL para cada transporte: http(s) para REST,
+// ws(s) para el socket. Acepta http://, https://, ws:// y wss:// —
+// `wss://` es el formato que la gente escribe naturalmente para TLS.
+function gwUrls(gateway: string): { http: string; ws: string } {
+  const http = gateway.replace(/^ws/, "http"); // ws→http, wss→https
+  const ws = gateway.replace(/^http/, "ws"); // http→ws, https→wss
+  return { http, ws };
+}
+
 // Una conexión autenticada. Falla (throw) si challenge/auth/ws fallan —
 // el caller (connectLoop) decide el backoff.
 export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
@@ -54,11 +63,12 @@ export async function connect(cfg: ForgeConfig): Promise<DaemonChannel> {
     cfg.chain === "evm"
       ? evmForgeKeypair(cfg.secret as Hex).sign
       : async (msg) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(msg));
-  const ch = await fetch(`${cfg.gateway}/v1/forges/challenge`, { method: "POST" });
+  const urls = gwUrls(cfg.gateway);
+  const ch = await fetch(`${urls.http}/v1/forges/challenge`, { method: "POST" });
   if (!ch.ok) throw new Error(`challenge ${ch.status}`);
   const { nonce } = (await ch.json()) as { nonce: string };
 
-  const wsUrl = `${cfg.gateway.replace(/^http/, "ws")}/v1/forge/ws`;
+  const wsUrl = `${urls.ws}/v1/forge/ws`;
   const ws = new WebSocket(wsUrl);
   await new Promise<void>((res, rej) => {
     ws.once("open", res);

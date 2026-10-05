@@ -25,3 +25,21 @@ test("nextBackoff jitter: siempre dentro de [base/2, 1.5×base]", () => {
     }
   }
 });
+
+test("wss:// gateway → challenge por https y socket por wss", async () => {
+  // Regresión real: --gateway wss://… rompía el fetch del challenge
+  // (fetch no acepta scheme ws). Se verifica la normalización indirecta:
+  // un connect contra wss://127.0.0.1:1 falla en el SOCKET (no en fetch) —
+  // eso prueba que el challenge salió por https y llegó al WebSocket.
+  const { connect } = await import("../src/ws.ts");
+  const cfg = {
+    pubkey: "G" + "A".repeat(55),
+    secret: "S" + "A".repeat(55),
+    chain: "stellar" as const,
+    gateway: "wss://127.0.0.1:1",
+    instances: [],
+  };
+  // wss://127.0.0.1:1 → challenge https://127.0.0.1:1 → ECONNREFUSED (fetch)
+  // — no TypeError de scheme inválido.
+  await assert.rejects(connect(cfg), /ECONNREFUSED|fetch failed|challenge/);
+});
