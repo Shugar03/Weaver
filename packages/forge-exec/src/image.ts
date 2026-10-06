@@ -44,7 +44,7 @@ export class FluxKleinForge implements ImageExec {
         "--width", String(w),
         "--height", String(h),
         "--steps", "4",
-      ], this.timeoutMs);
+      ], this.timeoutMs, req.signal);
       if (!existsSync(out)) throw new Error("mflux terminó sin producir el PNG");
       return { forgeId: this.forgeId, b64: readFileSync(out).toString("base64"), ms: Math.round(performance.now() - t0) };
     } finally {
@@ -64,7 +64,7 @@ function parseSize(size?: string): { w: number; h: number } {
   return m ? { w: Number(m[1]), h: Number(m[2]) } : { w: 1024, h: 1024 };
 }
 
-function spawnCollect(bin: string, args: string[], timeoutMs: number): Promise<void> {
+function spawnCollect(bin: string, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
     let err = "";
@@ -75,12 +75,31 @@ function spawnCollect(bin: string, args: string[], timeoutMs: number): Promise<v
       p.kill("SIGKILL");
       reject(new Error(`imagegen: timeout ${timeoutMs}ms`));
     }, timeoutMs);
-    p.on("error", (e) => {
+    // Abort del consumidor/canal: mata al proceso hijo — la difusión es el
+    // recurso más caro del forge, no queda corriendo para nadie.
+    const onAbort = () => {
+      p.kill("SIGKILL");
+      reject(new Error("imagegen: abortado"));
+    };
+    const cleanup = () => {
       clearTimeout(to);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(to);
+        p.kill("SIGKILL");
+        reject(new Error("imagegen: abortado"));
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    p.on("error", (e) => {
+      cleanup();
       reject(e);
     });
     p.on("close", (code) => {
-      clearTimeout(to);
+      cleanup();
       if (code === 0) resolve();
       else reject(new Error(`imagegen: exit ${code} ${err.slice(-300)}`));
     });

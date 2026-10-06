@@ -451,4 +451,23 @@ describe("S31 RemoteImageExec", () => {
     setTimeout(() => ch.emit({ type: "job.fail", jobId: "im1", error: "VRAM agotada", midStream: false }), 10);
     await assert.rejects(p, /VRAM agotada/);
   });
+
+  it("signal aborta mid-job → job.cancel viaja al daemon y el promise rechaza", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteImageExec({ channel: ch, instanceId: "img0", model: "flux" });
+    const ac = new AbortController();
+    const p = ex.generateImage({ jobId: "im1", model: "flux", prompt: "x", signal: ac.signal } as ImageRequest);
+    // Race con timeout: si el abort se ignora, el assert falla — no cuelga.
+    const settled = Promise.race([
+      p.then(() => "resolved", (e) => `rejected: ${e.message}`),
+      new Promise<string>((r) => setTimeout(() => r("pending"), 500)),
+    ]);
+    setTimeout(() => ac.abort(), 10);
+    assert.match(await settled, /^rejected:/);
+    assert.deepEqual(
+      ch.sent.map((m) => m.type),
+      ["image.assign", "job.cancel"],
+    );
+    assert.equal((ch.sent[1] as { jobId: string }).jobId, "im1");
+  });
 });

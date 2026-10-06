@@ -294,7 +294,20 @@ export class RemoteImageExec implements ImageExec {
         clearTimeout(timer);
         un();
         unClose();
+        req.signal?.removeEventListener("abort", onAbort);
       };
+      const onAbort = () => {
+        done();
+        // El daemon aborta su engine — no quemar GPU para un cliente que se fue.
+        this.channel.send({ type: "job.cancel", jobId });
+        rej(new Error(`forge ${this.forgeId}: job abortado por el consumidor`));
+      };
+      // Abort previo al assign: el job ni siquiera arranca (nada que cancelar).
+      if (req.signal?.aborted) {
+        rej(new Error(`forge ${this.forgeId}: job abortado por el consumidor`));
+        return;
+      }
+      req.signal?.addEventListener("abort", onAbort, { once: true });
       this.channel.send({
         type: "image.assign",
         jobId,

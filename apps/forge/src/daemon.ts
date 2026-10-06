@@ -282,16 +282,27 @@ export class ForgeDaemon {
     if (!i || i.capability !== "image") {
       return this.fail(m.jobId, `instance ${m.instanceId} desconocida o no-image`, false);
     }
+    // Mismo contrato que runJob: jobId único (un cancel no puede pisar a otro)
+    // y AbortController — sin él la difusión seguía quemando GPU tras
+    // job.cancel o canal muerto.
+    if (this.running.has(m.jobId)) {
+      return this.fail(m.jobId, `jobId ${m.jobId} ya en vuelo`, false);
+    }
+    const ac = new AbortController();
+    this.running.set(m.jobId, ac);
     try {
       const r = await (i.exec as ImageExec).generateImage({
         jobId: m.jobId,
         model: m.model,
         prompt: m.prompt,
         ...(m.size ? { size: m.size } : {}),
+        signal: ac.signal,
       });
       this.channel.send({ type: "image.result", jobId: m.jobId, b64: r.b64, ms: r.ms });
     } catch (e) {
       this.fail(m.jobId, e instanceof Error ? e.message : String(e), false);
+    } finally {
+      this.running.delete(m.jobId);
     }
   }
 }

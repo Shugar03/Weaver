@@ -921,7 +921,9 @@ export function createApp(deps: Deps) {
       const ex = imageExecs[d.forgeId]; // candidates ya exige exec registrado
       const t0 = Date.now();
       try {
-        const r = await ex.generateImage({ jobId, model: body.model, prompt: body.prompt.trim(), size: body.size });
+        // signal del request HTTP: cliente ido = difusión que nadie recibe —
+        // el abort baja por el wire como job.cancel y el daemon corta el engine.
+        const r = await ex.generateImage({ jobId, model: body.model, prompt: body.prompt.trim(), size: body.size, signal: c.req.raw.signal });
         // S40: resultado de forge REMOTO → debe decodificar a imagen real
         // (PNG/JPEG/WebP con dims). Basura firmable no existe, pero basura
         // a secas sí — no se sirve al cliente ni cuenta como éxito.

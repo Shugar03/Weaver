@@ -92,6 +92,7 @@ export type ImageRequest = {
   model: string;
   prompt: string;
   size?: string; // "1024x1024"
+  signal?: AbortSignal; // consumidor/canal se fue → la difusión se corta
 };
 export type ImageResult = {
   forgeId: string;

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import type { ImageExec, ImageRequest, ImageResult } from "@weaver/forge-exec";
 import type { ForgeDaemon } from "@weaver/forge";
 import { imageDims } from "@weaver/forge-net";
-import { startStack, upImageDaemon, isAttest, untilAttested, noisyPng, type Stack } from "./harness.ts";
+import { startStack, upImageDaemon, isAttest, untilAttested, noisyPng, sleep, type Stack } from "./harness.ts";
 
 class PngForge implements ImageExec {
   readonly forgeId = "img-a";
@@ -34,11 +34,32 @@ class GarbageAfterAttest implements ImageExec {
   }
 }
 
-async function generate(url: string): Promise<Response> {
+// Difusión que nunca termina sola — solo aborta con req.signal. El abort del
+// cliente debe bajar por el wire como job.cancel hasta acá.
+class SlowImageForge implements ImageExec {
+  readonly forgeId = "img-c";
+  readonly model = "flux2-klein-4b";
+  aborted = false;
+  private startReady!: () => void;
+  readonly started = new Promise<void>((r) => (this.startReady = r));
+  generateImage(req: ImageRequest): Promise<ImageResult> {
+    if (isAttest(req)) return Promise.resolve({ forgeId: this.forgeId, b64: noisyPng(64, 64), ms: 1 });
+    return new Promise<ImageResult>((_res, rej) => {
+      this.startReady();
+      req.signal?.addEventListener("abort", () => {
+        this.aborted = true;
+        rej(new Error("aborted"));
+      });
+    });
+  }
+}
+
+async function generate(url: string, signal?: AbortSignal): Promise<Response> {
   return fetch(`${url}/v1/images/generations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "flux2-klein-4b", prompt: "un telar rojo, minimalista" }),
+    ...(signal ? { signal } : {}),
   });
 }
 
@@ -93,5 +114,22 @@ describe("E2E imagen sobre daemon remoto", () => {
     assert.equal(res.status, 502);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, "forge_failed");
+  });
+
+  it("cliente aborta el fetch → job.cancel por el wire → el daemon corta su engine", async () => {
+    const stack = await up();
+    const engine = new SlowImageForge();
+    daemons.push((await upImageDaemon(stack, "img-c", engine)).daemon);
+    await untilAttested(stack.registry, 1);
+
+    const ac = new AbortController();
+    // Sin await: el fetch pende hasta el abort — si lo esperamos, deadlock.
+    const p = generate(stack.url, ac.signal).catch(() => null);
+    // El job ya corre en el daemon antes de cortar.
+    await engine.started;
+    ac.abort();
+    await p; // el fetch muere con AbortError tras el abort
+    await sleep(300);
+    assert.equal(engine.aborted, true, "el abort del cliente debe llegar al engine del daemon");
   });
 });

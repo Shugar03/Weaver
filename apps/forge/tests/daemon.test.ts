@@ -349,6 +349,53 @@ test("image.assign → image.result con b64+ms", async () => {
   d.stop();
 });
 
+test("image.assign en vuelo: job.cancel y canal muerto abortan el exec", async () => {
+  let sawAbort = false;
+  const imgExec = {
+    forgeId: "img0",
+    model: "flux2-klein-4b",
+    generateImage: (req: { signal?: AbortSignal }) =>
+      new Promise<{ forgeId: string; b64: string; ms: number }>((_res, rej) => {
+        req.signal?.addEventListener("abort", () => {
+          sawAbort = true;
+          rej(new Error("aborted"));
+        });
+      }),
+  };
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(imgExec, { instanceId: "img0", capability: "image" })],
+    sign,
+  });
+  d.start();
+  ch.inject({ type: "image.assign", jobId: "jI", instanceId: "img0", model: "flux2-klein-4b", prompt: "gato" });
+  await new Promise((r) => setTimeout(r, 20));
+  ch.inject({ type: "job.cancel", jobId: "jI" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sawAbort, true, "job.cancel debe llegar al engine de imagen");
+  assert.ok(ch.last("job.fail"), "el job abortado reporta fail (no queda mudo)");
+  assert.equal(ch.last("image.result"), undefined);
+
+  // Y lo mismo cuando el CANAL muere (kill/drop): sin abort el engine seguiría
+  // generando una imagen que nadie puede recibir.
+  sawAbort = false;
+  const ch2 = new FakeChannel();
+  const d2 = new ForgeDaemon({
+    channel: ch2,
+    instances: [inst(imgExec, { instanceId: "img0", capability: "image" })],
+    sign,
+  });
+  d2.start();
+  ch2.inject({ type: "image.assign", jobId: "jI2", instanceId: "img0", model: "flux2-klein-4b", prompt: "gato" });
+  await new Promise((r) => setTimeout(r, 20));
+  ch2.close();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(sawAbort, true, "canal muerto debe abortar el engine de imagen");
+  d2.stop();
+  d.stop();
+});
+
 test("S42: job.funded → self-claim con la firma re-hecha del resultHash", async () => {
   const ch = new FakeChannel();
   const claimed: { jobId: number; hash: Buffer; sig: Buffer }[] = [];
