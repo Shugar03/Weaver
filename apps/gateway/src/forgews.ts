@@ -256,7 +256,12 @@ export function attachForgeWS(
     stop() {
       clearInterval(pingLoop);
       clearInterval(expireLoop);
-      for (const s of sessions.values()) s.closed();
+      for (const s of sessions.values()) {
+        s.closed();
+        // El socket también se cierra: en modo noServer wss.close() no toca
+        // los upgrades — sin esto el daemon queda en handshake de cierre ~30s.
+        sockets.get(s)?.close(4001, "gateway shutdown");
+      }
       wss.close();
     },
   };

@@ -7,9 +7,9 @@ import { attachForgeWS, type ForgeWS } from "@weaver/gateway/forgews";
 import { ForgeRegistry, NonceStore } from "@weaver/forge-net";
 import { RoutedExec } from "@weaver/forge-exec";
 import { dualVerify, stellarKeypair } from "@weaver/settlement";
-import type { ExecRequest, ForgeExec } from "@weaver/forge-exec";
+import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import type { ForgeView } from "@weaver/scheduler";
-import { ForgeDaemon, connect, type ForgeConfig } from "@weaver/forge";
+import { ForgeDaemon, connect, type DaemonInstance, type ForgeConfig } from "@weaver/forge";
 
 export type Stack = {
   url: string;
@@ -26,13 +26,24 @@ export function startStack(): Promise<Stack> {
   const liveExecs = new Proxy({} as Record<string, ForgeExec>, {
     get: (_t, k) => box.fws?.remoteExecs.get(k as string),
   });
+  const liveImageExecs = new Proxy({} as Record<string, ImageExec>, {
+    get: (_t, k) => box.fws?.remoteImageExecs.get(k as string),
+  });
   const exec = new RoutedExec({
     forges: async () =>
       registry.views().filter((v: ForgeView) => (v.capability ?? "text") === "text" && v.attested !== false),
     execs: liveExecs,
     order: (_req: ExecRequest, views: ForgeView[]) => [...views].sort((a, b) => a.forgeId.localeCompare(b.forgeId)),
   });
-  const app = createApp({ forges: async () => registry.views(), exec, challenges: nonces, verifyProof: dualVerify });
+  const app = createApp({
+    forges: async () => registry.views(),
+    exec,
+    imageExecs: liveImageExecs,
+    media: new Map(),
+    forgePubkeyOf: (id) => registry.pubkeyOf(id),
+    challenges: nonces,
+    verifyProof: dualVerify,
+  });
   const server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
   const fws = attachForgeWS(server as never, { registry, nonces, verify: dualVerify });
   box.fws = fws;
@@ -45,7 +56,11 @@ export function startStack(): Promise<Stack> {
           fws,
           close() {
             fws.stop();
-            (server as unknown as { close(): void }).close();
+            const srv = server as unknown as { close(): void; closeIdleConnections?(): void };
+            srv.close();
+            // Keep-alive: fetch() deja los sockets idle en el pool — sin esto
+            // el server-side socket queda abierto y el proceso no termina.
+            srv.closeIdleConnections?.();
           },
         }),
       50,
@@ -53,21 +68,19 @@ export function startStack(): Promise<Stack> {
   );
 }
 
-// Daemon real por el wire: connect() hace challenge+auth contra el stack,
-// ForgeDaemon corre el protocolo (heartbeats a 60ms para tests rápidos).
-// Devuelve el keypair — el kill/reconnect necesita la MISMA pubkey.
-export async function upDaemon(
+type Kp = { pubkey: string; secret: string; sign(m: Buffer): Buffer };
+
+async function spawnDaemon(
   stack: Stack,
-  instanceId: string,
-  engine: ForgeExec,
-  kp: { pubkey: string; secret: string; sign(m: Buffer): Buffer } = stellarKeypair(),
-): Promise<{ daemon: ForgeDaemon; kp: typeof kp }> {
+  instances: DaemonInstance[],
+  kp: Kp,
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   const channel = await connect({
     gateway: stack.url, chain: "stellar", pubkey: kp.pubkey, secret: kp.secret, instances: [],
   } as ForgeConfig);
   const d = new ForgeDaemon({
     channel,
-    instances: [{ instanceId, model: "qwen3.5:4b", capability: "text", exec: engine, maxConcurrent: 4, loadTimeMs: 0 }],
+    instances,
     sign: kp.sign,
     // 550ms > HB_MIN_MS(500) del session rate-limiter — a 60ms el daemon
     // comía flood-violations y la sesión moría por "heartbeat flood" ~300ms
@@ -77,6 +90,35 @@ export async function upDaemon(
   });
   d.start();
   return { daemon: d, kp };
+}
+
+// Daemon real por el wire: connect() hace challenge+auth contra el stack,
+// ForgeDaemon corre el protocolo. Devuelve el keypair — el kill/reconnect
+// necesita la MISMA pubkey.
+export function upDaemon(
+  stack: Stack,
+  instanceId: string,
+  engine: ForgeExec,
+  kp: Kp = stellarKeypair(),
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
+  return spawnDaemon(
+    stack,
+    [{ instanceId, model: "qwen3.5:4b", capability: "text", exec: engine, maxConcurrent: 4, loadTimeMs: 0 }],
+    kp,
+  );
+}
+
+export function upImageDaemon(
+  stack: Stack,
+  instanceId: string,
+  engine: ImageExec,
+  kp: Kp = stellarKeypair(),
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
+  return spawnDaemon(
+    stack,
+    [{ instanceId, model: "flux2-klein-4b", capability: "image", exec: engine, maxConcurrent: 4, loadTimeMs: 0 }],
+    kp,
+  );
 }
 
 // Los jobs attest-* los dispara el gateway al registrar la instance —
@@ -91,6 +133,54 @@ export const untilAttested = async (registry: ForgeRegistry, n: number, ms = 800
 };
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// PNG real y decodable (no un header vacío): IHDR + IDAT con deflate de
+// pixeles random — incompressible a propósito, así el b64 supera el floor
+// de attestImage (b64.length > 1000) sin inflar el string a mano.
+import { deflateSync } from "node:zlib";
+import { randomFillSync } from "node:crypto";
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const t = Buffer.from(type, "ascii");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([t, data])));
+  return Buffer.concat([len, t, data, crc]);
+}
+
+export function noisyPng(w = 64, h = 64): string {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type RGB
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) randomFillSync(raw, y * (1 + w * 3) + 1, w * 3);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+  return png.toString("base64");
+}
 
 export function chatRequest(url: string): Promise<Response> {
   return fetch(`${url}/v1/chat/completions`, {
@@ -107,11 +197,18 @@ export async function chatStream(url: string): Promise<string> {
 
 // Lee el SSE hasta que el acumulado contenga `needle` — sincroniza contra lo
 // que el CLIENTE ya recibió (no contra lo que el engine emitió localmente).
-export async function readUntil(res: Response, acc: string, needle: string): Promise<string> {
+// Timeout explícito: un stream que no termina debe fallar el test, no colgarlo.
+export async function readUntil(res: Response, acc: string, needle: string, ms = 10_000): Promise<string> {
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
+  const deadline = Date.now() + ms;
   while (!acc.includes(needle)) {
-    const { done, value } = await reader.read();
+    const { done, value } = await Promise.race([
+      reader.read(),
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error(`readUntil timeout esperando ${JSON.stringify(needle)} — recibido: ${acc.slice(-200)}`)), Math.max(1, deadline - Date.now())),
+      ),
+    ]);
     if (done) break;
     acc += dec.decode(value, { stream: true });
   }
