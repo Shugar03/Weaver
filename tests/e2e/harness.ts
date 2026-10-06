@@ -132,6 +132,14 @@ export const untilAttested = async (registry: ForgeRegistry, n: number, ms = 800
   }
 };
 
+// La instance sale de views — post-drop el forge deja de ser ruteable.
+export const untilGone = async (registry: ForgeRegistry, forgeId: string, ms = 4000): Promise<void> => {
+  const t0 = Date.now();
+  while (registry.views().some((v) => v.forgeId === forgeId) && Date.now() - t0 < ms) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // PNG real y decodable (no un header vacío): IHDR + IDAT con deflate de
