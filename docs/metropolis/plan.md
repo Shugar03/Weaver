@@ -119,12 +119,14 @@ agent0-sdk                       EvmSubmitter (viem) ── port ChainSubmitter
 
 - [x] Repo público + `LICENSE` MIT + commit history del window
 - [x] Tag `stellar-submission` → diff auditable del trabajo nuevo
-- [ ] README declara explícitamente: componentes pre-existentes vs
+- [x] README declara explícitamente: componentes pre-existentes vs
   funcionalidad nueva del window + disclosure de AI coding tools
-- [ ] Demo video ≤3 min: producto real operando + interacción on-chain
-  Monad visible (release/feedback en explorer)
-- [ ] Docs: descripción + arquitectura + stack + deploy instructions
-- [ ] Contract addresses + tx hashes publicados
+  (`README.md` §Metropolis submission)
+- [x] Demo video ≤3 min: producto real operando + interacción on-chain
+  Monad visible (release/feedback en explorer) — `docs/demo/weaver-demo.mp4` 2:08
+- [x] Docs: descripción + arquitectura + stack + deploy instructions
+  (README + `submission-writeup.md` §3-6)
+- [x] Contract addresses + tx hashes publicados (writeup §6 + README)
 - [ ] Judging = 5×20%: Quality, Technical, Monad Integration, Track Fit,
   Innovation — la demo/write-up tienen que pegar los cinco
 
