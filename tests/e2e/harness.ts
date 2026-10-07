@@ -53,6 +53,9 @@ export function startStack(): Promise<Stack> {
     // los rechazaría. La cobertura del probe vive en pool.test.ts; acá lo
     // que se prueba es el wire completo gateway↔daemons.
     poolProbe: async () => true,
+    // Retry de attestation cada 400ms (prod 30s) — el e2e del coordinator-
+    // sin-workers necesita ver el reintento sin esperar medio minuto.
+    attestRetryMs: 400,
   });
   box.fws = fws;
   return new Promise((res) =>

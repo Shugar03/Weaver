@@ -80,6 +80,27 @@ describe("S46 pool-forge wire e2e", () => {
     assert.match(body, /forge-failed|error/);
   });
 
+  it("coordinator llega ANTES que sus workers → attest transient → retry → sirve", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    // Coordinator PRIMERO: el attest inicial no encuentra workers y falla
+    // — condición transiente, no forge roto.
+    const c = await upPooledDaemon(stack, "c3", new FakeForgeExec({ forgeId: "c3", model: "qwen3.5:4b" }), 1);
+    daemons.push(c.daemon);
+    await sleep(900); // el attest falló al menos una vez
+    assert.equal(stack.registry.views().filter((v) => v.attested).length, 0); // sin attested todavía
+    const res = await chatRequest(stack.url);
+    assert.match(await res.text(), /forge-failed|error/); // unroutable ahora, no colgado
+
+    // El worker conecta DESPUÉS — el retry (400ms en e2e) lo levanta.
+    const w = await upRpcDaemon(stack, "w3", "10.99.0.8:50052", { alive: true });
+    daemons.push(w.daemon);
+    await untilAttested(stack.registry, 1, 10_000); // self-heal real por el wire
+    const res2 = await chatRequest(stack.url);
+    assert.equal(res2.status, 200);
+    assert.match(await res2.text(), /\[DONE\]/);
+  });
+
   it("worker se recupera → el pool vuelve a servir", async () => {
     const stack = await startStack();
     stacks.push(stack);

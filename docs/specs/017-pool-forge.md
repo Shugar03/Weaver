@@ -160,9 +160,11 @@ por stage encadenada, túnel seguro para rpc-server WAN.
 - `forgews.ts`: attestation con retry (30s) para coordinators pooled —
   "sin workers" es transient, no roto.
 - Tests: forge-net 80 (protocol + pool async/probe/strikes/vram +
-  remote poolBlame/cold-start), forge 34 (daemon hardening ×4 +
-  rpcproc LRU/respawn/port/health ×6), gateway 209, e2e wire
-  `tests/e2e/remote-pool.test.ts` ×3.
+  remote poolBlame/cold-start), forge 35 (daemon hardening ×6 +
+  rpcproc LRU/respawn/port/health/dispose/abort ×8), gateway 209,
+  e2e wire `tests/e2e/remote-pool.test.ts` ×4 — incluye attest-retry:
+  coordinator sin workers → transient fail → worker llega → attested
+  → sirve.
 - Live gate loopback: 2×`ggml-rpc-server -d CPU` + `llama-server --rpc …
   --split-mode layer` sobre qwen3-4b GGUF real — health ok + completion +
   conexiones activas en ambos workers. Correcciones que solo salieron en
@@ -185,6 +187,9 @@ por stage encadenada, túnel seguro para rpc-server WAN.
 | `vramGb` anunciado pero no usado en pairing | `pool.minVramGb` → filtro conservador en acquire |
 | `live` = proc vivo, no endpoint alcanzable | `rpcProbe` self-probe TCP en heartbeat |
 | Deadlock por iterador vivo de `warm.values()` | Snapshot antes de iterar (test LRU lo probó) |
+| `job.cancel` durante el spawn pooled se perdía → servía a un consumidor muerto | `AbortController` en `running` ANTES del await; signal entra a la factory → `waitHealthy` aborta y mata el proceso |
+| Spawn muerto por cancel → `poolBlame` penalizaba workers inocentes | `poolBlame` solo si `!ac.signal.aborted` |
+| `daemon.stop()` no mataba warm servers → VRAM colgada | `PooledFactory.dispose()` — SIGKILL a todo el warm cache |
 
 **Honestidad del modelo de confianza**: el coordinator recibe el prompt
 completo y firma el proof — los workers solo ven tensores/activaciones por

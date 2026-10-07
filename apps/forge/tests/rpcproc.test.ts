@@ -103,4 +103,40 @@ describe("makePooledFactory hardening", () => {
     await assert.rejects(() => f(inst(), ["10.0.0.1:50052"]));
     assert.equal(spawned.args.length, 2);
   });
+
+  it("dispose(): mata todos los warm servers (VRAM liberada al parar)", async () => {
+    const spawned = { args: [] as string[][], procs: [] as FakeProc[] };
+    const f = factory({}, spawned);
+    await f(inst(), ["10.0.0.1:50052"]);
+    await f(inst(), ["10.0.0.2:50052"]);
+    f.dispose?.();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(spawned.procs[0].killed, true);
+    assert.equal(spawned.procs[1].killed, true);
+    // post-dispose el cache quedó limpio: mismo peer-set → respawn nuevo
+    await f(inst(), ["10.0.0.1:50052"]);
+    assert.equal(spawned.args.length, 3);
+  });
+
+  it("signal abortado durante el boot → el spawn muere, no queda warm", async () => {
+    const spawned = { args: [] as string[][], procs: [] as FakeProc[] };
+    const f = factory(
+      {
+        healthProbe: async (_p: number, _c: unknown, _ms: number, signal?: AbortSignal) =>
+          new Promise<void>((_res, rej) => {
+            // El abort puede llegar ANTES de que el listener exista (race real:
+            // ac.abort() corre sync tras f() mientras spawnEntry aún hace el
+            // freePort). Igual que waitHealthy: chequear aborted upfront.
+            if (signal?.aborted) return rej(new Error("spawn abortado por job.cancel"));
+            signal?.addEventListener("abort", () => rej(new Error("spawn abortado por job.cancel")));
+          }),
+      },
+      spawned,
+    );
+    const ac = new AbortController();
+    const p = f(inst(), ["10.0.0.1:50052"], ac.signal);
+    ac.abort(); // job.cancel mid-boot — el llama-server no se queda cargando
+    await assert.rejects(p, /abortado/);
+    assert.equal(spawned.procs[0].killed, true);
+  });
 });

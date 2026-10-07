@@ -74,6 +74,9 @@ export function attachForgeWS(
     // Probe TCP a los endpoints rpc-worker (default real). Tests e2e inyectan
     // uno — sus endpoints son IPs fake que nunca contestarían un SYN.
     poolProbe?: (endpoint: string) => Promise<boolean>;
+    // Throttle del retry de attestation para coordinators pooled (default
+    // 30s). Los e2e lo bajan — sino un test tardaría medio minuto.
+    attestRetryMs?: number;
   },
 ): ForgeWS {
   // maxPayload 1MiB: chunks/done son KBs — un frame gigante de un daemon
@@ -95,7 +98,7 @@ export function attachForgeWS(
   // puede fallar por "pool insuficiente" — condición TRANSIENTE (los workers
   // conectan después). Sin retry la instance queda unroutable para siempre.
   const lastAttest = new Map<string, number>();
-  const ATTEST_RETRY_MS = 30_000;
+  const ATTEST_RETRY_MS = deps.attestRetryMs ?? 30_000;
   // spec 011: pubkeys matadas por chaos — reconectar no revive hasta revive.
   const kill = makeKillSwitch({
     // instanceId → pubkey: del registry (fuente de verdad post-heartbeat)

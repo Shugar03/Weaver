@@ -23,7 +23,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { connect, createServer } from "node:net";
 import { OpenAICompatAdapter, type ForgeExec } from "@weaver/forge-exec";
-import type { DaemonInstance } from "./daemon.ts";
+import type { DaemonInstance, PooledFactory } from "./daemon.ts";
 
 // Handle mínimo que el daemon consume en heartbeat: alive = el proceso vive.
 export type RpcProc = { alive: boolean; kill(): void };
@@ -141,8 +141,8 @@ export function makePooledFactory(opts: {
   bootTimeoutMs?: number; // cargar 70B+ tarda — default 300s
   maxWarm?: number; // servers residentes máx — default 2 (cada uno pesa GBs)
   spawn?: typeof spawn; // inyectable: tests con procesos fake
-  healthProbe?: (port: number, child: ChildProcess, timeoutMs: number) => Promise<void>;
-}): (inst: DaemonInstance, peers: string[]) => Promise<ForgeExec> {
+  healthProbe?: (port: number, child: ChildProcess, timeoutMs: number, signal?: AbortSignal) => Promise<void>;
+}): PooledFactory {
   const warm = new Map<string, Promise<WarmEntry>>();
   // Recencia accesible síncronamente (lastUsed vive dentro del Promise) —
   // el LRU no puede esperar resolves.
@@ -150,14 +150,20 @@ export function makePooledFactory(opts: {
   const bootTimeout = opts.bootTimeoutMs ?? 300_000;
   const maxWarm = opts.maxWarm ?? 2;
   const doSpawn = opts.spawn ?? spawn;
-  const healthProbe = opts.healthProbe ?? ((port, child, ms) => waitHealthy(`http://127.0.0.1:${port}/health`, ms, child));
+  const healthProbe =
+    opts.healthProbe ?? ((port, child, ms, signal) => waitHealthy(`http://127.0.0.1:${port}/health`, ms, child, signal));
   const baseFor = (key: string): number => {
     let h = 0;
     for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
     return (opts.portBase ?? 18000) + (h % 1000);
   };
 
-  const spawnEntry = async (inst: DaemonInstance, peers: string[], key: string): Promise<WarmEntry> => {
+  const spawnEntry = async (
+    inst: DaemonInstance,
+    peers: string[],
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<WarmEntry> => {
     if (!inst.modelFile) {
       throw new Error(`instance ${inst.instanceId}: pooled sin modelFile — no puedo spawnear llama-server`);
     }
@@ -183,10 +189,15 @@ export function makePooledFactory(opts: {
     const child = doSpawn(opts.llamaBin, args, { stdio: ["ignore", "inherit", "inherit"] });
     const proc = track(child);
     try {
-      await healthProbe(port, child, bootTimeout);
+      await healthProbe(port, child, bootTimeout, signal);
     } catch (e) {
       proc.kill(); // server que no levanta no se queda ocupando VRAM
       throw e;
+    }
+    if (signal?.aborted) {
+      // El job murió durante el boot — matar el server, no cachearlo warm.
+      proc.kill();
+      throw new Error("spawn abortado por job.cancel");
     }
     return {
       adapter: new OpenAICompatAdapter({
@@ -218,7 +229,7 @@ export function makePooledFactory(opts: {
     void doomed?.then((e) => e.proc.kill()).catch(() => {});
   };
 
-  return (inst, peers) => {
+  const factory: PooledFactory = (inst, peers, signal) => {
     const key = `${inst.instanceId}|${[...peers].sort().join(",")}`;
     const hit = warm.get(key);
     if (hit) {
@@ -230,7 +241,7 @@ export function makePooledFactory(opts: {
           return e.adapter;
         }
         warm.delete(key);
-        const fresh = spawnEntry(inst, peers, key);
+        const fresh = spawnEntry(inst, peers, key, signal);
         warm.set(key, fresh);
         recency.set(key, Date.now());
         fresh.catch(() => {
@@ -240,7 +251,7 @@ export function makePooledFactory(opts: {
         return (await fresh).adapter;
       });
     }
-    const spawned = spawnEntry(inst, peers, key);
+    const spawned = spawnEntry(inst, peers, key, signal);
     warm.set(key, spawned);
     recency.set(key, Date.now());
     spawned.catch(() => {
@@ -250,12 +261,31 @@ export function makePooledFactory(opts: {
     evictLru();
     return spawned.then((e) => e.adapter);
   };
+
+  // daemon.stop() → todos los warm servers mueren. GBs de VRAM liberados
+  // al apagar el daemon, no solo al exit del proceso.
+  factory.dispose = () => {
+    const doomed = [...warm.values()];
+    warm.clear();
+    recency.clear();
+    for (const p of doomed) {
+      void p.then((e) => e.proc.kill()).catch(() => {});
+    }
+  };
+  return factory;
 }
 
-// Poll /health hasta que el server cargó el modelo (o el proceso murió).
-async function waitHealthy(url: string, timeoutMs: number, child: ChildProcess): Promise<void> {
+// Poll /health hasta que el server cargó el modelo (o el proceso murió o
+// el job se canceló mid-boot).
+async function waitHealthy(
+  url: string,
+  timeoutMs: number,
+  child: ChildProcess,
+  signal?: AbortSignal,
+): Promise<void> {
   const t0 = Date.now();
   for (;;) {
+    if (signal?.aborted) throw new Error("spawn abortado por job.cancel");
     if (child.exitCode !== null) throw new Error(`llama-server murió al boot (code ${child.exitCode})`);
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(2000) });

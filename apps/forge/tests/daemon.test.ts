@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { FakeForgeExec, TrackedExec, promptHashOf, commitProof } from "@weaver/forge-exec";
+import { FakeForgeExec, TrackedExec, promptHashOf, commitProof, type ForgeExec } from "@weaver/forge-exec";
 import type { DaemonChannel, ForgeMsg, GatewayMsg } from "@weaver/forge-net";
 import { ForgeDaemon, type DaemonInstance } from "../src/daemon.ts";
 
@@ -391,6 +391,65 @@ test("S46 hardening: pooledFactory lanza → job.fail con poolBlame (culpa a los
   assert.equal(f.jobId, "jB");
   assert.equal(f.poolBlame, true); // el gateway penaliza a LOS PEERS
   d.stop();
+});
+
+test("S46 hardening: job.cancel DURANTE spawn pooled → fail, no sirve al muerto", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  let releaseSpawn!: () => void;
+  const spawnGate = new Promise<ForgeExec>((res) => {
+    releaseSpawn = () => res(new FakeForgeExec({}));
+  });
+  let sawSignal = false;
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 1 } })],
+    sign,
+    heartbeatMs: 60000,
+    pooledFactory: (_i, _peers, signal) => {
+      signal?.addEventListener("abort", () => {
+        sawSignal = true;
+      });
+      return spawnGate; // boot lento — como un llama-server de 70B
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jC", instanceId: "c0", model: "m", prompt: "p", rpcPeers: ["10.0.0.5:50052"] });
+  await new Promise((r) => setTimeout(r, 20));
+  ch.inject({ type: "job.cancel", jobId: "jC" }); // el consumidor se fue mid-boot
+  await new Promise((r) => setTimeout(r, 20));
+  releaseSpawn(); // el server levanta — pero el job ya murió
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jC");
+  assert.equal(sawSignal, true); // la factory recibió el signal para matar el spawn
+  assert.equal(ch.last("job.chunk"), undefined); // jamás se sirvió un token
+  d.stop();
+});
+
+test("S46 hardening: daemon.stop() → dispose de la factory (warm servers mueren)", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  let disposed = 0;
+  const factory = Object.assign(
+    () => Promise.resolve(new FakeForgeExec({})),
+    {
+      dispose: () => {
+        disposed++;
+      },
+    },
+  );
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 1 } })],
+    sign,
+    heartbeatMs: 60000,
+    pooledFactory: factory,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  d.stop();
+  assert.equal(disposed, 1); // los llama-server warm no quedan colgados en VRAM
 });
 
 test("S46 hardening: rpcProbe caído → worker reporta muerto aunque el proc viva", async () => {

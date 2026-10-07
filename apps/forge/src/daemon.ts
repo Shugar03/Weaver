@@ -62,7 +62,14 @@ export type ProofSigner = (hash: Buffer) => Buffer | Promise<Buffer>;
 // S46: coordinator pooled — ante job.assign con rpcPeers, la factory arma el
 // exec contra el cluster (prod: spawnea llama-server --rpc peers warm-keyed
 // por peer-set + OpenAICompatAdapter). Inyectable → tests con fakes.
-export type PooledFactory = (inst: DaemonInstance, peers: string[]) => Promise<ForgeExec>;
+// signal: el abort del job — un cancel mid-boot debe poder matar el spawn
+// (un llama-server de 70B tarda minutos; sin signal quemaría GPU al muerto).
+// dispose: daemon.stop() → matar los warm servers (VRAM liberada al apagar,
+// no solo al exit del proceso).
+export type PooledFactory = {
+  (inst: DaemonInstance, peers: string[], signal?: AbortSignal): Promise<ForgeExec>;
+  dispose?(): void;
+};
 
 // S46 hardening: allowlist operador-side de los peers que el daemon acepta
 // dialar. El assign viene del gateway — si está comprometido/buggeado no
@@ -137,6 +144,9 @@ export class ForgeDaemon {
     // Abort manual: channel.close() dispara 'close' async y el onClose puede
     // ya estar desuscripto — el abort es idempotente.
     for (const ac of this.running.values()) ac.abort();
+    // Los llama-server warm del pooledFactory mueren con el daemon — GBs de
+    // VRAM liberados al parar, no solo al exit del proceso.
+    this.pooledFactory?.dispose?.();
     // Suelta el socket: connectLoop.onClose resuelve, cancel() no deja el
     // daemon colgado con una conexión zombie.
     this.channel.close?.();
@@ -277,8 +287,11 @@ export class ForgeDaemon {
     // Defensa en profundidad: solo obedecemos peers si ESTA instancia los
     // pidió (pool declarado) — un gateway buggy/comprometido no puede hacer
     // que un forge normal abra conexiones RPC arbitrarias.
+    const ac = new AbortController(); // job.cancel → aborta spawn/exec en vuelo
     let exec = i.exec as ForgeExec | undefined;
     if (m.rpcPeers?.length) {
+      // Guards síncronos primero — sin awaits no hay interleave con
+      // job.cancel; el AbortController se registra JUSTO antes del await.
       if (!i.pool) {
         return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers recibidos pero no soy pooled`, false);
       }
@@ -288,12 +301,28 @@ export class ForgeDaemon {
       if (!this.pooledFactory) {
         return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers recibidos pero sin pooledFactory`, false);
       }
+      // Registrado ANTES del await: un cancel que llegue durante el boot del
+      // llama-server aborta el spawn (antes se perdía y el job servía a un
+      // consumidor muerto — GPU + workers quemados por nada).
+      this.running.set(m.jobId, ac);
       try {
-        exec = await this.pooledFactory(i, m.rpcPeers);
+        exec = await this.pooledFactory(i, m.rpcPeers, ac.signal);
       } catch (e) {
-        // poolBlame: el spawn falló por los PEERS (endpoint muerto, RPC roto)
-        // — el gateway los penaliza para no re-parkearlos en el failover.
-        return this.fail(m.jobId, `pooled spawn falló: ${e instanceof Error ? e.message : String(e)}`, false, true);
+        this.running.delete(m.jobId);
+        // poolBlame solo si el spawn falló por los PEERS (endpoint muerto,
+        // RPC roto). Si la causa fue un job.cancel mid-boot, culpar a los
+        // workers los penalizaría injustamente — el gateway los evictaría
+        // por algo que no hicieron.
+        return this.fail(
+          m.jobId,
+          `pooled spawn falló: ${e instanceof Error ? e.message : String(e)}`,
+          false,
+          !ac.signal.aborted,
+        );
+      }
+      if (ac.signal.aborted) {
+        this.running.delete(m.jobId);
+        return this.fail(m.jobId, "job cancelado durante el spawn pooled", false);
       }
     }
     if (!exec) return this.fail(m.jobId, `instance ${m.instanceId}: sin exec`, false);
@@ -308,7 +337,6 @@ export class ForgeDaemon {
     });
     const hasher = createHash("sha256");
     let midStream = false;
-    const ac = new AbortController(); // job.cancel → aborta el exec en vuelo
     this.running.set(m.jobId, ac);
     try {
       for await (const c of exec.execute({
