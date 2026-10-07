@@ -582,23 +582,23 @@
       </div>
       <div>
         <table class="tbl st">
-          <thead><tr><th>unit economics · RTX 3090</th><th class="r">floor</th><th class="r">healthy</th></tr></thead>
+          <thead><tr><th>payback · healthy (50% duty, batched)</th><th class="r">capex</th><th class="r">net/mo</th><th class="r">payback</th><th class="r">24-mo profit</th></tr></thead>
           <tbody>
-            <tr><td class="b">throughput</td><td class="r m dim">50 tok/s · 30% duty</td><td class="r m">150 tok/s batch · 50% duty</td></tr>
-            <tr><td class="b">output / month</td><td class="r m dim">~39 MTok</td><td class="r m">~194 MTok</td></tr>
-            <tr><td class="b">revenue @ ~$0.50/MTok</td><td class="r m dim">~$19</td><td class="r m">~$97</td></tr>
-            <tr><td class="b">power @ $0.16/kWh</td><td class="r m dim">−$20</td><td class="r m">−$26</td></tr>
-            <tr><td class="b">net — GPU already owned</td><td class="r m dim">≈ break-even</td><td class="r m">+$71/mo</td></tr>
-            <tr><td class="b">net — incl. amortization</td><td class="r m dim">−$10</td><td class="r m">+$42/mo</td></tr>
-            <tr><td class="b">4-GPU rig</td><td class="r m dim">—</td><td class="r m">~$280/mo</td></tr>
+            <tr><td class="b">RTX 3060 12GB <span class="dim">used</span></td><td class="r m dim">$311</td><td class="r m">+$26</td><td class="r m">~12 mo</td><td class="r m">+$313</td></tr>
+            <tr><td class="b">RTX 5060 Ti 16GB <span class="dim">new</span></td><td class="r m dim">$480</td><td class="r m">+$45</td><td class="r m">~11 mo</td><td class="r m">+$600</td></tr>
+            <tr><td class="b">RTX 3090 24GB <span class="dim">used</span></td><td class="r m dim">$1,450</td><td class="r m">+$71</td><td class="r m">~20 mo</td><td class="r m">+$254</td></tr>
+            <tr><td class="b">RTX 4090 24GB <span class="dim">used</span></td><td class="r m dim">$2,400</td><td class="r m">+$125</td><td class="r m">~19 mo</td><td class="r m">+$600</td></tr>
+            <tr><td class="b">4× 5060 Ti rig <span class="dim">new</span></td><td class="r m dim">$1,920</td><td class="r m">+$180</td><td class="r m">~11 mo</td><td class="r m">+$2,400</td></tr>
+            <tr><td class="b">GPU already owned</td><td class="r m">$0</td><td class="r m">+$26–125</td><td class="r m">instant</td><td class="r m">pure margin</td></tr>
           </tbody>
         </table>
-        <p class="sub st" style="margin-top:2.4vh">Deliberately pessimistic: worst case, the GPU pays its own power bill.
-        The margin lives in batching and reputation — and no renter has to trust you: the network verifies you.</p>
+        <p class="sub st" style="margin-top:2.4vh">Payback lands at <b style="color:var(--ink)">~11–20 months</b> on real market prices —
+        and AI demand already repriced the 24GB cards: the thesis prices the asset.
+        Floor case stays honest: single-stream at 30% duty ≈ the GPU pays its own power bill.</p>
       </div>
     </div>
   </div>
-  <div class="src"><b>model:</b> RTX 3090 24GB used (~$700 / 24mo) · 8B-class Q4 on llama.cpp · 350W loaded / 100W idle · $0.16/kWh US residential · forge nets ≈$0.50/MTok (open-weight tier) · utilization is the variable — demand routed by ETR</div>
+  <div class="src"><b>model:</b> 8B-class Q4 on llama.cpp · forge nets ≈$0.50/MTok · $0.16/kWh US residential · tok/s ≈ memory-bandwidth-adjusted · prices: eBay sold medians + MSRP/street, Oct-2026 · utilization is the variable — demand routed by ETR</div>
 </section>
 
 <!-- ═══════════ 11 · PRODUCT ═══════════ -->
