@@ -64,6 +64,7 @@ export class RemoteForgeExec implements ForgeExec {
   private readonly channel: ForgeChannel;
   private readonly ackTimeoutMs: number;
   private readonly firstTokenTimeoutMs: number;
+  private readonly pooledFirstTokenMs: number;
   private readonly isResident?: () => boolean;
   private readonly pool?: ForgePool;
   private readonly forgePubkey: string;
@@ -74,6 +75,11 @@ export class RemoteForgeExec implements ForgeExec {
     model: string;
     ackTimeoutMs?: number;
     firstTokenTimeoutMs?: number;
+    // S46: boot pooled — spawnear llama-server --rpc y cargar el GGUF puede
+    // tardar minutos (70B+ en disco). El timeout normal de primer token
+    // mataría un cold start SANO → el job moría healthy y el failover
+    // penalizaba un forge que solo estaba cargando. Default 300s.
+    pooledFirstTokenMs?: number;
     resident?: () => boolean;
     pool?: ForgePool;
     forgePubkey?: string;
@@ -83,6 +89,7 @@ export class RemoteForgeExec implements ForgeExec {
     this.model = opts.model;
     this.ackTimeoutMs = opts.ackTimeoutMs ?? 3_000;
     this.firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? 60_000;
+    this.pooledFirstTokenMs = opts.pooledFirstTokenMs ?? 300_000;
     this.isResident = opts.resident;
     this.pool = opts.pool;
     this.forgePubkey = opts.forgePubkey ?? "";
@@ -193,6 +200,9 @@ export class RemoteForgeExec implements ForgeExec {
         }
         case "job.fail":
           completed = true; // el job terminó — no mandar job.cancel al salir
+          // poolBlame: el daemon reporta que fallaron los PEERS (pooled spawn)
+          // — el finally penaliza a los workers del préstamo, no al forge.
+          if (m.poolBlame) blamedPeers = true;
           fail(new Error(m.error));
           break;
         default:
@@ -209,13 +219,19 @@ export class RemoteForgeExec implements ForgeExec {
     const onAbort = () => fail(new Error("abortado por el cliente"));
     req.signal?.addEventListener("abort", onAbort, { once: true });
     // S46 pool-forge: si la instance pidió pool (pool.needs en su heartbeat),
-    // reservamos workers acá — atómico con el dispatch, pre-token. Sin
-    // workers libres → throw → failover a otra ruta (degradación honesta).
+    // reservamos workers acá — atómico con el dispatch, pre-token. El acquire
+    // probea TCP a los endpoints; sin elegibles → throw → failover honesto.
     let acquiredPeers = false;
+    let blamedPeers = false;
     try {
-      const peers = this.pool ? this.pool.acquire(this.forgeId, this.forgePubkey) : [];
-      if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers libres`);
+      const peers = this.pool ? await this.pool.acquire(this.forgeId, this.forgePubkey, jobId) : [];
+      if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers elegibles`);
       acquiredPeers = peers.length > 0;
+      // Cold start pooled: el daemon spawnea llama-server --rpc al recibir el
+      // assign — el primer token incluye el boot completo del cluster.
+      const firstTokenMs = acquiredPeers
+        ? Math.max(this.firstTokenTimeoutMs, this.pooledFirstTokenMs)
+        : this.firstTokenTimeoutMs;
       this.channel.send({
         type: "job.assign",
         jobId,
@@ -237,7 +253,7 @@ export class RemoteForgeExec implements ForgeExec {
           });
           // Timeout solo hasta el primer token: post-token el stream fluye y
           // un stall lo cubren job.fail / close del canal.
-          if (first) await withTimeout(p, this.firstTokenTimeoutMs, `forge ${this.forgeId}: primer token timeout`);
+          if (first) await withTimeout(p, firstTokenMs, `forge ${this.forgeId}: primer token timeout`);
           else await p;
         }
         const c = queue.shift()!;
@@ -261,7 +277,12 @@ export class RemoteForgeExec implements ForgeExec {
         }
       }
       // Workers vuelven al pool — mismo contrato que job.cancel con la GPU.
-      if (acquiredPeers) this.pool?.release(this.forgeId);
+      // Si el daemon culpó a los peers (spawn falló) los penalizamos ANTES
+      // de liberar: el strike queda registrado para el próximo acquire.
+      if (acquiredPeers) {
+        if (blamedPeers) this.pool?.penalize(jobId);
+        this.pool?.release(jobId);
+      }
       un();
       unClose();
       req.signal?.removeEventListener("abort", onAbort);

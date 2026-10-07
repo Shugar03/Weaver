@@ -22,7 +22,9 @@ export type InstanceCfg = {
   // rpc-worker: endpoint host:port del ggml-rpc-server que up spawnea.
   rpc?: { endpoint: string; vramGb?: number };
   // coordinator pooled: necesita N workers prestados del pool para servir.
-  pool?: { needs: number };
+  // minVramGb: VRAM mínima por worker — el pairing descarta chicos (un
+  // worker de 2GB no presta a un coordinator de 70B).
+  pool?: { needs: number; minVramGb?: number };
   // GGUF local para el llama-server pooled (coordinator). Sin él el
   // pooledFactory no puede spawnear — fail honesto al assign.
   modelFile?: string;
@@ -41,13 +43,23 @@ export type ForgeConfig = {
   // ERC-8004 (EVM): agentId del Identity Registry — el forge lo registra
   // solo en el primer `up` y queda persistido acá.
   agentId?: number;
+  // S46: allowlist de hosts que el daemon acepta como rpcPeers en un assign
+  // (prefijo o host exacto). El assign viene del gateway — el operador decide
+  // a quién diala su llama-server. Ausente = acepta todo (MVP/LAN).
+  rpcAllow?: string[];
 };
 
 // init: genera keypair nueva. Re-inicializar PISA la identidad — el payout
 // acumulado queda en la pubkey vieja (se advierte en cli).
 export function initConfig(
   path: string,
-  opts: { gateway: string; instances: InstanceCfg[]; budgets?: ForgeConfig["budgets"]; chain?: ForgeChain },
+  opts: {
+    gateway: string;
+    instances: InstanceCfg[];
+    budgets?: ForgeConfig["budgets"];
+    chain?: ForgeChain;
+    rpcAllow?: string[];
+  },
 ): ForgeConfig {
   const chain = opts.chain ?? "stellar";
   // EVM: identidad = address del secp256k1 (el mismo key firma proofs y cobra).
@@ -69,6 +81,7 @@ export function initConfig(
     gateway: opts.gateway,
     instances: opts.instances,
     ...(opts.budgets ? { budgets: opts.budgets } : {}),
+    ...(opts.rpcAllow?.length ? { rpcAllow: opts.rpcAllow } : {}),
   };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(cfg, null, 2));

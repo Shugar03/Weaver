@@ -22,7 +22,7 @@ import { FluxKleinForge, OllamaMLXAdapter, OpenAICompatAdapter, TrackedExec, Tra
 import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
 import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
 import { connectLoop } from "./ws.ts";
-import { killAllRpcProcs, makePooledFactory, spawnRpcServer, type RpcProc } from "./rpcproc.ts";
+import { killAllRpcProcs, makePooledFactory, probeTcp, spawnRpcServer, type RpcProc } from "./rpcproc.ts";
 
 const CONFIG_PATH = join(homedir(), ".weaver", "forge.json");
 
@@ -85,7 +85,9 @@ function makeInstances(cfg: ForgeConfig, procs: Map<string, RpcProc>): DaemonIns
     // up spawneó (o el alive:false honesto si el binario no estaba).
     if (c.capability === "rpc-worker") {
       const proc = procs.get(c.instanceId) ?? { alive: false, kill() {} };
-      return { ...c, rpcProc: proc };
+      // live = proc vivo Y endpoint alcanzable (self-probe TCP — el socket
+      // puede morir aunque el proceso respire).
+      return { ...c, rpcProc: proc, rpcProbe: () => probeTcp(c.rpc!.endpoint) };
     }
     return {
       ...c,
@@ -247,13 +249,22 @@ if (cmd === "init") {
       rpc: { endpoint, ...(vram ? { vramGb: Number(vram) } : {}) },
     });
   }
-  // --pool N: las instances de texto se anuncian como coordinator pooled —
-  // "sirvo este modelo si el gateway me presta N rpc-workers". Necesitan
-  // --model-file: el llama-server clustered spawnea de un GGUF local.
-  const poolN = Number(arg("--pool"));
+  // --pool N[:MINVRAM]: las instances de texto se anuncian como coordinator
+  // pooled — "sirvo este modelo si el gateway me presta N rpc-workers de ≥
+  // MINVRAM GB". Necesitan --model-file: el llama-server clustered spawnea
+  // de un GGUF local. maxConcurrent se clampa a 1: cada job pooled usa un
+  // llama-server del peso del modelo — >1 = varios servers = OOM del host.
+  const poolParts = (arg("--pool") ?? "").split(":");
+  const poolN = Number(poolParts[0]);
+  const poolMinVram = poolParts[1] !== undefined ? Number(poolParts[1]) : undefined;
   if (poolN > 0) {
     for (const i of instances) {
-      if (i.capability === "text") i.pool = { needs: Math.trunc(poolN) };
+      if (i.capability !== "text") continue;
+      i.pool = { needs: Math.trunc(poolN), ...(poolMinVram ? { minVramGb: poolMinVram } : {}) };
+      if (i.maxConcurrent > 1) {
+        console.warn(`--pool: ${i.instanceId} maxConcurrent ${i.maxConcurrent}→1 (un llama-server por job)`);
+        i.maxConcurrent = 1;
+      }
     }
     if (!arg("--model-file")) {
       console.warn("--pool sin --model-file: el coordinator no podrá spawnear llama-server (job.assign fallará)");
@@ -291,11 +302,16 @@ if (cmd === "init") {
     console.error(`--chain inválido: ${chainArg} (stellar|evm)`);
     process.exit(1);
   }
+  // --rpc-allow p1,p2: allowlist de hosts que el daemon acepta como rpcPeers
+  // (prefijo o host exacto — ej "192.168." o "gpu1.lan"). El assign viene del
+  // gateway; el operador decide a quién diala su llama-server.
+  const rpcAllow = arg("--rpc-allow")?.split(",").map((s) => s.trim()).filter(Boolean);
   const cfg = initConfig(cfgPath, {
     gateway,
     instances,
     chain: chainArg,
     ...(Object.keys(budgets).length ? { budgets } : {}),
+    ...(rpcAllow?.length ? { rpcAllow } : {}),
   });
   console.log(`forge inicializado [${cfg.chain}]:
   pubkey (identidad + payout): ${cfg.pubkey}
@@ -394,6 +410,17 @@ siguiente paso: weaver-forge up`);
         ...(cfg.agentId !== undefined ? { agentId: cfg.agentId } : {}),
         ...(contractId ? { claim: makeClaimer(cfg, contractId) } : {}),
         ...(pooledFactory ? { pooledFactory } : {}),
+        // Allowlist operador de rpcPeers — el gateway propone, el forge
+        // dispone: solo diala hosts que el operador declaró en init.
+        ...(cfg.rpcAllow?.length
+          ? {
+              allowRpcPeers: (peers: string[]) =>
+                peers.every((p) => {
+                  const host = p.replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+                  return cfg.rpcAllow!.some((a) => host === a || host.startsWith(a));
+                }),
+            }
+          : {}),
       }),
   );
   process.on("SIGINT", () => {
@@ -415,8 +442,9 @@ flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:
        --max-vram-gb N    instances COLD solo se ofrecen si su carga entra en N GB
        --rpc-worker id:host:port  S46: instance que solo presta VRAM (ggml-rpc-server)
        --rpc-vram N       VRAM GB anunciada por los rpc-worker
-       --pool N           S46: las instances text piden N workers prestados (coordinator)
+       --pool N[:MINVRAM] S46: las instances text piden N workers prestados (coordinator)
        --model-file PATH  GGUF local para el llama-server pooled
+       --rpc-allow p1,p2  allowlist de hosts aceptados como rpcPeers (prefijo/exacto)
        --rpc-bin BIN      binario rpc-server (default ggml-rpc-server, env RPC_SERVER_BIN)
        --llama-bin BIN    binario llama-server (default llama-server, env LLAMA_SERVER_BIN)`);
 }

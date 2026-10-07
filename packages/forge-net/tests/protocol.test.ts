@@ -152,4 +152,25 @@ describe("S46 pool-forge: rpc-worker + rpcPeers (spec 017)", () => {
     assert.equal(decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", rpcPeers: ["a:1", "b:2", "c:3", "d:4", "e:5"] })), null);
     assert.equal(decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", rpcPeers: [42] })), null);
   });
+
+  it("pool.minVramGb válido viaja; fuera de rango → null", () => {
+    const base = { instanceId: "i0", model: "qwen-70b", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 3000 };
+    const d = hb([{ ...base, pool: { needs: 2, minVramGb: 16 } }]);
+    const i = (d as { instances: InstanceReport[] }).instances[0];
+    assert.deepEqual(i.pool, { needs: 2, minVramGb: 16 });
+    assert.equal(hb([{ ...base, pool: { needs: 2, minVramGb: 0 } }]), null);
+    assert.equal(hb([{ ...base, pool: { needs: 2, minVramGb: -4 } }]), null);
+    assert.equal(hb([{ ...base, pool: { needs: 2, minVramGb: 9999 } }]), null);
+    assert.equal(hb([{ ...base, pool: { needs: 2, minVramGb: "16" } }]), null);
+  });
+
+  it("job.fail con poolBlame decodes — culpa a los peers, no al coordinator", () => {
+    const ok = decode(JSON.stringify({ type: "job.fail", jobId: "j", error: "pooled spawn falló", midStream: false, poolBlame: true }));
+    assert.equal((ok as { poolBlame?: boolean }).poolBlame, true);
+    // ausente/false → blame normal del forge (el gateway no penaliza workers)
+    const sin = decode(JSON.stringify({ type: "job.fail", jobId: "j", error: "x", midStream: false }));
+    assert.equal((sin as { poolBlame?: boolean }).poolBlame, undefined);
+    // poolBlame malformado → mensaje inválido entero (estricto como el resto)
+    assert.equal(decode(JSON.stringify({ type: "job.fail", jobId: "j", error: "x", midStream: false, poolBlame: "si" })), null);
+  });
 });

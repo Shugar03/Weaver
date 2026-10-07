@@ -44,8 +44,12 @@ Tres niveles distintos, que NO hay que confundir:
   warm-keyed por peer-set. Trust = modelo de nivel 2: el coordinator firma
   el proof y responde por sus sub-workers; los endpoints jamás salen en API
   pública. Workers: recurso del pool, NO rutas (fuera del scheduler, fuera
-  de attestation). Leases: acquire atómico + release en done/fail/cancel/
-  disconnect; `live` reportado por heartbeat real del rpc-server.
+  de attestation). Leases: acquire atómico por jobId (pre-probe, sin races)
+  + release en done/fail/cancel/disconnect; `live` = proceso vivo Y endpoint
+  alcanzable (self-probe TCP). Hardening: probe TCP pre-assign + strikes →
+  evicción 120s, `minVramGb` por coordinator, allowlist operador de peers
+  (`--rpc-allow`), LRU acotado del warm cache, cold-start timeout 300s,
+  attest con retry, `job.fail.poolBlame` penaliza al peer no al coordinator.
 - **Verificado live (nivel 2.5, loopback):** 2×`ggml-rpc-server -d CPU` +
   `llama-server --rpc 127.0.0.1:50052,127.0.0.1:50053 --split-mode layer`
   sirviendo qwen3-4b GGUF — `/health` ok y completion real con conexiones

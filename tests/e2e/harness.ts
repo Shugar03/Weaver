@@ -45,7 +45,15 @@ export function startStack(): Promise<Stack> {
     verifyProof: dualVerify,
   });
   const server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
-  const fws = attachForgeWS(server as never, { registry, nonces, verify: dualVerify });
+  const fws = attachForgeWS(server as never, {
+    registry,
+    nonces,
+    verify: dualVerify,
+    // Los workers del e2e anuncian IPs fake (10.99.x.x) — el probe TCP real
+    // los rechazaría. La cobertura del probe vive en pool.test.ts; acá lo
+    // que se prueba es el wire completo gateway↔daemons.
+    poolProbe: async () => true,
+  });
   box.fws = fws;
   return new Promise((res) =>
     setTimeout(

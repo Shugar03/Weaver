@@ -27,7 +27,9 @@ export type InstanceReport = {
   // el gateway solo revela `rpc.endpoint` al coordinator dentro de job.assign.
   rpc?: { endpoint: string; vramGb?: number };
   // coordinator pooled: "este modelo lo sirvo SOLO si me parkean N workers".
-  pool?: { needs: number };
+  // minVramGb: VRAM mínima por worker — un worker de 2GB no sirve para un 70B
+  // aunque sea "uno de cuatro" (el pairing lo filtra, no lo descubre al fallar).
+  pool?: { needs: number; minVramGb?: number };
 };
 // agentId: identidad ERC-8004 del forge (EVM, opcional — forges Stellar no
 // la tienen). Va a nivel heartbeat, no por instance: es del dueño, no del slot.
@@ -54,7 +56,15 @@ export type JobDoneMsg = {
 };
 // midStream=true: falló DESPUÉS de emitir tokens — no reintentable en
 // silencio (semántica idéntica al failover local).
-export type JobFailMsg = { type: "job.fail"; jobId: string; error: string; midStream: boolean };
+export type JobFailMsg = {
+  type: "job.fail";
+  jobId: string;
+  error: string;
+  midStream: boolean;
+  // S46: el fallo fue por los PEERS (pooled spawn / worker endpoint) — el
+  // gateway los penaliza para no re-parkearlos. Ausente = culpa del forge.
+  poolBlame?: boolean;
+};
 export type ImageResultMsg = { type: "image.result"; jobId: string; b64: string; ms: number };
 export type PongMsg = { type: "pong"; t: number }; // eco del ping — RTT medido real
 
@@ -163,6 +173,10 @@ function instanceReport(v: unknown): InstanceReport | null {
   if (v.pool !== undefined) {
     if (!isObj(v.pool) || !isNum(v.pool.needs) || !Number.isInteger(v.pool.needs) || v.pool.needs < 1 || v.pool.needs > MAX_RPC_PEERS) return null;
     r.pool = { needs: v.pool.needs };
+    if (v.pool.minVramGb !== undefined) {
+      if (!inRange(v.pool.minVramGb, 1, 2048)) return null;
+      r.pool.minVramGb = v.pool.minVramGb;
+    }
   }
   return r;
 }
@@ -212,7 +226,8 @@ export function decode(raw: string): ForgeMsg | null {
       };
     case "job.fail":
       if (!isStr(m.jobId) || !isStr(m.error) || !isBool(m.midStream)) return null;
-      return { type: "job.fail", jobId: m.jobId, error: m.error, midStream: m.midStream };
+      if (m.poolBlame !== undefined && !isBool(m.poolBlame)) return null;
+      return { type: "job.fail", jobId: m.jobId, error: m.error, midStream: m.midStream, ...(m.poolBlame === true ? { poolBlame: true } : {}) };
     case "image.result":
       if (!isStr(m.jobId) || !isStr(m.b64) || !isNum(m.ms)) return null;
       return { type: "image.result", jobId: m.jobId, b64: m.b64, ms: m.ms };

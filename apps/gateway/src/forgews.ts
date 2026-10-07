@@ -67,7 +67,14 @@ export function makeKillSwitch(deps: {
 
 export function attachForgeWS(
   server: Server,
-  deps: { registry: ForgeRegistry; nonces: NonceStore; verify: VerifyFn },
+  deps: {
+    registry: ForgeRegistry;
+    nonces: NonceStore;
+    verify: VerifyFn;
+    // Probe TCP a los endpoints rpc-worker (default real). Tests e2e inyectan
+    // uno — sus endpoints son IPs fake que nunca contestarían un SYN.
+    poolProbe?: (endpoint: string) => Promise<boolean>;
+  },
 ): ForgeWS {
   // maxPayload 1MiB: chunks/done son KBs — un frame gigante de un daemon
   // malicioso no puede inflar memoria del gateway (default ws = 100MiB).
@@ -82,7 +89,13 @@ export function attachForgeWS(
   const pool = new ForgePool({
     reportOf: (i) => deps.registry.reportOf(i),
     workers: () => deps.registry.workers(),
+    ...(deps.poolProbe ? { probe: deps.poolProbe } : {}),
   });
+  // Reintento de attestation para coordinators pooled: el primer attest
+  // puede fallar por "pool insuficiente" — condición TRANSIENTE (los workers
+  // conectan después). Sin retry la instance queda unroutable para siempre.
+  const lastAttest = new Map<string, number>();
+  const ATTEST_RETRY_MS = 30_000;
   // spec 011: pubkeys matadas por chaos — reconectar no revive hasta revive.
   const kill = makeKillSwitch({
     // instanceId → pubkey: del registry (fuente de verdad post-heartbeat)
@@ -155,20 +168,32 @@ export function attachForgeWS(
           instanceOwner.set(v.forgeId, session);
           attestImage(ex, v);
         }
-      } else if (v.capability === "text" && !remoteExecs.has(v.forgeId)) {
-        const ex = new TrackedExec(
-          new RemoteForgeExec({
-            channel: session,
-            instanceId: v.forgeId,
-            model: v.model,
-            resident: () => deps.registry.reportOf(v.forgeId)?.hot ?? false,
-            pool,
-            forgePubkey: pk,
-          }),
-        );
-        remoteExecs.set(v.forgeId, ex);
-        instanceOwner.set(v.forgeId, session);
-        attestText(ex, v);
+      } else if (v.capability === "text") {
+        if (!remoteExecs.has(v.forgeId)) {
+          const ex = new TrackedExec(
+            new RemoteForgeExec({
+              channel: session,
+              instanceId: v.forgeId,
+              model: v.model,
+              resident: () => deps.registry.reportOf(v.forgeId)?.hot ?? false,
+              pool,
+              forgePubkey: pk,
+            }),
+          );
+          remoteExecs.set(v.forgeId, ex);
+          instanceOwner.set(v.forgeId, session);
+          attestText(ex, v);
+          lastAttest.set(v.forgeId, Date.now());
+        } else if (
+          !v.attested &&
+          Date.now() - (lastAttest.get(v.forgeId) ?? 0) > ATTEST_RETRY_MS &&
+          deps.registry.reportOf(v.forgeId)?.pool !== undefined
+        ) {
+          // Solo pooled reintenta: "sin workers" es transient. Una instance
+          // normal que no pudo servir 4 tokens está rota, no ocupada.
+          lastAttest.set(v.forgeId, Date.now());
+          attestText(remoteExecs.get(v.forgeId)!, v);
+        }
       }
     }
   }

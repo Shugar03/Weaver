@@ -323,6 +323,102 @@ test("S46 pooled: rpcPeers sin pooledFactory → job.fail honesto; sin peers →
   d.stop();
 });
 
+test("S46 hardening: rpcPeers a instancia NO pooled → fail (peers no pedidos)", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-4b" });
+  let factoryCalls = 0;
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident)], // sin pool — nunca pidió workers
+    sign,
+    heartbeatMs: 60000,
+    pooledFactory: () => {
+      factoryCalls++;
+      return Promise.resolve(new FakeForgeExec({}));
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jX", instanceId: "c0", model: "m", prompt: "p", rpcPeers: ["10.9.9.9:1"] });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jX");
+  assert.equal(factoryCalls, 0); // el daemon NO obedece peers que no pidió
+  d.stop();
+});
+
+test("S46 hardening: allowRpcPeers rechaza → fail honesto (gateway no autoridad)", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  let factoryCalls = 0;
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 1 } })],
+    sign,
+    heartbeatMs: 60000,
+    allowRpcPeers: (peers) => peers.every((p) => p.startsWith("192.168.")),
+    pooledFactory: () => {
+      factoryCalls++;
+      return Promise.resolve(new FakeForgeExec({}));
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jD", instanceId: "c0", model: "m", prompt: "p", rpcPeers: ["8.8.8.8:50052"] });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jD");
+  assert.equal(factoryCalls, 0); // allowlist operador ganó sobre el assign
+  ch.inject({ type: "job.assign", jobId: "jO", instanceId: "c0", model: "m", prompt: "p", rpcPeers: ["192.168.1.7:50052"] });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(factoryCalls, 1); // dentro de la allowlist → pooled sirve
+  d.stop();
+});
+
+test("S46 hardening: pooledFactory lanza → job.fail con poolBlame (culpa a los peers)", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 1 } })],
+    sign,
+    heartbeatMs: 60000,
+    pooledFactory: () => Promise.reject(new Error("llama-server murió al boot")),
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jB", instanceId: "c0", model: "m", prompt: "p", rpcPeers: ["10.0.0.5:50052"] });
+  await new Promise((r) => setTimeout(r, 30));
+  const f = ch.last("job.fail")!;
+  assert.equal(f.jobId, "jB");
+  assert.equal(f.poolBlame, true); // el gateway penaliza a LOS PEERS
+  d.stop();
+});
+
+test("S46 hardening: rpcProbe caído → worker reporta muerto aunque el proc viva", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [
+      {
+        instanceId: "w0",
+        model: "rpc",
+        capability: "rpc-worker",
+        rpc: { endpoint: "10.0.0.5:50052" },
+        rpcProc: { alive: true },
+        rpcProbe: async () => false, // proceso vivo PERO endpoint no alcanzable
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    sign,
+    heartbeatMs: 10,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 30));
+  const w = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "w0")!;
+  assert.equal(w.saturated, true); // live:false para el gateway — endpoint muerto
+  d.stop();
+});
+
 test("job.assign a instanceId desconocido → job.fail (no cuelga el gateway)", async () => {
   const ch = new FakeChannel();
   const d = new ForgeDaemon({ channel: ch, instances: [inst(new FakeForgeExec({ forgeId: "gpu0" }))], sign });

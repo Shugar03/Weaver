@@ -86,16 +86,17 @@ describe("S31 RemoteForgeExec", () => {
 
   it("S46 pool: acquire → rpcPeers en el assign; null → throw sin mandar nada", async () => {
     const ch = new FakeChannel();
-    const calls: [string, string][] = [];
+    const calls: [string, string, string][] = [];
     let released = "";
     const pool = {
-      acquire: (id: string, pk: string) => {
-        calls.push([id, pk]);
+      acquire: async (id: string, pk: string, jobId: string) => {
+        calls.push([id, pk, jobId]);
         return ["10.0.0.5:50052", "10.0.0.6:50052"];
       },
       release: (id: string) => {
         released = id;
       },
+      penalize: () => {},
     };
     const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pool: pool as never, forgePubkey: "PK_COORD" });
     const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
@@ -106,18 +107,67 @@ describe("S31 RemoteForgeExec", () => {
       ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
     }, 10);
     await drain(it);
-    assert.deepEqual(calls, [["gpu0", "PK_COORD"]]);
+    assert.deepEqual(calls, [["gpu0", "PK_COORD", "j1"]]);
     const assign = ch.lastAssign() as { rpcPeers?: string[] } | undefined;
     assert.deepEqual(assign?.rpcPeers, ["10.0.0.5:50052", "10.0.0.6:50052"]);
-    assert.equal(released, "gpu0"); // workers liberados al terminar el job
+    assert.equal(released, "j1"); // release por jobId — no por instanceId
   });
 
-  it("S46 pool: sin workers libres → throw pre-assign (failover a otra ruta)", async () => {
+  it("S46 pool: sin workers elegibles → throw pre-assign (failover a otra ruta)", async () => {
     const ch = new FakeChannel();
-    const pool = { acquire: () => null, release: () => {} };
+    const pool = { acquire: async () => null, release: () => {}, penalize: () => {} };
     const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pool: pool as never, forgePubkey: "PK" });
-    await assert.rejects(() => drain(ex.execute(req())), /pool sin workers libres/);
+    await assert.rejects(() => drain(ex.execute(req())), /pool sin workers elegibles/);
     assert.equal(ch.lastAssign(), undefined); // nunca se despachó
+  });
+
+  it("S46 pool: job.fail con poolBlame → penalize a los peers ANTES del release", async () => {
+    const ch = new FakeChannel();
+    const order: string[] = [];
+    const pool = {
+      acquire: async () => ["10.0.0.5:50052"],
+      release: (id: string) => {
+        order.push(`release:${id}`);
+      },
+      penalize: (id: string) => {
+        order.push(`penalize:${id}`);
+      },
+    };
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pool: pool as never, forgePubkey: "PK" });
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.fail", jobId: "j1", error: "pooled spawn falló", midStream: false, poolBlame: true });
+    }, 10);
+    await assert.rejects(() => drain(it), /pooled spawn/);
+    assert.deepEqual(order, ["penalize:j1", "release:j1"]); // strike antes de soltar
+  });
+
+  it("S46 pool: cold start — el primer token puede superar firstTokenTimeoutMs", async () => {
+    const ch = new FakeChannel();
+    const pool = {
+      acquire: async () => ["10.0.0.5:50052"],
+      release: () => {},
+      penalize: () => {},
+    };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "gpu0",
+      model: "m",
+      firstTokenTimeoutMs: 40, // el daemon tarda 120ms en spawnear llama-server…
+      pooledFirstTokenMs: 500, // …pero el boot pooled tiene su propio presupuesto
+      pool: pool as never,
+      forgePubkey: "PK",
+    });
+    const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
+    const it = ex.execute(req());
+    setTimeout(() => ch.emit({ type: "job.ack", jobId: "j1" }), 5);
+    setTimeout(() => {
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
+    }, 120); // >40ms: sin pooledFirstTokenMs esto sería timeout de un boot sano
+    const out = await drain(it);
+    assert.equal(out.at(-1)?.done, true); // el cluster levantó y sirvió
   });
 
   it("job.fail sin tokens → throw pre-token; midStream → propaga explícito", async () => {

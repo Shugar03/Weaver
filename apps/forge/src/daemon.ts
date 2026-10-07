@@ -26,9 +26,13 @@ export type DaemonInstance = {
   // ggml-rpc-server (lo spawnea cli.ts — el daemon solo le reporta salud).
   rpc?: { endpoint: string; vramGb?: number };
   rpcProc?: { alive: boolean };
+  // Self-probe del endpoint (TCP al propio bind): el proceso puede vivir
+  // con el socket muerto — live para el gateway = proc vivo Y alcanzable.
+  rpcProbe?: () => Promise<boolean>;
   // coordinator pooled: "sirvo este modelo si me parkean N workers" — el
   // gateway incluye rpcPeers en el assign y el daemon usa pooledFactory.
-  pool?: { needs: number };
+  // minVramGb viaja para que el pairing filtre workers chicos.
+  pool?: { needs: number; minVramGb?: number };
   // GGUF local para el llama-server pooled (lo consume la factory de cli.ts).
   modelFile?: string;
 };
@@ -60,6 +64,13 @@ export type ProofSigner = (hash: Buffer) => Buffer | Promise<Buffer>;
 // por peer-set + OpenAICompatAdapter). Inyectable → tests con fakes.
 export type PooledFactory = (inst: DaemonInstance, peers: string[]) => Promise<ForgeExec>;
 
+// S46 hardening: allowlist operador-side de los peers que el daemon acepta
+// dialar. El assign viene del gateway — si está comprometido/buggeado no
+// queremos que un forge cualquiera abra conexiones RPC arbitrarias (el
+// parser ggml-rpc del llama-server es C++ atacable). Ausente = acepta
+// (default MVP; cli.ts la arma con --rpc-allow).
+export type PeerAllowlist = (peers: string[]) => boolean;
+
 const TOK_WINDOW = 50; // últimas N ejecuciones para tok/s medido
 
 export class ForgeDaemon {
@@ -72,6 +83,7 @@ export class ForgeDaemon {
   private readonly agentId?: number; // ERC-8004 (EVM) — viaja en el heartbeat
   private readonly probes: BudgetProbes;
   private readonly pooledFactory?: PooledFactory;
+  private readonly allowRpcPeers?: PeerAllowlist;
   private readonly tok = new Map<string, { tok: number; ms: number }[]>();
   private readonly running = new Map<string, AbortController>(); // jobId → cancel
   private hbTimer: ReturnType<typeof setInterval> | null = null;
@@ -88,6 +100,7 @@ export class ForgeDaemon {
     agentId?: number;
     probes?: Partial<BudgetProbes>;
     pooledFactory?: PooledFactory;
+    allowRpcPeers?: PeerAllowlist;
   }) {
     this.channel = deps.channel;
     this.instances = new Map(deps.instances.map((i) => [i.instanceId, i]));
@@ -101,6 +114,7 @@ export class ForgeDaemon {
       vramUsedGb: deps.probes?.vramUsedGb ?? (() => ollamaVramUsedGb()),
     };
     this.pooledFactory = deps.pooledFactory;
+    this.allowRpcPeers = deps.allowRpcPeers;
   }
 
   start(): void {
@@ -147,10 +161,14 @@ export class ForgeDaemon {
     const vramUsed = maxVram !== undefined ? await this.probes.vramUsedGb() : null;
     const instances: InstanceReport[] = [];
     for (const i of this.instances.values()) {
-      // rpc-worker: no tiene exec — su salud ES el proceso ggml-rpc-server.
+      // rpc-worker: no tiene exec — su salud ES el proceso ggml-rpc-server
+      // Y que su endpoint realmente acepte conexiones (self-probe TCP: el
+      // proceso puede vivir con el socket muerto/bindeado a otra iface).
       // Jamás recibe job.assign (el gateway no lo rutea); solo se parkea.
       if (i.capability === "rpc-worker") {
-        const alive = i.rpcProc?.alive === true;
+        const alive =
+          i.rpcProc?.alive === true &&
+          (i.rpcProbe ? await i.rpcProbe().catch(() => false) : true);
         instances.push({
           instanceId: i.instanceId,
           model: i.model,
@@ -239,8 +257,8 @@ export class ForgeDaemon {
       });
   }
 
-  private fail(jobId: string, error: string, midStream: boolean): void {
-    this.channel.send({ type: "job.fail", jobId, error, midStream });
+  private fail(jobId: string, error: string, midStream: boolean, poolBlame = false): void {
+    this.channel.send({ type: "job.fail", jobId, error, midStream, ...(poolBlame ? { poolBlame: true } : {}) });
   }
 
   private async runJob(m: Extract<GatewayMsg, { type: "job.assign" }>): Promise<void> {
@@ -256,16 +274,26 @@ export class ForgeDaemon {
     this.channel.send({ type: "job.ack", jobId: m.jobId });
     // S46: assign con rpcPeers → el exec no es el residente sino el pooled
     // (llama-server --rpc peers — la factory lo spawnea/reusa warm-keyed).
-    // Sin factory no puedo coordinar el cluster → fail honesto, no cuelgo.
+    // Defensa en profundidad: solo obedecemos peers si ESTA instancia los
+    // pidió (pool declarado) — un gateway buggy/comprometido no puede hacer
+    // que un forge normal abra conexiones RPC arbitrarias.
     let exec = i.exec as ForgeExec | undefined;
     if (m.rpcPeers?.length) {
+      if (!i.pool) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers recibidos pero no soy pooled`, false);
+      }
+      if (this.allowRpcPeers && !this.allowRpcPeers(m.rpcPeers)) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers fuera de la allowlist del operador`, false);
+      }
       if (!this.pooledFactory) {
         return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers recibidos pero sin pooledFactory`, false);
       }
       try {
         exec = await this.pooledFactory(i, m.rpcPeers);
       } catch (e) {
-        return this.fail(m.jobId, `pooled spawn falló: ${e instanceof Error ? e.message : String(e)}`, false);
+        // poolBlame: el spawn falló por los PEERS (endpoint muerto, RPC roto)
+        // — el gateway los penaliza para no re-parkearlos en el failover.
+        return this.fail(m.jobId, `pooled spawn falló: ${e instanceof Error ? e.message : String(e)}`, false, true);
       }
     }
     if (!exec) return this.fail(m.jobId, `instance ${m.instanceId}: sin exec`, false);
