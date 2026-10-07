@@ -190,6 +190,7 @@ por stage encadenada, túnel seguro para rpc-server WAN.
 | `job.cancel` durante el spawn pooled se perdía → servía a un consumidor muerto | `AbortController` en `running` ANTES del await; signal entra a la factory → `waitHealthy` aborta y mata el proceso |
 | Spawn muerto por cancel → `poolBlame` penalizaba workers inocentes | `poolBlame` solo si `!ac.signal.aborted` |
 | `daemon.stop()` no mataba warm servers → VRAM colgada | `PooledFactory.dispose()` — SIGKILL a todo el warm cache |
+| Abort mid-acquire → el assign igual salía y el daemon spawneaba el cluster para un consumidor muerto | `if (failed) throw` post-acquire + release viajando sobre `acquireP` (no depende de que el body del generator complete) |
 
 **Honestidad del modelo de confianza**: el coordinator recibe el prompt
 completo y firma el proof — los workers solo ven tensores/activaciones por

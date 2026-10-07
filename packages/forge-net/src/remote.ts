@@ -221,17 +221,24 @@ export class RemoteForgeExec implements ForgeExec {
     // S46 pool-forge: si la instance pidió pool (pool.needs en su heartbeat),
     // reservamos workers acá — atómico con el dispatch, pre-token. El acquire
     // probea TCP a los endpoints; sin elegibles → throw → failover honesto.
-    let acquiredPeers = false;
+    // acquireP se guarda aparte: si el consumidor aborta MID-ACQUIRE el
+    // finally corre ANTES de que el await se resuelva — el loan igual queda
+    // creado cuando el acquire termine, y el release debe viajar CON esa
+    // promesa o los workers quedan busy para siempre (leak real).
+    const acquireP = this.pool ? this.pool.acquire(this.forgeId, this.forgePubkey, jobId) : null;
     let blamedPeers = false;
     try {
-      const peers = this.pool ? await this.pool.acquire(this.forgeId, this.forgePubkey, jobId) : [];
+      const peers = acquireP ? await acquireP : [];
       if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers elegibles`);
-      acquiredPeers = peers.length > 0;
+      // El consumidor murió DURANTE el acquire (abort/close mid-probe): no
+      // despachar el assign — el daemon spawnearía un llama-server del peso
+      // del modelo para servirle tokens a nadie. El loan ya creado lo
+      // libera el finally vía acquireP.
+      if (failed) throw failed;
       // Cold start pooled: el daemon spawnea llama-server --rpc al recibir el
       // assign — el primer token incluye el boot completo del cluster.
-      const firstTokenMs = acquiredPeers
-        ? Math.max(this.firstTokenTimeoutMs, this.pooledFirstTokenMs)
-        : this.firstTokenTimeoutMs;
+      const firstTokenMs =
+        peers.length > 0 ? Math.max(this.firstTokenTimeoutMs, this.pooledFirstTokenMs) : this.firstTokenTimeoutMs;
       this.channel.send({
         type: "job.assign",
         jobId,
@@ -277,11 +284,16 @@ export class RemoteForgeExec implements ForgeExec {
         }
       }
       // Workers vuelven al pool — mismo contrato que job.cancel con la GPU.
-      // Si el daemon culpó a los peers (spawn falló) los penalizamos ANTES
-      // de liberar: el strike queda registrado para el próximo acquire.
-      if (acquiredPeers) {
-        if (blamedPeers) this.pool?.penalize(jobId);
-        this.pool?.release(jobId);
+      // El release viaja sobre acquireP: cubre el happy path (loan ya creado)
+      // Y el abort mid-acquire (el loan aparece cuando la promesa termine —
+      // penalize+release corren ahí). release/penalize son idempotentes.
+      if (acquireP) {
+        void acquireP
+          .then(() => {
+            if (blamedPeers) this.pool?.penalize(jobId);
+            this.pool?.release(jobId);
+          })
+          .catch(() => {});
       }
       un();
       unClose();

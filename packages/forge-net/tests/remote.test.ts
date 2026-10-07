@@ -143,6 +143,40 @@ describe("S31 RemoteForgeExec", () => {
     assert.deepEqual(order, ["penalize:j1", "release:j1"]); // strike antes de soltar
   });
 
+  it("S46 pool: abort DURANTE acquire → no manda assign al muerto y libera el loan", async () => {
+    const ch = new FakeChannel();
+    let resolveAcquire!: (peers: string[]) => void;
+    let released = "";
+    const pool = {
+      acquire: () => new Promise<string[]>((res) => (resolveAcquire = res)),
+      release: (id: string) => {
+        released = id;
+      },
+      penalize: () => {},
+    };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "gpu0",
+      model: "m",
+      pool: pool as never,
+      forgePubkey: "PK",
+    });
+    const ac = new AbortController();
+    const it = ex.execute(req({ signal: ac.signal }))[Symbol.asyncIterator]();
+    const doneP = it.next().then(
+      () => "ok",
+      (e) => `err:${String(e)}`,
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    ac.abort(); // el consumidor murió mid-acquire
+    resolveAcquire(["10.0.0.5:50052"]); // los probes terminan DESPUÉS
+    const outcome = await doneP;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(ch.lastAssign(), undefined); // jamás se despachó al muerto
+    assert.equal(released, "j1"); // el loan que el acquire dejó quedó liberado
+    assert.match(outcome, /err:/);
+  });
+
   it("S46 pool: cold start — el primer token puede superar firstTokenTimeoutMs", async () => {
     const ch = new FakeChannel();
     const pool = {
