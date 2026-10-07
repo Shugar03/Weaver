@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WEAVER — Monad Metropolis · Track 04</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=VT323&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<style>
+  :root {
+    --void: #000000;
+    --panel: #050505;
+    --line: #1e1e1e;
+    --fog: #8a8a8a;
+    --lima: #d0ff00;
+    --danger: #ff3b3b;
+    --ink: #e8e8e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--void);
+    color: var(--ink);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+  }
+  ::selection { background: var(--lima); color: #000; }
+
+  /* ---------- grain ---------- */
+  body::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 60; pointer-events: none;
+    opacity: .05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---------- deck chrome ---------- */
+  #progress {
+    position: fixed; top: 0; left: 0; height: 2px; width: 100%;
+    background: var(--line); z-index: 70;
+  }
+  #progress > div {
+    height: 100%; width: 0%; background: var(--lima);
+    transition: width .6s cubic-bezier(.32,.72,0,1);
+  }
+  #counter {
+    position: fixed; bottom: 28px; right: 36px; z-index: 70;
+    font-family: "VT323", monospace; font-size: 18px; letter-spacing: .12em;
+    color: var(--fog);
+  }
+  #counter b { color: var(--lima); font-weight: 400; }
+  #hint {
+    position: fixed; bottom: 28px; left: 36px; z-index: 70;
+    font-family: "VT323", monospace; font-size: 16px; letter-spacing: .15em;
+    color: #3a3a3a; transition: color .4s;
+  }
+  #dots {
+    position: fixed; right: 36px; top: 50%; transform: translateY(-50%);
+    z-index: 70; display: flex; flex-direction: column; gap: 10px;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #2a2a2a; border: none; cursor: pointer;
+    transition: all .4s cubic-bezier(.32,.72,0,1);
+  }
+  .dot.on { background: var(--lima); transform: scale(1.5); }
+  .dot:hover { background: var(--fog); }
+
+  /* ---------- slides ---------- */
+  .slide {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    padding: 6vw 8vw;
+  }
+  .slide.on { display: flex; }
+
+  /* Print → PDF: una slide por página, chrome de navegación fuera,
+     fondo oscuro preservado (sin esto el PDF sale blanco). */
+  @page { size: 13.33in 7.5in; margin: 0; }
+  @media print {
+    html, body { height: auto; overflow: visible; }
+    body, .slide { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    /* feTurbulence se rasteriza por página → el PDF pasa de ~1MB a 37MB. */
+    body::after { content: none !important; }
+    #progress, #counter, #hint, #dots, #mesh { display: none !important; }
+    .slide {
+      position: relative; display: flex !important;
+      height: 100vh; page-break-after: always; break-after: page;
+    }
+  }
+  .kicker {
+    font-family: "VT323", monospace; font-size: clamp(14px, 1.3vw, 20px);
+    letter-spacing: .3em; color: var(--lima); text-transform: uppercase;
+    margin-bottom: 2.4vh;
+  }
+  .kicker::before { content: "// "; color: #3a3a3a; }
+  h1 {
+    font-size: clamp(56px, 9vw, 140px); font-weight: 600;
+    letter-spacing: -.03em; line-height: .95; color: var(--ink);
+  }
+  h2 {
+    font-size: clamp(34px, 4.6vw, 68px); font-weight: 600;
+    letter-spacing: -.025em; line-height: 1.02; color: var(--ink);
+    max-width: 24ch;
+  }
+  h2 .dim { color: var(--fog); }
+  h2 .lm { color: var(--lima); }
+  .sub {
+    margin-top: 2.6vh; font-size: clamp(15px, 1.4vw, 21px);
+    color: var(--fog); font-weight: 400; max-width: 62ch; line-height: 1.55;
+  }
+  .src {
+    position: absolute; bottom: 64px; left: 8vw; right: 8vw;
+    font-family: "VT323", monospace; font-size: clamp(12px, 1vw, 15px);
+    letter-spacing: .08em; color: #3f3f3a; line-height: 1.7;
+  }
+  .src b { color: var(--fog); font-weight: 400; }
+
+  /* ---------- stat cards (double-bezel) ---------- */
+  .stats { display: flex; gap: 18px; margin-top: 5vh; flex-wrap: wrap; }
+  .stat {
+    flex: 1 1 260px; min-width: 240px;
+    padding: 6px; border-radius: 20px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--line);
+  }
+  .stat > div {
+    border-radius: 14px; background: var(--panel);
+    padding: 26px 24px 22px; height: 100%;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .stat .n {
+    font-family: "VT323", monospace; font-size: clamp(40px, 4.4vw, 62px);
+    color: var(--lima); line-height: 1; letter-spacing: -.01em;
+  }
+  .stat .n small { font-size: .55em; color: var(--fog); }
+  .stat .l {
+    margin-top: 14px; font-size: clamp(13px, 1.1vw, 15px);
+    color: var(--fog); line-height: 1.5;
+  }
+  .stat.warn .n { color: var(--danger); }
+  .stat.plain .n { color: var(--ink); }
+
+  /* ---------- pill / chips ---------- */
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3.4vh; }
+  .chip {
+    font-family: "VT323", monospace; font-size: clamp(13px, 1.1vw, 17px);
+    letter-spacing: .14em; padding: 8px 16px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--fog);
+    background: rgba(255,255,255,.02);
+  }
+  .chip.lm { color: var(--lima); border-color: rgba(208,255,0,.35); }
+
+  /* ---------- toll list ---------- */
+  .tolls { margin-top: 3vh; display: flex; flex-direction: column; gap: 0; width: 100%; max-width: 1080px; }
+  .toll {
+    display: grid; grid-template-columns: 170px 1fr 210px; gap: 24px;
+    align-items: baseline; padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  .toll:last-child { border-bottom: 1px solid var(--line); }
+  .toll .who { font-weight: 600; font-size: clamp(15px, 1.4vw, 20px); color: var(--ink); }
+  .toll .what { font-size: clamp(13px, 1.15vw, 16px); color: var(--fog); line-height: 1.5; }
+  .toll .num {
+    font-family: "VT323", monospace; font-size: clamp(20px, 2vw, 30px);
+    color: var(--danger); text-align: right; letter-spacing: .04em;
+  }
+  .toll .num.ok { color: var(--lima); }
+
+  /* ---------- data table (tiers + rivals) ---------- */
+  .tbl { width: 100%; border-collapse: collapse; margin-top: 3vh; }
+  .tbl th {
+    font-family: "VT323", monospace; font-size: clamp(12px, 1vw, 15px);
+    letter-spacing: .18em; text-transform: uppercase; color: #565650;
+    text-align: left; padding: 0 14px 10px 0; font-weight: 400;
+  }
+  .tbl th.r, .tbl td.r { text-align: right; }
+  .tbl td {
+    padding: 10px 14px 10px 0; border-top: 1px solid var(--line);
+    font-size: clamp(13px, 1.1vw, 16px); color: var(--fog); line-height: 1.45;
+    vertical-align: baseline;
+  }
+  .tbl td.b { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  .tbl td.m {
+    font-family: "VT323", monospace; color: var(--lima);
+    letter-spacing: .04em; white-space: nowrap;
+  }
+  .tbl td.m.dim { color: var(--fog); }
+  .tbl tr:last-child td { border-bottom: 1px solid var(--line); }
+
+  /* ---------- split layouts ---------- */
+  .meshwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 6vw; align-items: center; width: 100%; }
+  .mesh { width: 100%; max-width: 560px; }
+  .split { display: grid; grid-template-columns: 42% 1fr; gap: 5vw; align-items: start; width: 100%; }
+
+  /* ---------- pillars bento ---------- */
+  .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 5vh; width: 100%; }
+  .pillar {
+    padding: 6px; border-radius: 22px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+  }
+  .pillar > div {
+    border-radius: 16px; background: var(--panel); padding: 30px 26px;
+    height: 100%; box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .pillar .tag {
+    font-family: "VT323", monospace; font-size: 15px; letter-spacing: .25em;
+    color: var(--lima); margin-bottom: 20px;
+  }
+  .pillar h3 { font-size: clamp(19px, 1.7vw, 24px); font-weight: 600; margin-bottom: 14px; letter-spacing: -.01em; }
+  .pillar p { font-size: clamp(13px, 1.05vw, 15px); color: var(--fog); line-height: 1.6; }
+  .pillar code {
+    font-family: "VT323", monospace; color: var(--lima);
+    font-size: 1.02em; background: rgba(208,255,0,.07);
+    padding: 0 5px; border-radius: 4px;
+  }
+
+  /* ---------- terminal mock ---------- */
+  .term {
+    margin-top: 3vh; width: 100%; max-width: 880px;
+    padding: 6px; border-radius: 20px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+  }
+  .term > div {
+    border-radius: 14px; background: #0a0a08; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .term .bar {
+    display: flex; gap: 6px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .term .bar i { width: 9px; height: 9px; border-radius: 50%; background: #242424; }
+  .term pre {
+    padding: 18px 24px; font-family: "VT323", monospace;
+    font-size: clamp(14px, 1.35vw, 19px); line-height: 1.6; color: var(--fog);
+    overflow-x: auto;
+  }
+  .term .c1 { color: var(--lima); } .term .c2 { color: #6ee7ff; } .term .c3 { color: #565650; }
+
+  /* ---------- today grid ---------- */
+  .today { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 5vh; width: 100%; }
+  .cell {
+    padding: 5px; border-radius: 18px; background: rgba(255,255,255,.03);
+    border: 1px solid var(--line);
+  }
+  .cell > div {
+    border-radius: 13px; background: var(--panel); padding: 22px 20px;
+    height: 100%; box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .cell .v { font-family: "VT323", monospace; font-size: clamp(26px, 2.8vw, 42px); color: var(--lima); }
+  .cell .k { margin-top: 8px; font-size: clamp(11px, .95vw, 13px); color: var(--fog); line-height: 1.45; letter-spacing: .02em; }
+
+  /* ---------- hero mesh canvas ---------- */
+  #mesh { position: fixed; inset: 0; z-index: 0; opacity: 0; }
+  .slide-inner { position: relative; z-index: 2; width: 100%; max-width: 1280px; }
+  .center { text-align: center; }
+  .center .sub { margin-left: auto; margin-right: auto; }
+
+  .glow {
+    position: absolute; border-radius: 50%; filter: blur(110px);
+    pointer-events: none; z-index: 0;
+  }
+
+  /* ---------- demo slide ---------- */
+  .demolist { margin-top: 4vh; display: flex; flex-direction: column; gap: 14px; }
+  .demolist li {
+    list-style: none; display: flex; align-items: baseline; gap: 16px;
+    font-size: clamp(14px, 1.3vw, 18px); color: var(--fog);
+  }
+  .demolist li::before {
+    content: "▸"; color: var(--lima); font-family: "VT323", monospace;
+    font-size: 1.1em; flex-shrink: 0;
+  }
+
+  .arrow {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 70; font-family: "VT323", monospace; color: #3a3a3a;
+    font-size: 15px; letter-spacing: .2em;
+  }
+  @media (max-width: 860px) {
+    .toll { grid-template-columns: 1fr; gap: 6px; }
+    .toll .num { text-align: left; }
+    .pillars { grid-template-columns: 1fr; }
+    .today { grid-template-columns: repeat(2, 1fr); }
+    .meshwrap, .split { grid-template-columns: 1fr; }
+    #dots { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress"><div></div></div>
+<div id="counter"><b>01</b> / 12</div>
+<div id="hint">← → · SPACE · CLICK</div>
+<div id="dots"></div>
+<canvas id="mesh"></canvas>
+
+<!-- ═══════════ 01 · TITLE ═══════════ -->
+<section class="slide on" data-mesh="1">
+  <div class="glow" style="width:60vw;height:60vw;background:rgba(208,255,0,.045);top:-20vw;right:-15vw"></div>
+  <div class="slide-inner center">
+    <div class="kicker st">inference · unbundled</div>
+    <h1 class="st">WEAVER<span style="color:var(--lima)">.</span></h1>
+    <p class="sub st">The new datacenter has no walls.<br>
+    Any GPU serves open models. Every job is verified. Every token is paid — on Monad.</p>
+    <div class="chips st" style="justify-content:center">
+      <span class="chip lm">OPENAI-COMPATIBLE</span>
+      <span class="chip lm">MONAD TESTNET · ERC-8004</span>
+      <span class="chip">METROPOLIS · TRACK 04</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 02 · THE MARKET ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the market</div>
+    <h2 class="st">Inference spend overtook training.<br><span class="dim">And it's compounding.</span></h2>
+    <div class="stats">
+      <div class="stat st"><div>
+        <div class="n">$105–118<small>B</small></div>
+        <div class="l">global AI inference market today → <b style="color:var(--ink)">$310B+ by 2030–34</b> (CAGR 13–19%)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">70<small>%+</small></div>
+        <div class="l">of worldwide GPU consumption now goes to serving models — production inference, not training</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">330<small>×</small></div>
+        <div class="l">Google: 9.7T → 3.2 quadrillion tokens/month in 25 months<br>(Pichai, I/O 2024→2026)</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="src"><b>sources:</b> inference market size — Grand View / Precedence / MarketsandMarkets ranges · Google I/O · regional split NA ~41% · EU ~27% · APAC ~22%</div>
+</section>
+
+<!-- ═══════════ 03 · JEVONS / PRICE TIERS ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the paradox</div>
+    <h2 class="st">The token got 90% cheaper.<br><span class="lm">Demand multiplied by 300.</span></h2>
+    <div class="split" style="margin-top:3vh">
+      <div>
+        <div class="stats" style="margin-top:0;flex-direction:column">
+          <div class="stat st"><div>
+            <div class="n">−85–90<small>%</small></div>
+            <div class="l">$/MTok of GPT-4-equivalent inference in 3 years — the hyperscaler price war + open weights (DeepSeek, Qwen, Mistral)</div>
+          </div></div>
+          <div class="stat st"><div>
+            <div class="n">×300</div>
+            <div class="l">global tokens consumed. Jevons: cheaper inference multiplied the agents running autonomous loops in the background</div>
+          </div></div>
+        </div>
+      </div>
+      <div>
+        <table class="tbl st">
+          <thead><tr><th>Model tier</th><th class="r">$ / 1M in</th><th class="r">$ / 1M out</th><th>Typical use</th></tr></thead>
+          <tbody>
+            <tr><td class="b">Ultra-light / edge</td><td class="r m">$0.10–0.15</td><td class="r m">$0.40–0.60</td><td class="dim">mass classification, extraction, semantic routers</td></tr>
+            <tr><td class="b">Open-weight / distilled</td><td class="r m">$0.15–0.27</td><td class="r m">$0.60–1.10</td><td class="dim">general code, high-volume chat</td></tr>
+            <tr><td class="b">Frontier / reasoning</td><td class="r m">$1–3</td><td class="r m">$4–15</td><td class="dim">agentic flows, tool use, architecture</td></tr>
+            <tr><td class="b">Frontier heavy</td><td class="r m">$15</td><td class="r m">$60–75</td><td class="dim">critical audit, extreme reasoning</td></tr>
+          </tbody>
+        </table>
+        <p class="sub st" style="margin-top:2.4vh">Tiered routing is already the norm — cheap models filter, frontier models decide. Whoever routes best, wins.</p>
+      </div>
+    </div>
+  </div>
+  <div class="src"><b>sources:</b> public API pricing pages (OpenAI · Google · Anthropic · DeepSeek) · a16z State of AI — snapshot 2026</div>
+</section>
+
+<!-- ═══════════ 04 · THE TOLL ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the toll</div>
+    <h2 class="st">And in the middle, <span class="lm">a toll</span> <span class="dim">on every token.</span></h2>
+    <div class="tolls">
+      <div class="toll st">
+        <div class="who">OpenRouter</div>
+        <div class="what">0% markup per token — but charges you to <b>load</b> credits. Availability "as-available": no guarantee.</div>
+        <div class="num">5.5%–8% fee</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Fireworks</div>
+        <div class="what">Serverless admits, in writing, zero latency guarantees. Its 99.9% covers only the genuine 503.</div>
+        <div class="num">0 SLA</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Together</div>
+        <div class="what">The guarantee (99% + throughput) is sold separately: contracted PTU. Serverless = best-effort.</div>
+        <div class="num">$0.05/PTU·min</div>
+      </div>
+      <div class="toll st">
+        <div class="who">Replicate</div>
+        <div class="what">On private deployments it bills setup + idle + active. You pay for the centralized wait.</div>
+        <div class="num">H100 $5.49/h</div>
+      </div>
+      <div class="toll st">
+        <div class="who">OpenCode Go</div>
+        <div class="what">$10/mo for up to $60 of open models, $15 caps per model. A subscription rationing what's open.</div>
+        <div class="num">cap $15/model</div>
+      </div>
+    </div>
+  </div>
+  <div class="src"><b>sources:</b> openrouter.ai/faq+terms · docs.fireworks.ai · docs.together.ai · replicate.com/pricing · opencode.ai/docs/go</div>
+</section>
+
+<!-- ═══════════ 05 · THE REALITY FILTER ═══════════ -->
+<section class="slide">
+  <div class="glow" style="width:50vw;height:50vw;background:rgba(208,255,0,.04);bottom:-20vw;right:-12vw"></div>
+  <div class="slide-inner">
+    <div class="kicker st">the reality filter</div>
+    <h2 class="st">900+ "AI tokens".<br><span class="lm">Under 2% compute anything.</span></h2>
+    <div class="split" style="margin-top:3vh">
+      <div>
+        <div class="stats" style="margin-top:0;flex-direction:column">
+          <div class="stat st"><div>
+            <div class="n">$21–26.5<small>B</small></div>
+            <div class="l">total AI-token market cap (CoinGecko) — plus ~$4–5B in the autonomous-agents subsector</div>
+          </div></div>
+          <div class="stat st"><div>
+            <div class="n">&lt;2<small>%</small></div>
+            <div class="l">of AI-labeled tokens process verifiable real-world compute — value concentrates in the 5–6 that actually rent GPU cycles</div>
+          </div></div>
+        </div>
+      </div>
+      <div>
+        <table class="tbl st">
+          <thead><tr><th>Project</th><th class="r">Mkt cap</th><th>What it actually does</th></tr></thead>
+          <tbody>
+            <tr><td class="b">NEAR</td><td class="r m">~$3.4B</td><td class="dim">L1 pivoted to account abstraction + agent orchestration</td></tr>
+            <tr><td class="b">Bittensor</td><td class="r m">~$2.7–3.8B</td><td class="dim">incentivized subnets; ~$40M+/qtr external inference billing</td></tr>
+            <tr><td class="b">Render</td><td class="r m">~$1.2–2B</td><td class="dim">decentralized GPU — 3D render + inference pools</td></tr>
+            <tr><td class="b">FET (ASI)</td><td class="r m">~$0.6–1.2B</td><td class="dim">agent alliance; infra narrative still in transition</td></tr>
+            <tr><td class="b">Virtuals</td><td class="r m">~$0.35–0.5B</td><td class="dim">per-call agent tokenization; high-beta agent economy</td></tr>
+          </tbody>
+        </table>
+        <p class="sub st" style="margin-top:2.4vh">The filter is simple: <b style="color:var(--ink)">measured work, proven delivery, settled payment</b>. That's what Weaver is.</p>
+      </div>
+    </div>
+  </div>
+  <div class="src"><b>sources:</b> CoinGecko AI category · project disclosures — snapshot 2026</div>
+</section>
+
+<!-- ═══════════ 06 · THE SUPPLY ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the supply</div>
+    <h2 class="st">Most of the planet's silicon<br><span class="dim">is already installed — at home.</span></h2>
+    <div class="stats">
+      <div class="stat st"><div>
+        <div class="n">~75<small>%</small></div>
+        <div class="l">of the planet's raw FLOPS live in user devices — not datacenters<br>(installed base: Gartner/IDC/Uptime)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">30–50<small>×</small></div>
+        <div class="l">user devices per physical server (~6B edge vs ~40M servers)</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">2.4<small> EFLOPS</small></div>
+        <div class="l">Folding@home in 2020 — more than the entire TOP500 combined, on donated PCs</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="src"><b>sources:</b> installed base IDC/Gartner · servers Uptime/Synergy · Folding@home Mar-2020</div>
+</section>
+
+<!-- ═══════════ 07 · THE CATCH ═══════════ -->
+<section class="slide">
+  <div class="glow" style="width:50vw;height:50vw;background:rgba(208,255,0,.04);bottom:-20vw;left:-12vw"></div>
+  <div class="slide-inner">
+    <div class="kicker st">the catch</div>
+    <h2 class="st" style="max-width:26ch">The nuance: you don't train GPT-6 <span class="dim">over WiFi.</span><br><span class="lm">You don't need to.</span></h2>
+    <div class="stats" style="margin-top:4vh">
+      <div class="stat warn st"><div>
+        <div class="n">1000<small>×</small></div>
+        <div class="l">latency penalty: residential ~ms vs InfiniBand ~µs — kills training parallelism</div>
+      </div></div>
+      <div class="stat st"><div>
+        <div class="n">1</div>
+        <div class="l">request = one island. Inference is embarrassingly parallel: zero coordination between nodes — the pattern where edge already won (F@H, BOINC)</div>
+      </div></div>
+    </div>
+    <p class="sub st" style="margin-top:4vh">The edge doesn't train the frontier — <b style="color:var(--ink)">it serves it</b>.
+    What's missing isn't compute: it's the market — routing, verification and payments
+    that make a network of strangers trustworthy.</p>
+  </div>
+</section>
+
+<!-- ═══════════ 08 · THE SOLUTION ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="meshwrap">
+      <div>
+        <div class="kicker st">the solution</div>
+        <h2 class="st">An inference market<br><span class="dim">where</span> <span class="lm">anyone</span><br><span class="dim">serves and earns.</span></h2>
+        <p class="sub st">The gateway routes by <b style="color:var(--ink)">measured</b> TTFT and tok/s — never declared.
+        Forges bring GPUs over authenticated WebSockets.
+        Monad settles every job in a verifiable escrow; forges carry ERC-8004 identity and reputation.</p>
+      </div>
+      <svg class="mesh st" viewBox="0 0 560 400" fill="none">
+        <defs>
+          <radialGradient id="lg"><stop offset="0%" stop-color="#d0ff00" stop-opacity=".9"/><stop offset="100%" stop-color="#d0ff00" stop-opacity="0"/></radialGradient>
+        </defs>
+        <g stroke="#2a2a2a" stroke-width="1">
+          <line x1="110" y1="80" x2="280" y2="200"/><line x1="110" y1="200" x2="280" y2="200"/><line x1="110" y1="320" x2="280" y2="200"/>
+          <line x1="280" y1="200" x2="450" y2="70"/><line x1="280" y1="200" x2="450" y2="160"/><line x1="280" y1="200" x2="450" y2="250"/><line x1="280" y1="200" x2="450" y2="340"/>
+          <line x1="450" y1="160" x2="450" y2="250" stroke-dasharray="3 5"/><line x1="450" y1="70" x2="450" y2="160" stroke-dasharray="3 5"/>
+        </g>
+        <g font-family="VT323" font-size="14" fill="#8a8a8a" letter-spacing="2">
+          <text x="60" y="60">CLIENTS</text>
+          <text x="238" y="170">GATEWAY</text>
+          <text x="418" y="45">FORGES</text>
+        </g>
+        <circle cx="110" cy="80" r="5" fill="#e8e8e0"/><circle cx="110" cy="200" r="5" fill="#e8e8e0"/><circle cx="110" cy="320" r="5" fill="#e8e8e0"/>
+        <circle cx="280" cy="200" r="34" fill="url(#lg)" opacity=".35"/>
+        <rect x="258" y="178" width="44" height="44" rx="10" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <text x="280" y="208" text-anchor="middle" font-family="VT323" font-size="18" fill="#d0ff00">W</text>
+        <circle cx="450" cy="70" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <circle cx="450" cy="160" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <circle cx="450" cy="250" r="7" fill="#0a0a08" stroke="#8a8a8a" stroke-width="1.5"/>
+        <circle cx="450" cy="340" r="7" fill="#0a0a08" stroke="#d0ff00" stroke-width="1.5"/>
+        <g font-family="VT323" font-size="12" fill="#565650">
+          <text x="420" y="92">hot</text><text x="420" y="182">hot</text>
+          <text x="420" y="272">cold</text><text x="420" y="362">hot</text>
+        </g>
+        <path d="M110 200 L280 200" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M280 200 L450 160" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M450 160 L280 200" stroke="#565650" stroke-width="1" stroke-dasharray="2 6" class="flowline"/>
+        <text x="300" y="140" font-family="VT323" font-size="12" fill="#565650">job →</text>
+        <text x="320" y="230" font-family="VT323" font-size="12" fill="#565650">← tokens + proof</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 09 · PILLARS ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">how trust works</div>
+    <h2 class="st">Trust <span class="dim">without trusting.</span></h2>
+    <div class="pillars">
+      <div class="pillar st"><div>
+        <div class="tag">01 / MEASURED</div>
+        <h3>Routing by measurement, not marketing</h3>
+        <p>Every instance reports load and HOT/COLD state; the gateway measures real <code>TTFT p50</code> and <code>tok/s</code> per request and ranks by ETR — weighted by on-chain ERC-8004 reputation (<code>REP_WEIGHT</code>). Calibration error is persisted and auditable per forge.</p>
+      </div></div>
+      <div class="pillar st"><div>
+        <div class="tag">02 / VERIFIED</div>
+        <h3>Delivery proof per job</h3>
+        <p>Benchmark attestation on connect. Every result carries a <code>secp256k1 personal_sign</code> over the output hash bound to the exact dispatched prompt — including resume prefixes on failover. No signature, no payment.</p>
+      </div></div>
+      <div class="pillar st"><div>
+        <div class="tag">03 / PAID</div>
+        <h3>On-chain escrow, self-claim</h3>
+        <p><code>WeaverEscrow</code> on Monad: <code>fundJob</code> binds payment to the worker, <code>release</code> demands on-chain <code>ecrecover</code> of the proof. 24h self-claim window — the forge gets paid even if the operator vanishes. <code>giveFeedback</code> ERC-8004 posts {jobId, fundTx, releaseTx} after every settle.</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 10 · PRODUCT ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the product</div>
+    <h2 class="st">Your key. Your billing.<br><span class="dim">Machine-payable by design.</span></h2>
+    <div class="term st"><div>
+      <div class="bar"><i></i><i></i><i></i></div>
+      <pre><span class="c3"># any OpenAI-compatible client — one line and you're in</span>
+<span class="c2">"provider"</span>: {
+  <span class="c2">"weaver"</span>: { <span class="c2">"baseURL"</span>: <span class="c1">"https://gw.weaver/v1"</span>,
+             <span class="c2">"apiKey"</span>:   <span class="c1">"wvr_…"</span> }
+}
+
+<span class="c3"># machine-payable (x402): 402 → sign EIP-3009 → 200 SSE</span>
+<span class="c3"># gasless — the facilitator pays gas, the client signs once</span>
+<span class="c3"># USDC metering: debit by tokens MEASURED</span></pre>
+    </div></div>
+    <div class="chips st">
+      <span class="chip lm">passkey onboarding — Mera WebAuthn</span>
+      <span class="chip lm">MetaMask delegation with caveats</span>
+      <span class="chip">/models marketplace · /v1/network dashboard</span>
+      <span class="chip">402 before touching a forge</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 11 · STATUS ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">status</div>
+    <h2 class="st">Not a slide.<br><span class="dim">It's running.</span></h2>
+    <div class="today">
+      <div class="cell st"><div><div class="v">385+</div><div class="k">green tests — packages, gateway, Foundry contracts, wire-e2e, browser army</div></div></div>
+      <div class="cell st"><div><div class="v">2</div><div class="k">contracts verified on MonadVision — WeaverEscrow + WeaverCredits (Sourcify)</div></div></div>
+      <div class="cell st"><div><div class="v">2 legs</div><div class="k">one job: facilitator settle + escrow release, both on-chain, zero custody</div></div></div>
+      <div class="cell st"><div><div class="v">8004</div><div class="k">agentId 1991 self-registered; giveFeedback posts evidence after every release</div></div></div>
+      <div class="cell st"><div><div class="v">kill</div><div class="k">mid-stream forge death → failover resumes; the proof binds the delivered prefix</div></div></div>
+      <div class="cell st"><div><div class="v">abort</div><div class="k">client cancels → job.cancel down the wire → daemon kills the engine — text &amp; image</div></div></div>
+      <div class="cell st"><div><div class="v">0</div><div class="k">prompts stored — they live in RAM and die with the request (ZDR)</div></div></div>
+      <div class="cell st"><div><div class="k" style="color:var(--lima);font-family:VT323;font-size:clamp(18px,1.8vw,26px)">testnet</div><div class="k">every payment auditable by anyone on MonadVision</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 12 · DEMO ═══════════ -->
+<section class="slide">
+  <div class="glow" style="width:55vw;height:55vw;background:rgba(208,255,0,.06);top:-15vw;right:-10vw"></div>
+  <div class="slide-inner center">
+    <div class="kicker st">and now</div>
+    <h2 class="st" style="max-width:none">Everything you saw<br><span class="lm">runs.</span></h2>
+    <ul class="demolist st" style="display:inline-flex;text-align:left">
+      <li>real job → remote forge → token stream, TTFT measured live</li>
+      <li>kill a forge mid-request → failover + resumed prefix, still proven</li>
+      <li>escrow: fund → proof → release on MonadVision + ERC-8004 feedback</li>
+      <li>measured debit in /v1/me · reputation weighting the next route</li>
+    </ul>
+    <div class="chips st" style="justify-content:center;margin-top:5vh">
+      <span class="chip lm" style="font-size:clamp(15px,1.4vw,20px);padding:12px 26px">LIVE DEMO →</span>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const slides = [...document.querySelectorAll(".slide")];
+  const dots = document.getElementById("dots");
+  const counter = document.getElementById("counter");
+  const bar = document.querySelector("#progress > div");
+  const N = slides.length;
+  let cur = 0, busy = false;
+
+  slides.forEach((_, i) => {
+    const d = document.createElement("button");
+    d.className = "dot" + (i === 0 ? " on" : "");
+    d.setAttribute("aria-label", "slide " + (i + 1));
+    d.onclick = () => go(i);
+    dots.appendChild(d);
+  });
+
+  function animateIn(slide) {
+    const els = slide.querySelectorAll(".st");
+    gsap.fromTo(els,
+      { y: 34, opacity: 0, filter: "blur(6px)" },
+      { y: 0, opacity: 1, filter: "blur(0px)",
+        duration: .9, ease: "power3.out", stagger: .07, overwrite: true });
+  }
+
+  function go(i) {
+    if (busy || i === cur || i < 0 || i >= N) return;
+    busy = true;
+    const out = slides[cur], inn = slides[i];
+    gsap.to(out, { opacity: 0, y: i > cur ? -26 : 26, duration: .35,
+      ease: "power2.in", onComplete() {
+        out.classList.remove("on");
+        gsap.set(out, { clearProps: "all" });
+        inn.classList.add("on");
+        animateIn(inn);
+        setTimeout(() => busy = false, 250);
+      }});
+    cur = i;
+    counter.innerHTML = "<b>" + String(i + 1).padStart(2, "0") + "</b> / " + N;
+    bar.style.width = ((i + 1) / N * 100) + "%";
+    document.querySelectorAll(".dot").forEach((d, j) =>
+      d.classList.toggle("on", j === i));
+  }
+
+  addEventListener("keydown", e => {
+    if (["ArrowRight", " ", "PageDown", "Enter"].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+    if (["ArrowLeft", "PageUp", "Backspace"].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+    if (e.key === "Home") go(0);
+    if (e.key === "End") go(N - 1);
+  });
+  addEventListener("click", e => {
+    if (e.target.closest(".dot")) return;
+    go(e.clientX > innerWidth / 2 ? cur + 1 : cur - 1);
+  });
+  let tx = null;
+  addEventListener("touchstart", e => tx = e.touches[0].clientX, { passive: true });
+  addEventListener("touchend", e => {
+    if (tx === null) return;
+    const dx = e.changedTouches[0].clientX - tx;
+    if (Math.abs(dx) > 48) go(dx < 0 ? cur + 1 : cur - 1);
+    tx = null;
+  }, { passive: true });
+
+  animateIn(slides[0]);
+  bar.style.width = (1 / N * 100) + "%";
+
+  /* ---------- hero mesh canvas (slide 1 only) ---------- */
+  const cv = document.getElementById("mesh"), ctx = cv.getContext("2d");
+  let pts = [];
+  function size() { cv.width = innerWidth; cv.height = innerHeight; }
+  size(); addEventListener("resize", size);
+  for (let i = 0; i < 46; i++)
+    pts.push({ x: Math.random(), y: Math.random(),
+      vx: (Math.random() - .5) * .00035, vy: (Math.random() - .5) * .00035 });
+  function tick() {
+    if (cur !== 0) { cv.style.opacity = 0; requestAnimationFrame(tick); return; }
+    cv.style.opacity = 1;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const p of pts) {
+      p.x = (p.x + p.vx + 1) % 1; p.y = (p.y + p.vy + 1) % 1;
+    }
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const a = pts[i], b = pts[j];
+      const dx = (a.x - b.x) * cv.width, dy = (a.y - b.y) * cv.height;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 160 * 160) {
+        ctx.strokeStyle = "rgba(208,255,0," + (.12 * (1 - Math.sqrt(d2) / 160)) + ")";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a.x * cv.width, a.y * cv.height);
+        ctx.lineTo(b.x * cv.width, b.y * cv.height);
+        ctx.stroke();
+      }
+    }
+    for (const p of pts) {
+      ctx.fillStyle = "rgba(232,232,224,.35)";
+      ctx.beginPath();
+      ctx.arc(p.x * cv.width, p.y * cv.height, 1.4, 0, 7);
+      ctx.fill();
+    }
+    requestAnimationFrame(tick);
+  }
+  tick();
+
+  /* ---------- flow lines dash animation ---------- */
+  document.querySelectorAll(".flowline").forEach(l =>
+    gsap.to(l, { strokeDashoffset: -40, duration: 3, ease: "none", repeat: -1 }));
+})();
+</script>
+</body>
+</html>

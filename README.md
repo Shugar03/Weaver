@@ -105,7 +105,7 @@ Modules, swappable Adapters. (Decisions that hurt to revert: `docs/adr/`.)
 - `contracts/weaver-escrow-evm/` Solidity `WeaverEscrow` + `WeaverCredits` (Monad, Foundry)
 - `contracts/weaver-escrow/` Soroban `init/fund_job/release/refund/get_job` — backend previo, mantenido
 - `docs/` pitch evidence (`demanda-`, `competidores-evidencia`), demo script, roadmap notes
-- `docs/pitch/` submission deck — `index.html` (11 slides, self-contained, abrir directo en el browser) + `weaver-pitch.pdf` (generado via `Cmd+P` sobre el HTML)
+- `docs/pitch/` submission decks — `metropolis.html` (12 slides Monad/Track 04, self-contained, abrir directo en el browser) + `index.html` + `weaver-pitch.pdf` (submission Stellar — snapshot auditable; PDF via `Cmd+P` sobre el HTML)
 - `scripts/` `demo-capture.mjs` (3 deterministic takes), `chat-test.mjs`, `shot.mjs`
 
 ## Contracts
@@ -143,4 +143,4 @@ y otros agentes de coding — diseño de módulos, implementación, tests, contr
 Toda decisión de protocolo y la evidencia on-chain fueron verificadas manualmente.
 
 Built for the Argentina Builder Challenge (Stellar) — submission: [deck](docs/pitch/index.html) + demo, 27/09.
-Pivot a **Monad / Metropolis** (ADR-0008): [strategy](docs/metropolis/README.md) · [roadmap](docs/metropolis/roadmap.md) · [launch film 30s](docs/launch/weaver-launch.mp4).
+Pivot a **Monad / Metropolis** (ADR-0008): [strategy](docs/metropolis/README.md) · [roadmap](docs/metropolis/roadmap.md) · [deck Track 04](docs/pitch/metropolis.html) · [launch film 30s](docs/launch/weaver-launch.mp4).
