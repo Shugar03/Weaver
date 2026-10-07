@@ -154,10 +154,13 @@ export class ForgeRegistry {
   // Cada instance viva → un ForgeView. queueMs/inFlight/saturated/tokPerSec
   // los decora serve.ts (inFlight medido gateway-side por TrackedExec); el
   // heartbeat es la fuente cuando el exec no corrió todavía.
+  // rpc-worker NO es una ruta — es un recurso del pool (spec 017): queda
+  // fuera del routing y de attestation; el pairing lo descubre vía workers().
   views(): ForgeView[] {
     const out: ForgeView[] = [];
     for (const s of this.sessions.values()) {
       for (const i of s.instances) {
+        if (i.capability === "rpc-worker") continue;
         out.push({
           forgeId: i.instanceId,
           model: i.model,
@@ -177,6 +180,27 @@ export class ForgeRegistry {
           ...(s.agentId !== undefined
             ? { forgeAgentId: s.agentId, forgeAgentVerified: s.agentVerified === true }
             : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  // S46 pool-forge: rpc-workers vivos con su endpoint + dueño. El gateway
+  // los empareja con coordinators pooled — endpoint solo viaja en el assign.
+  // `live` = el daemon reporta el rpc-server arriba y no saturado.
+  workers(): { instanceId: string; forgePubkey: string; endpoint: string; vramGb?: number; rttMs: number; live: boolean }[] {
+    const out: { instanceId: string; forgePubkey: string; endpoint: string; vramGb?: number; rttMs: number; live: boolean }[] = [];
+    for (const s of this.sessions.values()) {
+      for (const i of s.instances) {
+        if (i.capability !== "rpc-worker" || !i.rpc) continue;
+        out.push({
+          instanceId: i.instanceId,
+          forgePubkey: s.pubkey,
+          endpoint: i.rpc.endpoint,
+          ...(i.rpc.vramGb !== undefined ? { vramGb: i.rpc.vramGb } : {}),
+          rttMs: s.rttMs ?? DEFAULT_REMOTE_RTT_MS,
+          live: i.hot && !i.saturated,
         });
       }
     }

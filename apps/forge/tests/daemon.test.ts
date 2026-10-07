@@ -42,7 +42,7 @@ class FakeChannel implements DaemonChannel {
 
 const sign = (hash: Buffer) => createHash("sha256").update(hash).digest(); // firma fake determinística
 
-function inst(exec: DaemonInstance["exec"], over: Partial<DaemonInstance> = {}): DaemonInstance {
+function inst(exec: NonNullable<DaemonInstance["exec"]>, over: Partial<DaemonInstance> = {}): DaemonInstance {
   return {
     instanceId: exec.forgeId,
     model: exec.model,
@@ -222,6 +222,104 @@ test("job.assign con jobId en vuelo → job.fail (no pisa el AbortController)", 
   const fail = ch.sent.filter((m) => m.type === "job.fail").at(-1)!;
   assert.match("error" in fail ? fail.error : "", /ya en vuelo/);
   resolveBlock();
+  d.stop();
+});
+
+test("S46 rpc-worker: heartbeat lo anuncia con endpoint; proc muerto → saturated", async () => {
+  const ch = new FakeChannel();
+  const proc = { alive: true };
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [
+      {
+        instanceId: "w0",
+        model: "rpc",
+        capability: "rpc-worker",
+        rpc: { endpoint: "10.0.0.5:50052", vramGb: 24 },
+        rpcProc: proc,
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    sign,
+    heartbeatMs: 10,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 30));
+  const w = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "w0")!;
+  assert.equal(w.capability, "rpc-worker");
+  assert.deepEqual(w.rpc, { endpoint: "10.0.0.5:50052", vramGb: 24 });
+  assert.equal(w.saturated, false);
+  proc.alive = false;
+  await new Promise((r) => setTimeout(r, 30));
+  const w2 = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "w0")!;
+  assert.equal(w2.hot, false);
+  assert.equal(w2.saturated, true); // muerto → el gateway no lo parkea
+  d.stop();
+});
+
+test("S46 rpc-worker no recibe job.assign → job.fail honesto", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [
+      { instanceId: "w0", model: "rpc", capability: "rpc-worker", rpc: { endpoint: "10.0.0.5:1" }, rpcProc: { alive: true }, maxConcurrent: 1, loadTimeMs: 0 },
+    ],
+    sign,
+    heartbeatMs: 60000,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jW", instanceId: "w0", model: "m", prompt: "p" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jW");
+  d.stop();
+});
+
+test("S46 pooled: instance con pool.needs viaja en heartbeat; rpcPeers → pooledFactory", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  const pooled = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  const calls: string[][] = [];
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 2 } })],
+    sign,
+    heartbeatMs: 10,
+    pooledFactory: (i, peers) => {
+      calls.push([i.instanceId, ...peers]);
+      return Promise.resolve(pooled);
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 30));
+  const rep = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "c0")!;
+  assert.deepEqual(rep.pool, { needs: 2 });
+
+  ch.inject({ type: "job.assign", jobId: "jP", instanceId: "c0", model: "qwen-70b", prompt: "hi", rpcPeers: ["10.0.0.5:50052", "10.0.0.6:50052"] });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(calls, [["c0", "10.0.0.5:50052", "10.0.0.6:50052"]]);
+  assert.equal(ch.last("job.done")!.jobId, "jP"); // el exec pooled sirvió
+  d.stop();
+});
+
+test("S46 pooled: rpcPeers sin pooledFactory → job.fail honesto; sin peers → exec residente", async () => {
+  const ch = new FakeChannel();
+  const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(resident, { pool: { needs: 1 } })],
+    sign,
+    heartbeatMs: 60000,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jN", instanceId: "c0", model: "qwen-70b", prompt: "hi", rpcPeers: ["10.0.0.5:50052"] });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jN");
+  ch.inject({ type: "job.assign", jobId: "jR", instanceId: "c0", model: "qwen-70b", prompt: "hi" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.done")!.jobId, "jR"); // residente sirvió standalone
   d.stop();
 });
 

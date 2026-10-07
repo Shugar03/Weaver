@@ -10,7 +10,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 export type InstanceCfg = {
   instanceId: string;
   model: string;
-  capability: "text" | "image";
+  capability: "text" | "image" | "rpc-worker";
   maxConcurrent: number;
   loadTimeMs: number;
   vramGb?: number; // footprint estimado — init lo llena desde /api/tags size
@@ -18,6 +18,14 @@ export type InstanceCfg = {
   // /v1/chat/completions (vLLM multi-GPU, llama.cpp-server/cluster RPC,
   // LM Studio…). El forge se anuncia igual: una identidad, un proof.
   backend?: { type: "openai"; baseUrl: string; apiKey?: string };
+  // S46 pool-forge (spec 017):
+  // rpc-worker: endpoint host:port del ggml-rpc-server que up spawnea.
+  rpc?: { endpoint: string; vramGb?: number };
+  // coordinator pooled: necesita N workers prestados del pool para servir.
+  pool?: { needs: number };
+  // GGUF local para el llama-server pooled (coordinator). Sin él el
+  // pooledFactory no puede spawnear — fail honesto al assign.
+  modelFile?: string;
 };
 
 export type ForgeChain = "stellar" | "evm";

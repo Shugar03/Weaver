@@ -16,13 +16,18 @@ export type AuthMsg = { type: "auth"; pubkey: string; nonce: string; signature: 
 export type InstanceReport = {
   instanceId: string;
   model: string;
-  capability: "text" | "image";
+  capability: "text" | "image" | "rpc-worker";
   hot: boolean; // modelo residente AHORA en el engine local del forge
   inFlight: number; // jobs corriendo ahora mismo (medido, no declarado)
   saturated: boolean; // llegó a su cap propio (el forge conoce su límite)
   tokPerSec?: number; // medido en decode real local
   loadTimeMs: number; // carga COLD estimada declarada por el forge
   price?: number; // USD/job que pide el forge (S2 scoring futuro)
+  // S46 pool-forge (spec 017): rpc-worker presta VRAM vía ggml-rpc-server —
+  // el gateway solo revela `rpc.endpoint` al coordinator dentro de job.assign.
+  rpc?: { endpoint: string; vramGb?: number };
+  // coordinator pooled: "este modelo lo sirvo SOLO si me parkean N workers".
+  pool?: { needs: number };
 };
 // agentId: identidad ERC-8004 del forge (EVM, opcional — forges Stellar no
 // la tienen). Va a nivel heartbeat, no por instance: es del dueño, no del slot.
@@ -78,6 +83,10 @@ export type JobAssignMsg = {
   // el daemon lo pasa al exec para continuar desde ahí, y entra al
   // promptHash canónico (el proof ata "continuó desde este texto").
   resume?: { prefix: string };
+  // S46 pool-forge: endpoints "host:port" de rpc-workers elegidos por el
+  // gateway — el daemon spawnea el engine con --rpc peers. Solo viaja al
+  // coordinator asignado; jamás sale en API pública.
+  rpcPeers?: string[];
 };
 export type ImageAssignMsg = {
   type: "image.assign";
@@ -114,11 +123,16 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 const MAX_INSTANCES = 16;
 const isId = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= 128;
 const inRange = (v: unknown, lo: number, hi: number): v is number => isNum(v) && v >= lo && v <= hi;
+// "host:port" — host sin espacios ni ':' (IPv6 va entre corchetes), puerto 1-65535
+const isEndpoint = (v: unknown): v is string =>
+  isStr(v) && v.length <= 255 && /^\[[0-9a-fA-F:]+\]:\d{1,5}$|^[^\s:\[\]]{1,253}:\d{1,5}$/.test(v) &&
+  Number(v.slice(v.lastIndexOf(":") + 1)) >= 1 && Number(v.slice(v.lastIndexOf(":") + 1)) <= 65535;
+const MAX_RPC_PEERS = 4; // un pipeline no es un enjambre — boundary count acotado
 
 function instanceReport(v: unknown): InstanceReport | null {
   if (!isObj(v)) return null;
   if (!isId(v.instanceId) || !isId(v.model)) return null;
-  if (v.capability !== "text" && v.capability !== "image") return null;
+  if (v.capability !== "text" && v.capability !== "image" && v.capability !== "rpc-worker") return null;
   if (!isBool(v.hot) || !inRange(v.inFlight, 0, 1024) || !isBool(v.saturated) || !inRange(v.loadTimeMs, 0, 600_000)) return null;
   const r: InstanceReport = {
     instanceId: v.instanceId,
@@ -136,6 +150,19 @@ function instanceReport(v: unknown): InstanceReport | null {
   if (isNum(v.price)) {
     if (!inRange(v.price, 0, 1_000_000)) return null;
     r.price = v.price;
+  }
+  // rpc-worker exige endpoint — sin él el gateway no puede parkearla.
+  if (v.capability === "rpc-worker") {
+    if (!isObj(v.rpc) || !isEndpoint(v.rpc.endpoint)) return null;
+    r.rpc = { endpoint: v.rpc.endpoint };
+    if (v.rpc.vramGb !== undefined) {
+      if (!inRange(v.rpc.vramGb, 0, 2048)) return null;
+      r.rpc.vramGb = v.rpc.vramGb;
+    }
+  }
+  if (v.pool !== undefined) {
+    if (!isObj(v.pool) || !isNum(v.pool.needs) || !Number.isInteger(v.pool.needs) || v.pool.needs < 1 || v.pool.needs > MAX_RPC_PEERS) return null;
+    r.pool = { needs: v.pool.needs };
   }
   return r;
 }
@@ -209,6 +236,7 @@ export function decodeGateway(raw: string): GatewayMsg | null {
   switch (m.type) {
     case "job.assign":
       if (!isStr(m.jobId) || !isStr(m.instanceId) || !isStr(m.model) || !isStr(m.prompt)) return null;
+      if (m.rpcPeers !== undefined && (!Array.isArray(m.rpcPeers) || m.rpcPeers.length > MAX_RPC_PEERS || !m.rpcPeers.every(isEndpoint))) return null;
       return m as unknown as JobAssignMsg;
     case "image.assign":
       if (!isStr(m.jobId) || !isStr(m.instanceId) || !isStr(m.model) || !isStr(m.prompt)) return null;

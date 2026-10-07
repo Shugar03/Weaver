@@ -18,6 +18,7 @@ import type {
   StreamChunk,
 } from "@weaver/forge-exec";
 import type { ForgeMsg, GatewayMsg } from "./protocol.ts";
+import type { ForgePool } from "./pool.ts";
 
 // Canal abstracto — testeable con un fake duplex, sin socket real.
 // ws-server (gateway) y client (daemon) lo implementan sobre su transporte.
@@ -64,6 +65,8 @@ export class RemoteForgeExec implements ForgeExec {
   private readonly ackTimeoutMs: number;
   private readonly firstTokenTimeoutMs: number;
   private readonly isResident?: () => boolean;
+  private readonly pool?: ForgePool;
+  private readonly forgePubkey: string;
 
   constructor(opts: {
     channel: ForgeChannel;
@@ -72,6 +75,8 @@ export class RemoteForgeExec implements ForgeExec {
     ackTimeoutMs?: number;
     firstTokenTimeoutMs?: number;
     resident?: () => boolean;
+    pool?: ForgePool;
+    forgePubkey?: string;
   }) {
     this.channel = opts.channel;
     this.forgeId = opts.instanceId;
@@ -79,6 +84,8 @@ export class RemoteForgeExec implements ForgeExec {
     this.ackTimeoutMs = opts.ackTimeoutMs ?? 3_000;
     this.firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? 60_000;
     this.isResident = opts.resident;
+    this.pool = opts.pool;
+    this.forgePubkey = opts.forgePubkey ?? "";
   }
 
   probe(): Promise<boolean> {
@@ -201,7 +208,14 @@ export class RemoteForgeExec implements ForgeExec {
     // manda job.cancel al daemon para liberar la GPU del forge.
     const onAbort = () => fail(new Error("abortado por el cliente"));
     req.signal?.addEventListener("abort", onAbort, { once: true });
+    // S46 pool-forge: si la instance pidió pool (pool.needs en su heartbeat),
+    // reservamos workers acá — atómico con el dispatch, pre-token. Sin
+    // workers libres → throw → failover a otra ruta (degradación honesta).
+    let acquiredPeers = false;
     try {
+      const peers = this.pool ? this.pool.acquire(this.forgeId, this.forgePubkey) : [];
+      if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers libres`);
+      acquiredPeers = peers.length > 0;
       this.channel.send({
         type: "job.assign",
         jobId,
@@ -212,6 +226,7 @@ export class RemoteForgeExec implements ForgeExec {
         ...(req.options ? { options: req.options } : {}),
         ...(req.tools ? { tools: req.tools } : {}),
         ...(req.resume ? { resume: req.resume } : {}),
+        ...(peers.length ? { rpcPeers: peers } : {}),
       });
       await withTimeout(ack, this.ackTimeoutMs, `forge ${this.forgeId}: assign sin ack`);
       let first = true;
@@ -245,6 +260,8 @@ export class RemoteForgeExec implements ForgeExec {
           /* canal muriendo — el daemon lo nota por su lado */
         }
       }
+      // Workers vuelven al pool — mismo contrato que job.cancel con la GPU.
+      if (acquiredPeers) this.pool?.release(this.forgeId);
       un();
       unClose();
       req.signal?.removeEventListener("abort", onAbort);

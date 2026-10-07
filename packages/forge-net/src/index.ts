@@ -21,5 +21,6 @@ export { ForgeRegistry, HEARTBEAT_TTL_MS } from "./registry.ts";
 export { InMemoryForgeStore, PostgresForgeStore, type ForgeIdentity, type ForgeStore } from "./store.ts";
 export { RemoteForgeExec, RemoteImageExec, type DaemonChannel, type ForgeChannel } from "./remote.ts";
 export { ForgeSession, type VerifyFn } from "./session.ts";
+export { ForgePool, type PoolWorker, type PoolDeps } from "./pool.ts";
 export { NonceStore } from "./nonce.ts";
 export { imageDims } from "./image.ts";

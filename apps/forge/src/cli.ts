@@ -22,6 +22,7 @@ import { FluxKleinForge, OllamaMLXAdapter, OpenAICompatAdapter, TrackedExec, Tra
 import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
 import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
 import { connectLoop } from "./ws.ts";
+import { killAllRpcProcs, makePooledFactory, spawnRpcServer, type RpcProc } from "./rpcproc.ts";
 
 const CONFIG_PATH = join(homedir(), ".weaver", "forge.json");
 
@@ -78,23 +79,31 @@ async function detectOpenAI(base: string, apiKey?: string): Promise<InstanceCfg[
   }
 }
 
-function makeInstances(cfg: ForgeConfig): DaemonInstance[] {
-  return cfg.instances.map((c) => ({
-    ...c,
-    exec:
-      c.capability === "image"
-        ? new TrackedImageExec(new FluxKleinForge({ forgeId: c.instanceId, model: c.model }))
-        : c.backend?.type === "openai"
-          ? new TrackedExec(
-              new OpenAICompatAdapter({
-                forgeId: c.instanceId,
-                model: c.model,
-                baseUrl: c.backend.baseUrl,
-                ...(c.backend.apiKey ? { apiKey: c.backend.apiKey } : {}),
-              }),
-            )
-          : new TrackedExec(new OllamaMLXAdapter({ forgeId: c.instanceId, model: c.model, keepAlive: -1 })),
-  }));
+function makeInstances(cfg: ForgeConfig, procs: Map<string, RpcProc>): DaemonInstance[] {
+  return cfg.instances.map((c) => {
+    // rpc-worker: sin exec — presta VRAM. Su salud ES el ggml-rpc-server que
+    // up spawneó (o el alive:false honesto si el binario no estaba).
+    if (c.capability === "rpc-worker") {
+      const proc = procs.get(c.instanceId) ?? { alive: false, kill() {} };
+      return { ...c, rpcProc: proc };
+    }
+    return {
+      ...c,
+      exec:
+        c.capability === "image"
+          ? new TrackedImageExec(new FluxKleinForge({ forgeId: c.instanceId, model: c.model }))
+          : c.backend?.type === "openai"
+            ? new TrackedExec(
+                new OpenAICompatAdapter({
+                  forgeId: c.instanceId,
+                  model: c.model,
+                  baseUrl: c.backend.baseUrl,
+                  ...(c.backend.apiKey ? { apiKey: c.backend.apiKey } : {}),
+                }),
+              )
+            : new TrackedExec(new OllamaMLXAdapter({ forgeId: c.instanceId, model: c.model, keepAlive: -1 })),
+    };
+  });
 }
 
 // S41/S42: sin register_forge on-chain el forge no es fondeable — el escrow
@@ -207,13 +216,53 @@ if (cmd === "init") {
     // sin flag, auto-detect Ollama local como siempre.
     const oaiUrl = arg("--openai-url");
     instances = oaiUrl ? await detectOpenAI(oaiUrl, arg("--openai-key")) : await detectOllama();
-    if (instances.length === 0) {
+    if (instances.length === 0 && args("--rpc-worker").length === 0) {
       console.error(
         oaiUrl
           ? `no detecté modelos en ${oaiUrl}/v1/models y no pasaste --instance — nada que servir`
-          : "no detecté modelos Ollama y no pasaste --instance — nada que servir",
+          : "no detecté modelos Ollama y no pasaste --instance ni --rpc-worker — nada que servir",
       );
       process.exit(1);
+    }
+  }
+  // S46 (spec 017): --rpc-worker id:host:port — instance que SOLO presta VRAM
+  // vía ggml-rpc-server (up lo spawnea). NO rutea jobs normales: es recurso
+  // del pool. id puede ser cualquier string sin ':'; el endpoint lo valida
+  // el codec del heartbeat (IPv4/host/[IPv6]:port).
+  for (const w of args("--rpc-worker")) {
+    const idx = w.indexOf(":");
+    const instanceId = idx > 0 ? w.slice(0, idx) : "";
+    const endpoint = w.slice(idx + 1);
+    if (!instanceId || !endpoint) {
+      console.error(`--rpc-worker inválido: ${w} (formato id:host:port)`);
+      process.exit(1);
+    }
+    const vram = arg("--rpc-vram");
+    instances.push({
+      instanceId,
+      model: "rpc",
+      capability: "rpc-worker",
+      maxConcurrent: 1,
+      loadTimeMs: 0,
+      rpc: { endpoint, ...(vram ? { vramGb: Number(vram) } : {}) },
+    });
+  }
+  // --pool N: las instances de texto se anuncian como coordinator pooled —
+  // "sirvo este modelo si el gateway me presta N rpc-workers". Necesitan
+  // --model-file: el llama-server clustered spawnea de un GGUF local.
+  const poolN = Number(arg("--pool"));
+  if (poolN > 0) {
+    for (const i of instances) {
+      if (i.capability === "text") i.pool = { needs: Math.trunc(poolN) };
+    }
+    if (!arg("--model-file")) {
+      console.warn("--pool sin --model-file: el coordinator no podrá spawnear llama-server (job.assign fallará)");
+    }
+  }
+  const modelFile = arg("--model-file");
+  if (modelFile) {
+    for (const i of instances) {
+      if (i.capability === "text") i.modelFile = modelFile;
     }
   }
   const budgets = {
@@ -284,7 +333,26 @@ siguiente paso: weaver-forge up`);
   // nunca se aplicaba (conectaba siempre al gateway del init).
   const gw = arg("--gateway");
   if (gw) cfg.gateway = gw;
-  const instances = makeInstances(cfg);
+  // S46 worker: spawn de ggml-rpc-server por instance rpc-worker ANTES de
+  // conectar — el primer heartbeat ya reporta alive real. Si el binario
+  // falta reporto muerto (alive:false) — honesto, no crasheo el forge.
+  const procs = new Map<string, RpcProc>();
+  const rpcBin = arg("--rpc-bin") ?? process.env.RPC_SERVER_BIN ?? "ggml-rpc-server";
+  for (const c of cfg.instances) {
+    if (c.capability !== "rpc-worker" || !c.rpc?.endpoint) continue;
+    try {
+      procs.set(c.instanceId, spawnRpcServer(rpcBin, c.rpc.endpoint));
+      console.log(`ggml-rpc-server ${c.instanceId} → ${c.rpc.endpoint}`);
+    } catch (e) {
+      console.warn(`rpc-server ${c.instanceId} no spawneó — heartbeateo muerto:`, e);
+    }
+  }
+  const instances = makeInstances(cfg, procs);
+  // S46 coordinator: alguna instance pide workers → factory que spawnea
+  // llama-server --rpc peers por peer-set (warm-keyed, ver rpcproc.ts).
+  const pooledFactory = cfg.instances.some((i) => i.capability === "text" && i.pool?.needs)
+    ? makePooledFactory({ llamaBin: arg("--llama-bin") ?? process.env.LLAMA_SERVER_BIN ?? "llama-server" })
+    : undefined;
   // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
   const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
     cfg.chain === "evm"
@@ -325,9 +393,11 @@ siguiente paso: weaver-forge up`);
         ...(cfg.budgets ? { budgets: cfg.budgets } : {}),
         ...(cfg.agentId !== undefined ? { agentId: cfg.agentId } : {}),
         ...(contractId ? { claim: makeClaimer(cfg, contractId) } : {}),
+        ...(pooledFactory ? { pooledFactory } : {}),
       }),
   );
   process.on("SIGINT", () => {
+    killAllRpcProcs(); // llama-server/ggml-rpc-server hijos mueren con el daemon
     loop.cancel();
     process.exit(0);
   });
@@ -342,5 +412,11 @@ flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:
        --openai-url URL   backend OpenAI-compatible para text (vLLM/llama.cpp-server)
        --openai-key KEY   bearer opcional para ese backend
        --idle-only        solo computar cuando la máquina está idle (>60s sin input)
-       --max-vram-gb N    instances COLD solo se ofrecen si su carga entra en N GB`);
+       --max-vram-gb N    instances COLD solo se ofrecen si su carga entra en N GB
+       --rpc-worker id:host:port  S46: instance que solo presta VRAM (ggml-rpc-server)
+       --rpc-vram N       VRAM GB anunciada por los rpc-worker
+       --pool N           S46: las instances text piden N workers prestados (coordinator)
+       --model-file PATH  GGUF local para el llama-server pooled
+       --rpc-bin BIN      binario rpc-server (default ggml-rpc-server, env RPC_SERVER_BIN)
+       --llama-bin BIN    binario llama-server (default llama-server, env LLAMA_SERVER_BIN)`);
 }

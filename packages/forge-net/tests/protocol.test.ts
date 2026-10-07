@@ -1,7 +1,7 @@
 // S30 — codec del protocolo: validación estricta, null jamás throw.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { decode, decodeGateway, encode } from "../src/protocol.ts";
+import { decode, decodeGateway, encode, type InstanceReport } from "../src/protocol.ts";
 
 describe("S30 protocol decode (daemon→gateway)", () => {
   it("heartbeat válido roundtrip", () => {
@@ -97,5 +97,59 @@ describe("P0-4 heartbeat bounds (anti-amplificación)", () => {
     assert.equal(hb([inst({ tokPerSec: 1e9 })]), null);
     assert.equal(hb([inst({ price: -1 })]), null);
     assert.equal(hb([inst({ price: 1e9 })]), null);
+  });
+});
+
+describe("S46 pool-forge: rpc-worker + rpcPeers (spec 017)", () => {
+  const worker = (over: Record<string, unknown> = {}) => ({
+    instanceId: "w0",
+    model: "rpc",
+    capability: "rpc-worker",
+    hot: true,
+    inFlight: 0,
+    saturated: false,
+    loadTimeMs: 0,
+    rpc: { endpoint: "192.168.1.10:50052", vramGb: 24 },
+    ...over,
+  });
+  const hb = (instances: unknown[]) =>
+    decode(JSON.stringify({ type: "heartbeat", instances }));
+
+  it("rpc-worker válido roundtrip — endpoint + vramGb viajan", () => {
+    const d = hb([worker()]);
+    assert.notEqual(d, null);
+    const i = (d as { instances: InstanceReport[] }).instances[0];
+    assert.equal(i.capability, "rpc-worker");
+    assert.deepEqual(i.rpc, { endpoint: "192.168.1.10:50052", vramGb: 24 });
+  });
+
+  it("rpc-worker sin endpoint o endpoint malformado → null", () => {
+    assert.equal(hb([worker({ rpc: undefined })]), null);
+    assert.equal(hb([worker({ rpc: { endpoint: "sin puerto" } })]), null);
+    assert.equal(hb([worker({ rpc: { endpoint: "host:notaport" } })]), null);
+    assert.equal(hb([worker({ rpc: { endpoint: "h o s t:1" } })]), null);
+    assert.equal(hb([worker({ rpc: { endpoint: "x".repeat(254) + ":1" } })]), null);
+    assert.equal(hb([worker({ rpc: { endpoint: "10.0.0.1:70000" } })]), null);
+  });
+
+  it("capability text con pool.needs válido roundtrip", () => {
+    const d = hb([{ instanceId: "i0", model: "qwen-70b", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 3000, pool: { needs: 2 } }]);
+    const i = (d as { instances: InstanceReport[] }).instances[0];
+    assert.deepEqual(i.pool, { needs: 2 });
+  });
+
+  it("pool.needs fuera de rango → null (1-4 stages, no enjambre infinito)", () => {
+    const base = { instanceId: "i0", model: "m", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 1 };
+    assert.equal(hb([{ ...base, pool: { needs: 0 } }]), null);
+    assert.equal(hb([{ ...base, pool: { needs: 5 } }]), null);
+    assert.equal(hb([{ ...base, pool: { needs: 1.5 } }]), null);
+    assert.notEqual(hb([{ ...base, pool: { needs: 1 } }]), null);
+  });
+
+  it("job.assign con rpcPeers decodes; peers inválidos → null", () => {
+    const ok = decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", rpcPeers: ["10.0.0.1:50052", "10.0.0.2:50052"] }));
+    assert.deepEqual((ok as { rpcPeers?: string[] }).rpcPeers, ["10.0.0.1:50052", "10.0.0.2:50052"]);
+    assert.equal(decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", rpcPeers: ["a:1", "b:2", "c:3", "d:4", "e:5"] })), null);
+    assert.equal(decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", rpcPeers: [42] })), null);
   });
 });

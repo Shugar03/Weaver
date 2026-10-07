@@ -1,6 +1,8 @@
 # ADR 0010 — Cómputo compartido: cluster-forge hoy, pipeline inter-forge mañana
 
-Fecha: 2026-10-08 · Estado: aceptado (nivel 1 implementado; nivel 3 especificado, no implementado)
+Fecha: 2026-10-08 · Estado: aceptado (nivel 1 implementado; nivel 2 verificado;
+**nivel 2.5 — pool entre operadores — implementado** en spec 017; nivel 3
+stage-federation especificado, no implementado)
 
 ## Contexto
 
@@ -34,9 +36,36 @@ Tres niveles distintos, que NO hay que confundir:
   forge (probe/resident/exec 1.1s reales). Prueba de distribución real:
   matar un worker crasheó el front — el cómputo estaba delegado, no
   replicado. En LAN los workers son máquinas distintas con el mismo binario.
-- **Especificado acá:** nivel 3 (stage federation). No implementado — la
-  honestidad exige decirlo: el pitch no puede vender "GPUs de desconocidos
-  combinadas" hasta que este ADR tenga código detrás.
+- **Implementado (nivel 2.5, spec 017 — S46):** pool entre operadores
+  distintos. Un forge `rpc-worker` presta su `ggml-rpc-server` (nunca ve
+  prompts — solo tensores); el gateway lo empareja con un coordinator que
+  declara `pool.needs` al despachar el job (`job.assign.rpcPeers`, privado);
+  el coordinator spawnea `llama-server --rpc peers --split-mode layer`
+  warm-keyed por peer-set. Trust = modelo de nivel 2: el coordinator firma
+  el proof y responde por sus sub-workers; los endpoints jamás salen en API
+  pública. Workers: recurso del pool, NO rutas (fuera del scheduler, fuera
+  de attestation). Leases: acquire atómico + release en done/fail/cancel/
+  disconnect; `live` reportado por heartbeat real del rpc-server.
+- **Verificado live (nivel 2.5, loopback):** 2×`ggml-rpc-server -d CPU` +
+  `llama-server --rpc 127.0.0.1:50052,127.0.0.1:50053 --split-mode layer`
+  sirviendo qwen3-4b GGUF — `/health` ok y completion real con conexiones
+  activas en ambos workers (delegación, no réplica). Bugs que solo el live
+  gate expuso: `-h` es `--help` (el bind es `-H`), `llama-server` usa
+  `--port` (no `-p`), y Metal OOM si Ollama tiene la GPU residente — en
+  multi-tenant real cada worker vive en SU máquina/GPU.
+- **Especificado acá:** nivel 3 (stage federation con boundary activations,
+  cadena de proofs por stage, payout split). NO implementado — el MVP pooled
+  usa transporte op-level llama.cpp RPC (LAN/link decente; WAN documentado
+  lento en la investigación) que es la fase B del spec 017.
+
+## Nivel 2.5 → qué se puede decir honestamente
+
+"Forges de operadores distintos combinan VRAM" es cierto HOY con la
+salvedad: transporte llama.cpp RPC (LAN/red privada — ggml-rpc-server no
+tiene auth; no exponer a WAN abierto), la cadena de confianza ancla en el
+coordinator, y el payout va al coordinator (split = fase B). Es la prueba
+de que Weaver aporta lo que le falta a la técnica existente: coordinación,
+identidad, confianza y atribución.
 
 ## Nivel 3 — diseño honesto
 
@@ -81,13 +110,17 @@ intermedio puede filtrar información del prompt. Consecuencias:
 4. Proof chaining + payout splitting por stage.
 5. Replay audit opcional.
 
-**Estimación honesta: semanas de protocolo, no días.** Para el submission el
-camino es: nivel 2 demoable (cluster llama.cpp RPC como un forge) + este ADR
-como el diseño serio — los jueces premian la honestidad sobre el teatro.
+**Estimación honesta: semanas de protocolo, no días.** Con el nivel 2.5
+implementado el camino es: pool LAN/privado real hoy (coordinación Weaver +
+transporte llama.cpp RPC) → stage-federation WAN como fase B (boundary
+activations, proofs por stage, payout split, túnel autenticado).
 
 ## Consecuencias
 
 - El catálogo puede listar modelos grosos HOY si un forge con el hardware los
   sirve — el mercado ya lo soporta.
-- "Shared compute" en el pitch = cluster-forge (nivel 2) + ADR (nivel 3).
-  Nunca "forges de extraños ya combinan GPUs" — falso.
+- "Shared compute" en el pitch = pool-forge implementado (nivel 2.5, LAN) +
+  ADR (nivel 3). Claim preciso: "independent forges pool VRAM — Weaver
+  supplies coordination, identity and attribution; activations ride
+  llama.cpp RPC". No esconder: es LAN/privado hasta que haya túnel auth
+  (fase B), y el proof/payout ancla en el coordinator.

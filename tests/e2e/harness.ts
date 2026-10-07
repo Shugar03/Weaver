@@ -74,6 +74,7 @@ async function spawnDaemon(
   stack: Stack,
   instances: DaemonInstance[],
   kp: Kp,
+  pooledFactory?: ConstructorParameters<typeof ForgeDaemon>[0]["pooledFactory"],
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   const channel = await connect({
     gateway: stack.url, chain: "stellar", pubkey: kp.pubkey, secret: kp.secret, instances: [],
@@ -87,6 +88,7 @@ async function spawnDaemon(
     // después de conectar. El primer beat va inmediato igual.
     heartbeatMs: 550,
     probes: { idleMs: async () => null, vramUsedGb: async () => null },
+    ...(pooledFactory ? { pooledFactory } : {}),
   });
   d.start();
   return { daemon: d, kp };
@@ -118,6 +120,43 @@ export function upImageDaemon(
     stack,
     [{ instanceId, model: "flux2-klein-4b", capability: "image", exec: engine, maxConcurrent: 4, loadTimeMs: 0 }],
     kp,
+  );
+}
+
+// S46 pool-forge: daemon que SOLO presta VRAM — sin exec, anuncia su endpoint
+// rpc por heartbeat (prod: ggml-rpc-server real; acá el proc es un flag).
+export function upRpcDaemon(
+  stack: Stack,
+  instanceId: string,
+  endpoint: string,
+  proc: { alive: boolean },
+  kp: Kp = stellarKeypair(),
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
+  return spawnDaemon(
+    stack,
+    [{ instanceId, model: "rpc", capability: "rpc-worker", rpc: { endpoint, vramGb: 24 }, rpcProc: proc, maxConcurrent: 1, loadTimeMs: 0 }],
+    kp,
+  );
+}
+
+// Daemon coordinator pooled: anuncia pool.needs y resuelve el exec vía
+// pooledFactory cuando el assign trae rpcPeers (prod: llama-server --rpc).
+// `onPeers` deja espiar los endpoints que llegaron por el wire.
+export function upPooledDaemon(
+  stack: Stack,
+  instanceId: string,
+  engine: ForgeExec,
+  needs: number,
+  kp: Kp = stellarKeypair(),
+  onPeers?: (peers: string[]) => ForgeExec,
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
+  return spawnDaemon(
+    stack,
+    [{ instanceId, model: "qwen3.5:4b", capability: "text", exec: engine, maxConcurrent: 4, loadTimeMs: 0, pool: { needs } }],
+    kp,
+    // e2e: el exec pooled ES el engine scripteado — prod sería un adapter al
+    // llama-server spawneado con --rpc peers.
+    (_inst, peers) => Promise.resolve(onPeers ? onPeers(peers) : engine),
   );
 }
 

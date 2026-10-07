@@ -16,11 +16,21 @@ import { ollamaVramUsedGb, osIdleMs } from "./budgets.ts";
 export type DaemonInstance = {
   instanceId: string;
   model: string;
-  capability: "text" | "image";
-  exec: ForgeExec | ImageExec; // TrackedExec/TrackedImageExec → inFlight medido
+  capability: "text" | "image" | "rpc-worker";
+  exec?: ForgeExec | ImageExec; // ausente en rpc-worker — presta VRAM, no sirve jobs
   maxConcurrent: number; // cap propio del operador → saturated honesto
   loadTimeMs: number; // carga COLD estimada (declarada, se refina con historia)
   vramGb?: number; // footprint estimado del modelo (budgets; /api/tags size)
+  // S46 pool-forge (spec 017):
+  // rpc-worker: endpoint que el coordinator diala + handle del proceso
+  // ggml-rpc-server (lo spawnea cli.ts — el daemon solo le reporta salud).
+  rpc?: { endpoint: string; vramGb?: number };
+  rpcProc?: { alive: boolean };
+  // coordinator pooled: "sirvo este modelo si me parkean N workers" — el
+  // gateway incluye rpcPeers en el assign y el daemon usa pooledFactory.
+  pool?: { needs: number };
+  // GGUF local para el llama-server pooled (lo consume la factory de cli.ts).
+  modelFile?: string;
 };
 
 // S39: probes de OS/engine inyectables — los tests meten fakes, prod usa los
@@ -45,6 +55,11 @@ export type Claimer = (chainJobId: number, resultHash: Buffer, forgeSig: Buffer)
 // viem devuelve Promise). El daemon espera ambos igual.
 export type ProofSigner = (hash: Buffer) => Buffer | Promise<Buffer>;
 
+// S46: coordinator pooled — ante job.assign con rpcPeers, la factory arma el
+// exec contra el cluster (prod: spawnea llama-server --rpc peers warm-keyed
+// por peer-set + OpenAICompatAdapter). Inyectable → tests con fakes.
+export type PooledFactory = (inst: DaemonInstance, peers: string[]) => Promise<ForgeExec>;
+
 const TOK_WINDOW = 50; // últimas N ejecuciones para tok/s medido
 
 export class ForgeDaemon {
@@ -56,6 +71,7 @@ export class ForgeDaemon {
   private readonly claim?: Claimer;
   private readonly agentId?: number; // ERC-8004 (EVM) — viaja en el heartbeat
   private readonly probes: BudgetProbes;
+  private readonly pooledFactory?: PooledFactory;
   private readonly tok = new Map<string, { tok: number; ms: number }[]>();
   private readonly running = new Map<string, AbortController>(); // jobId → cancel
   private hbTimer: ReturnType<typeof setInterval> | null = null;
@@ -71,6 +87,7 @@ export class ForgeDaemon {
     claim?: Claimer;
     agentId?: number;
     probes?: Partial<BudgetProbes>;
+    pooledFactory?: PooledFactory;
   }) {
     this.channel = deps.channel;
     this.instances = new Map(deps.instances.map((i) => [i.instanceId, i]));
@@ -83,6 +100,7 @@ export class ForgeDaemon {
       idleMs: deps.probes?.idleMs ?? osIdleMs,
       vramUsedGb: deps.probes?.vramUsedGb ?? (() => ollamaVramUsedGb()),
     };
+    this.pooledFactory = deps.pooledFactory;
   }
 
   start(): void {
@@ -129,15 +147,31 @@ export class ForgeDaemon {
     const vramUsed = maxVram !== undefined ? await this.probes.vramUsedGb() : null;
     const instances: InstanceReport[] = [];
     for (const i of this.instances.values()) {
+      // rpc-worker: no tiene exec — su salud ES el proceso ggml-rpc-server.
+      // Jamás recibe job.assign (el gateway no lo rutea); solo se parkea.
+      if (i.capability === "rpc-worker") {
+        const alive = i.rpcProc?.alive === true;
+        instances.push({
+          instanceId: i.instanceId,
+          model: i.model,
+          capability: "rpc-worker",
+          hot: alive,
+          inFlight: 0,
+          saturated: !alive || busyUser,
+          loadTimeMs: 0,
+          ...(i.rpc ? { rpc: i.rpc } : {}),
+        });
+        continue;
+      }
       // Liveness probe del engine local: si el proceso backend crasheó (OOM/ECONNREFUSED),
       // la instance no está viva ni hot, y se marca saturated para que el gateway no le asigne tráfico.
-      const alive = (await i.exec.probe?.().catch(() => false)) ?? true;
+      const alive = i.exec ? ((await i.exec.probe?.().catch(() => false)) ?? true) : false;
       const hot =
         alive &&
         (i.capability === "image"
           ? true
           : ((await (i.exec as ForgeExec).resident?.().catch(() => false)) ?? true));
-      const n = (i.exec as unknown as { inFlight?: number }).inFlight ?? 0;
+      const n = (i.exec as unknown as { inFlight?: number } | undefined)?.inFlight ?? 0;
       const xs = this.tok.get(i.instanceId) ?? [];
       const tok = xs.reduce((a, s) => a + s.tok, 0);
       const ms = xs.reduce((a, s) => a + s.ms, 0);
@@ -153,6 +187,7 @@ export class ForgeDaemon {
         saturated: !alive || busyUser || overVram || n >= i.maxConcurrent,
         ...(ms > 0 ? { tokPerSec: (tok / ms) * 1000 } : {}),
         loadTimeMs: i.loadTimeMs,
+        ...(i.pool ? { pool: i.pool } : {}),
       });
     }
     this.channel.send({
@@ -219,6 +254,21 @@ export class ForgeDaemon {
       return this.fail(m.jobId, `jobId ${m.jobId} ya en vuelo`, false);
     }
     this.channel.send({ type: "job.ack", jobId: m.jobId });
+    // S46: assign con rpcPeers → el exec no es el residente sino el pooled
+    // (llama-server --rpc peers — la factory lo spawnea/reusa warm-keyed).
+    // Sin factory no puedo coordinar el cluster → fail honesto, no cuelgo.
+    let exec = i.exec as ForgeExec | undefined;
+    if (m.rpcPeers?.length) {
+      if (!this.pooledFactory) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: rpcPeers recibidos pero sin pooledFactory`, false);
+      }
+      try {
+        exec = await this.pooledFactory(i, m.rpcPeers);
+      } catch (e) {
+        return this.fail(m.jobId, `pooled spawn falló: ${e instanceof Error ? e.message : String(e)}`, false);
+      }
+    }
+    if (!exec) return this.fail(m.jobId, `instance ${m.instanceId}: sin exec`, false);
     // Commitment input+output (proofhash.ts): el hash del prompt es sobre lo
     // que ESTE assign trajo — el gateway lo recomputa y compara, así que el
     // forge no puede reclamar que le llegó otro input.
@@ -233,7 +283,7 @@ export class ForgeDaemon {
     const ac = new AbortController(); // job.cancel → aborta el exec en vuelo
     this.running.set(m.jobId, ac);
     try {
-      for await (const c of (i.exec as ForgeExec).execute({
+      for await (const c of exec.execute({
         jobId: m.jobId,
         model: m.model,
         prompt: m.prompt,
@@ -279,7 +329,7 @@ export class ForgeDaemon {
 
   private async runImage(m: Extract<GatewayMsg, { type: "image.assign" }>): Promise<void> {
     const i = this.instances.get(m.instanceId);
-    if (!i || i.capability !== "image") {
+    if (!i || i.capability !== "image" || !i.exec) {
       return this.fail(m.jobId, `instance ${m.instanceId} desconocida o no-image`, false);
     }
     // Mismo contrato que runJob: jobId único (un cancel no puede pisar a otro)

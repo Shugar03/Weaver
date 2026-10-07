@@ -6,6 +6,7 @@
 import type { Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
+  ForgePool,
   ForgeSession,
   RemoteForgeExec,
   RemoteImageExec,
@@ -76,6 +77,12 @@ export function attachForgeWS(
   const remoteExecs = new Map<string, ForgeExec>();
   const remoteImageExecs = new Map<string, ImageExec>();
   const instanceOwner = new Map<string, ForgeSession>();
+  // S46 pool-forge: reserva de rpc-workers en el instante del assign.
+  // Un pool por attach — los loans mueren con la sesión del coordinator.
+  const pool = new ForgePool({
+    reportOf: (i) => deps.registry.reportOf(i),
+    workers: () => deps.registry.workers(),
+  });
   // spec 011: pubkeys matadas por chaos — reconectar no revive hasta revive.
   const kill = makeKillSwitch({
     // instanceId → pubkey: del registry (fuente de verdad post-heartbeat)
@@ -148,13 +155,15 @@ export function attachForgeWS(
           instanceOwner.set(v.forgeId, session);
           attestImage(ex, v);
         }
-      } else if (!remoteExecs.has(v.forgeId)) {
+      } else if (v.capability === "text" && !remoteExecs.has(v.forgeId)) {
         const ex = new TrackedExec(
           new RemoteForgeExec({
             channel: session,
             instanceId: v.forgeId,
             model: v.model,
             resident: () => deps.registry.reportOf(v.forgeId)?.hot ?? false,
+            pool,
+            forgePubkey: pk,
           }),
         );
         remoteExecs.set(v.forgeId, ex);
@@ -218,7 +227,12 @@ export function attachForgeWS(
   }
 
   function dropSession(session: ForgeSession): void {
-    if (session.pubkey) sessions.delete(session.pubkey);
+    if (session.pubkey) {
+      sessions.delete(session.pubkey);
+      // Coordinator muerto → sus workers prestados vuelven al pool (los
+      // workers muertos se curan solos por evicción perezosa en acquire).
+      pool.releaseForge(session.pubkey);
+    }
     sockets.delete(session);
     for (const [id, owner] of instanceOwner) {
       if (owner === session) {

@@ -84,6 +84,42 @@ describe("S31 RemoteForgeExec", () => {
     await assert.rejects(() => drain(ex.execute(req())), /assign sin ack/);
   });
 
+  it("S46 pool: acquire → rpcPeers en el assign; null → throw sin mandar nada", async () => {
+    const ch = new FakeChannel();
+    const calls: [string, string][] = [];
+    let released = "";
+    const pool = {
+      acquire: (id: string, pk: string) => {
+        calls.push([id, pk]);
+        return ["10.0.0.5:50052", "10.0.0.6:50052"];
+      },
+      release: (id: string) => {
+        released = id;
+      },
+    };
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pool: pool as never, forgePubkey: "PK_COORD" });
+    const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
+    }, 10);
+    await drain(it);
+    assert.deepEqual(calls, [["gpu0", "PK_COORD"]]);
+    const assign = ch.lastAssign() as { rpcPeers?: string[] } | undefined;
+    assert.deepEqual(assign?.rpcPeers, ["10.0.0.5:50052", "10.0.0.6:50052"]);
+    assert.equal(released, "gpu0"); // workers liberados al terminar el job
+  });
+
+  it("S46 pool: sin workers libres → throw pre-assign (failover a otra ruta)", async () => {
+    const ch = new FakeChannel();
+    const pool = { acquire: () => null, release: () => {} };
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pool: pool as never, forgePubkey: "PK" });
+    await assert.rejects(() => drain(ex.execute(req())), /pool sin workers libres/);
+    assert.equal(ch.lastAssign(), undefined); // nunca se despachó
+  });
+
   it("job.fail sin tokens → throw pre-token; midStream → propaga explícito", async () => {
     const ch = new FakeChannel();
     const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m" });
