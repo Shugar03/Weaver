@@ -35,6 +35,22 @@ def sig_preimage(job_id: str, session_id: str, chain: str) -> bytes:
     return hashlib.sha256(f"{job_id}:{session_id}:{chain}".encode()).digest()
 
 
+# ---------- B2 half-chains de frontera + firma v2 (espejo de stageproto.ts)
+# Seed = jobId solo: dos stages procesando la MISMA historia (seq,payload)
+# convergen al mismo hash — el gateway cruza outChain_K == inChain_K+1.
+# El session-binding vive en el preimage firmado, no en el seed.
+def half_init(job_id: str) -> str:
+    return hashlib.sha256(job_id.encode()).hexdigest()
+
+
+def half_step(chain: str, seq: int, payload_b64: str) -> str:
+    return hashlib.sha256(f"{chain}:{seq}:{payload_b64}".encode()).hexdigest()
+
+
+def sig_preimage_v2(job_id: str, session_id: str, in_chain: str, out_chain: str) -> bytes:
+    return hashlib.sha256(f"{job_id}:{session_id}:{in_chain}:{out_chain}".encode()).digest()
+
+
 # ---------- capability token (B1 WAN auth — idéntico a stageToken en TS)
 # HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea ante
 # stage.grant del gateway; el runner lo verifica con el MISMO secret local.
@@ -164,13 +180,81 @@ def hidden_to_b64(hidden) -> str:
 
 
 class StageServer:
+    """Sesión = ruta compartida del SERVER (no del socket): los stage.fwd
+    llegan por conexiones del stage anterior, el stage.out/report/fail va al
+    socket DUEÑO (quien abrió — el coordinator). Espejo de StageRouter TS.
+
+    sesión: {cache, pos, chains(v1+v2), seqs(dedup), out_cache(replay),
+             owner(writer), next(hop+creds), fwd_writer(socket saliente)}"""
+
     def __init__(self, model: StageModel, sign_seed: Optional[bytes], tag: str, secret: Optional[str] = None):
         self.model = model
         self.sign_seed = sign_seed
         self.tag = tag
         self.secret = secret  # B1: seteado → open sin capability válida = fail
-        self.sessions = {}  # sessionId → {cache, pos, chain, jobId, blocks}
+        self.sessions = {}  # sessionId → sesión
         self.seen = []      # seqs recibidos — evidencia de replay para tests
+        self.fwd_socks = [] # sockets salientes — se cierran con el server
+
+    async def _open_fwd(self, s, session_id: str):
+        """Socket saliente al next-hop; se reconecta si murió."""
+        w = s.get("fwd_writer")
+        if w is not None and not w.is_closing():
+            return w
+        host, port = s["next"]["endpoint"].rsplit(":", 1)
+        _r, w = await asyncio.open_connection(host, int(port))
+        self.fwd_socks.append(w)
+        s["fwd_writer"] = w
+        return w
+
+    async def _deliver(self, s, session_id: str, seq: int, out_b64: str, shape: list[int], dtype: str):
+        """Post-compute: next → stage.fwd directo + report al owner;
+        final → stage.out al dueño. Cachea el out para replay (B3)."""
+        s["out_cache"][seq] = {"shape": shape, "dtype": dtype, "payload": out_b64}
+        if len(s["out_cache"]) > 8192:
+            s["out_cache"].pop(next(iter(s["out_cache"])))
+        nxt = s.get("next")
+        if nxt:
+            try:
+                w = await self._open_fwd(s, session_id)
+                fwd = {"type": "stage.fwd", "sessionId": nxt["sessionId"], "seq": seq,
+                       "shape": shape, "dtype": dtype, "payload": out_b64}
+                if nxt.get("token"):
+                    fwd["token"] = nxt["token"]
+                if nxt.get("coordPubkey"):
+                    fwd["coordPubkey"] = nxt["coordPubkey"]
+                w.write(json.dumps(fwd).encode() + b"\n")
+                await w.drain()
+            except Exception as e:
+                # blame = la sesión del next (el culpable es quien murió).
+                await self._send(s["owner"], {"type": "stage.fail", "sessionId": session_id,
+                                              "error": f"fwd a {nxt['endpoint']}: {e}", "blame": nxt["sessionId"]})
+                return
+            await self._send(s["owner"], {"type": "stage.report", "sessionId": session_id, "seq": seq})
+        else:
+            await self._send(s["owner"], {"type": "stage.out", "sessionId": session_id, "seq": seq,
+                                          "shape": shape, "dtype": dtype, "payload": out_b64})
+
+    async def _run_step(self, s, session_id: str, msg):
+        """Dedup con redelivery: seq ya procesado → reenvía el cache (no
+        recompute — doble-append de KV corrompería). Es la onda que atraviesa
+        los stages sanos post-heal hasta el reemplazo."""
+        seq = msg["seq"]
+        if seq in s["seqs"]:
+            cached = s["out_cache"].get(seq)
+            if cached:
+                await self._deliver(s, session_id, seq, cached["payload"], cached["shape"], cached["dtype"])
+            return
+        self.seen.append({"sessionId": session_id, "seq": seq})
+        hidden = b64_to_hidden(msg["payload"], msg["shape"])
+        out = self.model.forward(s["cache"], torch.from_numpy(hidden), s["pos"])
+        s["pos"] += hidden.shape[0]
+        out_b64 = hidden_to_b64(out)
+        s["seqs"].add(seq)
+        s["chain"] = chain_step(s["chain"], seq, msg["payload"], out_b64)
+        s["in_chain"] = half_step(s["in_chain"], seq, msg["payload"])
+        s["out_chain"] = half_step(s["out_chain"], seq, out_b64)
+        await self._deliver(s, session_id, seq, out_b64, list(out.shape), "f16")
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         owned = []
@@ -181,6 +265,8 @@ class StageServer:
                 except json.JSONDecodeError:
                     continue
                 t = msg.get("type")
+                sid = msg.get("sessionId", "")
+                s = self.sessions.get(sid)
                 try:
                     if t == "stage.open":
                         sid = msg["sessionId"]
@@ -193,39 +279,94 @@ class StageServer:
                             raise ValueError("stage.open sin capability válida")
                         if k < self.model.k or n > self.model.n:
                             raise ValueError(f"blocks [{k},{n}] fuera de mi rango [{self.model.k},{self.model.n}]")
+                        seed = half_init(msg["jobId"])
                         self.sessions[sid] = {
                             "cache": self.model.new_cache(), "pos": 0,
                             "chain": chain_init(sid, [k, n]), "jobId": msg["jobId"], "blocks": [k, n],
+                            "in_chain": seed, "out_chain": seed,
+                            "seqs": set(), "out_cache": {},
+                            "owner": writer,
+                            "token": msg.get("token"), "coordPubkey": msg.get("coordPubkey"),
+                            "next": msg.get("next"), "fwd_writer": None,
                         }
                         owned.append(sid)
                         await self._send(writer, {"type": "stage.ack", "sessionId": sid})
                     elif t == "stage.step":
-                        sid, seq = msg["sessionId"], msg["seq"]
-                        s = self.sessions.get(sid)
+                        # Solo el dueño inyecta por step (coord→s1).
+                        if s is None or s["owner"] is not writer:
+                            raise ValueError("step: sesión ajena o inexistente")
+                        await self._run_step(s, sid, msg)
+                    elif t == "stage.fwd":
+                        # Courier-auth: credenciales del fwd == credenciales
+                        # del open (la porta el stage previo, no las mintea).
                         if s is None:
-                            raise ValueError("sin sesión — open primero")
-                        self.seen.append({"sessionId": sid, "seq": seq})
-                        hidden = b64_to_hidden(msg["payload"], msg["shape"])
-                        t0 = time.monotonic()
-                        out = self.model.forward(s["cache"], torch.from_numpy(hidden), s["pos"])
-                        s["pos"] += hidden.shape[0]
-                        out_b64 = hidden_to_b64(out)
-                        s["chain"] = chain_step(s["chain"], seq, msg["payload"], out_b64)
-                        ms = (time.monotonic() - t0) * 1000
-                        await self._send(writer, {"type": "stage.out", "sessionId": sid, "seq": seq,
-                                                  "shape": list(out.shape), "dtype": "f16",
-                                                  "payload": out_b64, "ms": round(ms, 1)})
+                            raise ValueError("fwd: sesión inexistente")
+                        if msg.get("token") != s["token"] or msg.get("coordPubkey") != s["coordPubkey"]:
+                            raise ValueError("fwd: credenciales no coinciden con la sesión")
+                        if msg.get("absorb"):
+                            # Replay del heal: reconstruye KV sin propagar —
+                            # los vecinos ya procesaron estos seqs.
+                            if msg["seq"] not in s["seqs"]:
+                                self.seen.append({"sessionId": sid, "seq": msg["seq"]})
+                                hidden = b64_to_hidden(msg["payload"], msg["shape"])
+                                out = self.model.forward(s["cache"], torch.from_numpy(hidden), s["pos"])
+                                s["pos"] += hidden.shape[0]
+                                s["seqs"].add(msg["seq"])
+                                out_b64 = hidden_to_b64(out)
+                                s["chain"] = chain_step(s["chain"], msg["seq"], msg["payload"], out_b64)
+                                s["in_chain"] = half_step(s["in_chain"], msg["seq"], msg["payload"])
+                                s["out_chain"] = half_step(s["out_chain"], msg["seq"], out_b64)
+                                s["out_cache"][msg["seq"]] = {"shape": list(out.shape), "dtype": "f16", "payload": out_b64}
+                        else:
+                            await self._run_step(s, sid, msg)
+                    elif t == "stage.replay":
+                        # B3: reenvío mis outs cacheados (≤ uptoSeq) al target
+                        # como absorb-fwd — el reemplazo reconstruye su KV.
+                        if s is None or s["owner"] is not writer:
+                            raise ValueError("replay: sesión ajena o inexistente")
+                        tgt = msg["target"]
+                        upto = msg.get("uptoSeq")
+                        seqs = sorted(n for n in s["out_cache"] if upto is None or n <= upto)
+                        host, port = tgt["endpoint"].rsplit(":", 1)
+                        _r, w = await asyncio.open_connection(host, int(port))
+                        try:
+                            for n in seqs:
+                                o = s["out_cache"][n]
+                                fwd = {"type": "stage.fwd", "sessionId": tgt["sessionId"], "seq": n,
+                                       "shape": o["shape"], "dtype": o["dtype"], "payload": o["payload"],
+                                       "absorb": True}
+                                if tgt.get("token"):
+                                    fwd["token"] = tgt["token"]
+                                if tgt.get("coordPubkey"):
+                                    fwd["coordPubkey"] = tgt["coordPubkey"]
+                                w.write(json.dumps(fwd).encode() + b"\n")
+                            await w.drain()
+                        finally:
+                            w.close()
+                        await self._send(writer, {"type": "stage.ack", "sessionId": sid})
+                    elif t == "stage.repoint":
+                        # Solo el dueño redirige — un courier no desvía la cadena.
+                        if s is None or s["owner"] is not writer:
+                            raise ValueError("repoint: sesión ajena o inexistente")
+                        if s.get("fwd_writer") is not None:
+                            s["fwd_writer"].close()
+                        s["fwd_writer"] = None
+                        s["next"] = msg["next"]
+                        await self._send(writer, {"type": "stage.ack", "sessionId": sid})
                     elif t == "stage.close":
-                        sid = msg["sessionId"]
                         s = self.sessions.pop(sid, None)
                         if sid in owned:
                             owned.remove(sid)
                         ack = {"type": "stage.ack", "sessionId": sid}
                         if s and self.sign_seed:
-                            ack["sig"] = sign_hex(sig_preimage(s["jobId"], sid, s["chain"]), self.sign_seed)
+                            # v2: ata (jobId, sid, inChain, outChain) — el
+                            # gateway cruza fronteras entre stages.
+                            ack["sig"] = sign_hex(sig_preimage_v2(s["jobId"], sid, s["in_chain"], s["out_chain"]), self.sign_seed)
+                            ack["inChain"], ack["outChain"] = s["in_chain"], s["out_chain"]
                         await self._send(writer, ack)
                 except Exception as e:
-                    await self._send(writer, {"type": "stage.fail", "sessionId": msg.get("sessionId", ""),
+                    target = s["owner"] if s is not None else writer
+                    await self._send(target, {"type": "stage.fail", "sessionId": sid,
                                               "seq": msg.get("seq"), "error": str(e)})
         finally:
             for sid in owned:  # socket muerto → KV liberado (ZDR de sesiones)

@@ -42,8 +42,13 @@ export type StageSig = {
   endpoint: string;
   blocks: [number, number];
   sessionId: string;
-  chain: string;
+  chain?: string; // v1: hash encadenado de (seq,in,out) — legacy/back-compat
   sig: string;
+  // v2 (B2 transporte directo): half-chains de frontera — sig ata
+  // sha256(jobId:sessionId:inChain:outChain). inChain_K+1 == outChain_K
+  // certifica que la frontera cruzó intacta (checksum async, Petals §3.2).
+  inChain?: string;
+  outChain?: string;
 };
 // Proof L0 (S23): recibo del forge — firma del commitment que ata
 // prompt+output (ver proofhash.ts). El contrato lo verifica en release:

@@ -23,6 +23,16 @@ export type StageOpenMsg = {
   kvLenHint?: number; // tokens esperados — sizing de KV server-side
   token?: string;
   coordPubkey?: string;
+  // B2 data plane directo: a dónde forwardear la activación de salida.
+  // El stage es COURIER de las credenciales del siguiente hop (token
+  // HMAC minteado por el daemon del vecino — puede portarlas, no forjarlas).
+  // Sin next = último stage: su stage.out va por el socket dueño (coord).
+  next?: {
+    endpoint: string;
+    sessionId: string; // sesión que el coordinator abrió en el siguiente stage
+    token?: string;
+    coordPubkey?: string;
+  };
 };
 // Un paso de pipeline: activaciones in → el stage corre sus bloques → out.
 // payload = hidden states serializados (b64 en MVP; binario/quant = fase B).
@@ -36,7 +46,52 @@ export type StageStepMsg = {
 };
 // Cierra sesión — libera el KV. Se manda en done/cancel/disconnect.
 export type StageCloseMsg = { type: "stage.close"; sessionId: string };
-export type CoordMsg = StageOpenMsg | StageStepMsg | StageCloseMsg;
+// B2: activación forwardeada stage→stage (salta al coordinator).
+// Auth: (token, coordPubkey) deben igualar las credenciales con que se
+// abrió la sesión destino — el courier porta, el verificador no distingue
+// quién la envía (misma capability = mismo derecho, por diseño).
+export type StageFwdMsg = {
+  type: "stage.fwd";
+  sessionId: string;
+  seq: number;
+  shape: [number, number];
+  dtype: "f16" | "f32" | "q8";
+  payload: string; // b64
+  token?: string;
+  coordPubkey?: string;
+  // Replay absorb: computa para reconstruir KV PERO no re-propaga al next
+  // ni reporta — los vecinos ya procesaron esos seqs. Sin él, un heal
+  // inundaría la cadena con duplicados de tensor completo.
+  absorb?: boolean;
+};
+// B2 heal por stage-cache: el coordinator le dice a un stage VIVO que
+// re-inyecte sus outputs cacheados (los inputs del muerto) al reemplazo.
+// uptoSeq ausente = todo el historial de la sesión.
+export type StageReplayMsg = {
+  type: "stage.replay";
+  sessionId: string;
+  uptoSeq?: number;
+  target: {
+    endpoint: string;
+    sessionId: string;
+    token?: string;
+    coordPubkey?: string;
+  };
+};
+// B2 heal: redirige el next-hop de una sesión al reemplazo. Solo el dueño
+// (socket que la abrió) puede repuntear — es el equivalente en el data
+// plane del swap de cadena que el coordinator hace en relay mode.
+export type StageRepointMsg = {
+  type: "stage.repoint";
+  sessionId: string;
+  next: {
+    endpoint: string;
+    sessionId: string;
+    token?: string;
+    coordPubkey?: string;
+  };
+};
+export type CoordMsg = StageOpenMsg | StageStepMsg | StageCloseMsg | StageFwdMsg | StageReplayMsg | StageRepointMsg;
 
 // ---------- stage → coordinator ----------
 
@@ -47,7 +102,16 @@ export type CoordMsg = StageOpenMsg | StageStepMsg | StageCloseMsg;
 // Chain canónico (ambas partes computan bytes idénticos):
 //   chain₀   = sha256hex(sessionId + ":" + blocks.join("-"))
 //   chainₙ₊₁ = sha256hex(chainₙ + ":" + seq + ":" + inB64 + ":" + outB64)
-export type StageAckMsg = { type: "stage.ack"; sessionId: string; sig?: string };
+export type StageAckMsg = {
+  type: "stage.ack";
+  sessionId: string;
+  sig?: string;
+  // B2: frontera verificable — los half-chains del tramo. Viajan en PAR:
+  // inChain_K+1 == outChain_K prueba que toda activación cruzó intacta
+  // (checksum async, Petals §3.2). sig v2 = sign(sha256(jobId:sid:in:out)).
+  inChain?: string;
+  outChain?: string;
+};
 export type StageOutMsg = {
   type: "stage.out";
   sessionId: string;
@@ -56,8 +120,14 @@ export type StageOutMsg = {
   // Custodia por step (futura): firma por activación — MVP firma al close.
   sig?: string;
 };
-export type StageFailMsg = { type: "stage.fail"; sessionId: string; error: string };
-export type StageMsg = StageAckMsg | StageOutMsg | StageFailMsg;
+// blame: sessionId del tramo culpable cuando el fail es ajeno al emisor
+// (p.ej. mi fwd al next murió → el culpable es el next, no yo). Sin blame
+// el culpable es la propia sesión reportada.
+export type StageFailMsg = { type: "stage.fail"; sessionId: string; error: string; blame?: string };
+// B2: reporte ligero por step al coordinator (blame + progreso). Bytes,
+// no tensor — el data plane va directo, el control sigue anclado al coord.
+export type StageReportMsg = { type: "stage.report"; sessionId: string; seq: number };
+export type StageMsg = StageAckMsg | StageOutMsg | StageFailMsg | StageReportMsg;
 
 // ---------- codec ----------
 
@@ -80,6 +150,21 @@ const isShape = (v: unknown): v is [number, number] =>
   Array.isArray(v) && v.length === 2 && Number.isInteger(v[0]) && Number.isInteger(v[1]) &&
   (v[0] as number) >= 1 && (v[0] as number) <= 4096 &&
   (v[1] as number) >= 1 && (v[1] as number) <= 1_000_000;
+const isEndpoint = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= 256;
+const isSeq = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_SEQ;
+const isDtype = (v: unknown): v is "f16" | "f32" | "q8" => v === "f16" || v === "f32" || v === "q8";
+const isToken = (v: unknown): v is string => isStr(v) && v.length <= 256;
+const isPubkey = (v: unknown): v is string => isStr(v) && v.length <= 128;
+const isHex64 = (v: unknown): v is string => isStr(v) && /^[0-9a-f]{64}$/.test(v);
+// Hop destino (open.next / replay.target): endpoint acotado + sessionId +
+// credenciales B1 opcionales. Si vienen campos extra se preservan solo los
+// conocidos — el courier no gana superficie.
+const isHop = (v: unknown): v is { endpoint: string; sessionId: string; token?: string; coordPubkey?: string } => {
+  if (!isObj(v) || !isEndpoint(v.endpoint) || !isId(v.sessionId)) return false;
+  if (v.token !== undefined && !isToken(v.token)) return false;
+  if (v.coordPubkey !== undefined && !isPubkey(v.coordPubkey)) return false;
+  return true;
+};
 
 // Mensajes coordinator→stage (lado stage).
 export function decodeCoord(raw: string): CoordMsg | null {
@@ -94,8 +179,9 @@ export function decodeCoord(raw: string): CoordMsg | null {
     case "stage.open":
       if (!isId(m.jobId) || !isId(m.sessionId) || !isId(m.model) || !isBlocks(m.blocks)) return null;
       if (m.kvLenHint !== undefined && (!Number.isInteger(m.kvLenHint) || (m.kvLenHint as number) < 0 || (m.kvLenHint as number) > 1_000_000)) return null;
-      if (m.token !== undefined && (!isStr(m.token) || m.token.length > 256)) return null;
-      if (m.coordPubkey !== undefined && (!isStr(m.coordPubkey) || m.coordPubkey.length > 128)) return null;
+      if (m.token !== undefined && !isToken(m.token)) return null;
+      if (m.coordPubkey !== undefined && !isPubkey(m.coordPubkey)) return null;
+      if (m.next !== undefined && !isHop(m.next)) return null;
       return {
         type: "stage.open",
         jobId: m.jobId,
@@ -105,12 +191,65 @@ export function decodeCoord(raw: string): CoordMsg | null {
         ...(isNum(m.kvLenHint) ? { kvLenHint: m.kvLenHint } : {}),
         ...(isStr(m.token) ? { token: m.token } : {}),
         ...(isStr(m.coordPubkey) ? { coordPubkey: m.coordPubkey } : {}),
+        ...(isObj(m.next)
+          ? {
+              next: {
+                endpoint: m.next.endpoint as string,
+                sessionId: m.next.sessionId as string,
+                ...(isStr(m.next.token) ? { token: m.next.token } : {}),
+                ...(isStr(m.next.coordPubkey) ? { coordPubkey: m.next.coordPubkey } : {}),
+              },
+            }
+          : {}),
       };
     case "stage.step":
-      if (!isId(m.sessionId) || !Number.isInteger(m.seq) || (m.seq as number) < 0 || (m.seq as number) > MAX_SEQ) return null;
+      if (!isId(m.sessionId) || !isSeq(m.seq)) return null;
       if (!isShape(m.shape) || !isB64(m.payload)) return null;
-      if (m.dtype !== "f16" && m.dtype !== "f32" && m.dtype !== "q8") return null;
+      if (!isDtype(m.dtype)) return null;
       return { type: "stage.step", sessionId: m.sessionId, seq: m.seq as number, shape: m.shape, dtype: m.dtype, payload: m.payload };
+    case "stage.fwd":
+      if (!isId(m.sessionId) || !isSeq(m.seq)) return null;
+      if (!isShape(m.shape) || !isB64(m.payload) || !isDtype(m.dtype)) return null;
+      if (m.token !== undefined && !isToken(m.token)) return null;
+      if (m.coordPubkey !== undefined && !isPubkey(m.coordPubkey)) return null;
+      if (m.absorb !== undefined && m.absorb !== true) return null;
+      return {
+        type: "stage.fwd",
+        sessionId: m.sessionId,
+        seq: m.seq as number,
+        shape: m.shape,
+        dtype: m.dtype,
+        payload: m.payload,
+        ...(isStr(m.token) ? { token: m.token } : {}),
+        ...(isStr(m.coordPubkey) ? { coordPubkey: m.coordPubkey } : {}),
+        ...(m.absorb === true ? { absorb: true } : {}),
+      };
+    case "stage.replay":
+      if (!isId(m.sessionId) || !isHop(m.target)) return null;
+      if (m.uptoSeq !== undefined && !isSeq(m.uptoSeq)) return null;
+      return {
+        type: "stage.replay",
+        sessionId: m.sessionId,
+        ...(isNum(m.uptoSeq) ? { uptoSeq: m.uptoSeq } : {}),
+        target: {
+          endpoint: m.target.endpoint as string,
+          sessionId: m.target.sessionId as string,
+          ...(isStr(m.target.token) ? { token: m.target.token } : {}),
+          ...(isStr(m.target.coordPubkey) ? { coordPubkey: m.target.coordPubkey } : {}),
+        },
+      };
+    case "stage.repoint":
+      if (!isId(m.sessionId) || !isHop(m.next)) return null;
+      return {
+        type: "stage.repoint",
+        sessionId: m.sessionId,
+        next: {
+          endpoint: m.next.endpoint as string,
+          sessionId: m.next.sessionId as string,
+          ...(isStr(m.next.token) ? { token: m.next.token } : {}),
+          ...(isStr(m.next.coordPubkey) ? { coordPubkey: m.next.coordPubkey } : {}),
+        },
+      };
     case "stage.close":
       if (!isId(m.sessionId)) return null;
       return { type: "stage.close", sessionId: m.sessionId };
@@ -132,7 +271,17 @@ export function decodeStage(raw: string): StageMsg | null {
     case "stage.ack":
       if (!isId(m.sessionId)) return null;
       if (m.sig !== undefined && (!isStr(m.sig) || m.sig.length > 300)) return null;
-      return { type: "stage.ack", sessionId: m.sessionId, ...(isStr(m.sig) ? { sig: m.sig } : {}) };
+      // half-chains viajan en PAR — uno solo no prueba ninguna frontera.
+      if ((m.inChain === undefined) !== (m.outChain === undefined)) return null;
+      if (m.inChain !== undefined && !isHex64(m.inChain)) return null;
+      if (m.outChain !== undefined && !isHex64(m.outChain)) return null;
+      return {
+        type: "stage.ack",
+        sessionId: m.sessionId,
+        ...(isStr(m.sig) ? { sig: m.sig } : {}),
+        ...(isStr(m.inChain) ? { inChain: m.inChain } : {}),
+        ...(isStr(m.outChain) ? { outChain: m.outChain } : {}),
+      };
     case "stage.out":
       if (!isId(m.sessionId) || !Number.isInteger(m.seq) || (m.seq as number) < 0 || (m.seq as number) > MAX_SEQ) return null;
       if (!isB64(m.payload)) return null;
@@ -140,7 +289,11 @@ export function decodeStage(raw: string): StageMsg | null {
       return { type: "stage.out", sessionId: m.sessionId, seq: m.seq as number, payload: m.payload, ...(isStr(m.sig) ? { sig: m.sig } : {}) };
     case "stage.fail":
       if (!isId(m.sessionId) || !isStr(m.error)) return null;
-      return { type: "stage.fail", sessionId: m.sessionId, error: m.error };
+      if (m.blame !== undefined && !isId(m.blame)) return null;
+      return { type: "stage.fail", sessionId: m.sessionId, error: m.error, ...(isStr(m.blame) ? { blame: m.blame } : {}) };
+    case "stage.report":
+      if (!isId(m.sessionId) || !isSeq(m.seq)) return null;
+      return { type: "stage.report", sessionId: m.sessionId, seq: m.seq as number };
     default:
       return null;
   }
@@ -165,6 +318,24 @@ export const stageChainStep = (chain: string, seq: number, inB64: string, outB64
 // Lo que el stage firma y el gateway recomputa (Buffer — ed25519/secp256k1).
 export const stageSigPreimage = (jobId: string, sessionId: string, chain: string): Buffer =>
   createHash("sha256").update(`${jobId}:${sessionId}:${chain}`, "utf8").digest();
+
+// ---------- boundary chains (B2 transporte directo) ----------
+// Half-chains por lado de la frontera: inChain encadena (seq‖in) y outChain
+// (seq‖out). El seed es SOLO jobId — compartido por toda la cadena: la
+// entrada del stage K+1 en seq n ES la salida del K en seq n, así
+// inChain_{K+1} == outChain_K certifica que la frontera cruzó intacta
+// (checksum asíncrono de Petals §3.2 — el coordinator no ve el tráfico
+// inter-stage en modo directo; los chains se atan entre sí).
+// El session-binding NO vive en el seed: lo ata el preimage firmado.
+export const stageHalfInit = (jobId: string): string => sha256hex(jobId);
+
+export const stageHalfStep = (chain: string, seq: number, payloadB64: string): string =>
+  sha256hex(`${chain}:${seq}:${payloadB64}`);
+
+// Preimage v2: el stage firma AMBOS half-chains — no puede reportar una
+// entrada que no produjo su salida ni viceversa.
+export const stageSigPreimageV2 = (jobId: string, sessionId: string, inChain: string, outChain: string): Buffer =>
+  createHash("sha256").update(`${jobId}:${sessionId}:${inChain}:${outChain}`, "utf8").digest();
 
 // ---------- capability token (B1 WAN auth) ----------
 // HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea al

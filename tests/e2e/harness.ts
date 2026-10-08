@@ -214,7 +214,11 @@ export async function upStageDaemon(
   // harness: auth siempre activa (un stage WAN sin auth es un agujero — el
   // e2e corre siempre en la postura segura; null explícito = modo sin-auth).
   const secret = opts.stageSecret === null ? undefined : (opts.stageSecret ?? "e2e-stage-secret");
-  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""), async (h) => kp.sign(h).toString("hex"), secret);
+  // Tag por TRAMO, no por instancia: dos forges corriendo el mismo rango de
+  // bloques producen outputs idénticos (como el substrate real — misma
+  // entrada → mismo tensor). El boundary-check del gateway depende de eso:
+  // un reemplazo debe converger al outChain del tramo que cubre.
+  const inner = simStageCompute(layers, `s${layers[0]}`, async (h) => kp.sign(h).toString("hex"), secret);
   const compute = inner as ReturnType<typeof simStageCompute>;
   if (opts.stepDelayMs) {
     // stepDelayMs: pasos más lentos → la ventana mid-job existe para matarlo
@@ -266,6 +270,8 @@ export function upPipelineDaemon(
   model = "qwen3.5:4b",
   kp: Kp = stellarKeypair(),
   front?: PipelineFront,
+  // B2: "direct" = data plane stage→stage (fwd/replay/repoint); relay default.
+  mode: "relay" | "direct" = "relay",
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   return spawnDaemon(
     stack,
@@ -291,6 +297,7 @@ export function upPipelineDaemon(
           front: front ?? simFront(),
           coordPubkey: kp.pubkey, // B1: el token del assign ata a ESTA identidad
           ...(requestStage ? { requestStage } : {}),
+          mode,
         }),
       ),
   );

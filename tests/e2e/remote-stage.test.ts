@@ -110,6 +110,50 @@ describe("S47 stage-federation wire e2e", () => {
     assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s2.endpoint, s3.endpoint].sort());
   });
 
+  it("B2 direct: activaciones stage→stage (sin relay) + heal por stage-cache", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    // En directo el tensor NO pasa por el coordinator: s1 forwardea a s2.
+    // s1 lento para abrir la ventana del kill mid-job; s3 = spare del tramo.
+    const s1 = await upStageDaemon(stack, "s1", [0, 40], undefined, undefined, { stepDelayMs: 30 });
+    const s2 = await upStageDaemon(stack, "s2", [40, 80]);
+    const s3 = await upStageDaemon(stack, "s3", [0, 40]);
+    daemons.push(s1.daemon, s2.daemon, s3.daemon);
+    servers.push(s1.server, s2.server, s3.server);
+    await untilStageWorkers(stack, 3);
+    const c = await upPipelineDaemon(stack, "c0", 80, undefined, undefined, undefined, "direct");
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 15_000);
+
+    const res = await chatRequest(stack.url, "a b c d e f g h");
+    assert.equal(res.status, 200);
+    let acc = await readUntil(res, "", '"a ', 15_000);
+    s1.server.close(); // s1 muere mid-job — K-1=0 → el coordinator replaya
+    acc = await readUntil(res, acc, "[DONE]", 20_000);
+    assert.match(acc, /\[DONE\]/);
+    assert.ok(acc.includes('"h "') || acc.includes('"h"'));
+    // El spare recibió el replay absorb del coordinator (K=0: el `injected`
+    // del coordinator es la fuente — no hay stage previo) + los tokens nuevos.
+    const porSesion = new Map<string, number[]>();
+    for (const e of s3.compute.seenSeqs()) {
+      const xs = porSesion.get(e.sessionId) ?? [];
+      xs.push(e.seq);
+      porSesion.set(e.sessionId, xs);
+    }
+    const healed = [...porSesion.values()].find((seqs) => seqs.length >= 2 && seqs[0] === 0);
+    assert.ok(healed, `esperaba sesión reemplazada con replay — visto: ${JSON.stringify([...porSesion])}`);
+    // Boundary cross-check post-heal: s3.outChain == s2.inChain — el gateway
+    // probó que la frontera del tramo reemplazado viajó intacta (v2 sigs).
+    const sigLine = acc.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1);
+    assert.ok(sigLine, "receipt sin stageSigs — boundary check debió pasar post-heal");
+    const sigs = JSON.parse(sigLine.slice(5)).weaver_proof.stageSigs;
+    assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s2.endpoint, s3.endpoint].sort());
+    // Y efectivamente la frontera verifica: out del tramo [0,40] == in del [40,80].
+    const a = sigs.find((s: { blocks: number[] }) => s.blocks[0] === 0);
+    const b = sigs.find((s: { blocks: number[] }) => s.blocks[0] === 40);
+    assert.equal(a.outChain, b.inChain, "frontera rota: out_[0,40] ≠ in_[40,80]");
+  });
+
   it("stage muere sin spare → stage.offer vacío → job falla honesto mid-stream", async () => {
     const stack = await startStack();
     stacks.push(stack);

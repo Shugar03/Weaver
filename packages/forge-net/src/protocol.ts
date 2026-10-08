@@ -200,14 +200,22 @@ const isLayers = (v: unknown): v is [number, number] =>
   (v[0] as number) >= 0 && (v[1] as number) > (v[0] as number) && (v[1] as number) <= MAX_BLOCKS;
 // stageSigs: ≤ MAX_STAGES+1 entradas (un reemplazo puede sumar una sesión
 // firmada extra). chain = sha256 hex fijo; sig = ed25519/secp256k1 hex.
+// v1: chain hex64 sola. v2 (B2): inChain+outChain en par — la firma cubre
+// sha256(jobId:sid:in:out) y el gateway cruza fronteras adyacentes. En
+// modo directo el coordinator no ve el tráfico medio → chain opcional si
+// hay par in/out (al menos una evidencia de chain debe estar presente).
 const isStageSigs = (v: unknown): v is StageSig[] =>
   Array.isArray(v) && v.length > 0 && v.length <= MAX_STAGES + 1 &&
   v.every(
     (s) =>
       isObj(s) && isEndpoint(s.endpoint) && isLayers(s.blocks) &&
       isId(s.sessionId) &&
-      isStr(s.chain) && /^[0-9a-f]{64}$/.test(s.chain) &&
-      isStr(s.sig) && /^[0-9a-fA-F]{128,300}$/.test(s.sig),
+      (s.chain === undefined || (isStr(s.chain) && /^[0-9a-f]{64}$/.test(s.chain))) &&
+      isStr(s.sig) && /^[0-9a-fA-F]{128,300}$/.test(s.sig) &&
+      (s.inChain === undefined) === (s.outChain === undefined) &&
+      (s.inChain === undefined || (isStr(s.inChain) && /^[0-9a-f]{64}$/.test(s.inChain))) &&
+      (s.outChain === undefined || (isStr(s.outChain) && /^[0-9a-f]{64}$/.test(s.outChain))) &&
+      (s.chain !== undefined || s.inChain !== undefined),
   );
 
 function instanceReport(v: unknown): InstanceReport | null {

@@ -27,6 +27,15 @@ function fakeTransport(opts: { failAtStep?: number; tag?: string; sig?: string }
       // stage-sim: marca la activación — el front la limpia al final.
       return { payload: Buffer.from(`${Buffer.from(s.payload, "base64").toString("utf8")}:${opts.tag ?? "s0"}`).toString("base64") };
     },
+    inject(s) {
+      calls.push({ type: "inject", sessionId: s.sessionId, seq: s.seq, payload: s.payload });
+    },
+    async expectOut() {
+      throw new Error("fake: expectOut no implementado");
+    },
+    async replay() {},
+    injectFwd() {},
+    async repoint() {},
     async close(sessionId) {
       calls.push({ type: "close", sessionId });
       return opts.sig ? { sig: opts.sig } : {};
@@ -157,13 +166,13 @@ describe("S47 PipelineExec", () => {
       dial: (e) => (e === STAGES[0].endpoint ? t1 : t2),
       front: simFront(),
     });
-    let done: { stageSigs?: { endpoint: string; sessionId: string; chain: string; sig: string }[] } = {};
+    let done: { stageSigs?: { endpoint: string; sessionId: string; chain?: string; sig: string }[] } = {};
     for await (const c of exec.execute({ jobId: "j6", model: "sim-32", prompt: "a b" })) {
       if (c.done) done = c;
     }
     assert.equal(done.stageSigs?.length, 2);
     assert.deepEqual(done.stageSigs!.map((s) => s.endpoint), STAGES.map((s) => s.endpoint));
-    assert.ok(done.stageSigs!.every((s) => s.sig === sig && s.chain.length === 64 && s.sessionId.startsWith("j6:")));
+    assert.ok(done.stageSigs!.every((s) => s.sig === sig && s.chain && s.chain.length === 64 && s.sessionId.startsWith("j6:")));
     // Chains distintos entre stages (cada sesión tiene su historia).
     assert.notEqual(done.stageSigs![0].chain, done.stageSigs![1].chain);
   });

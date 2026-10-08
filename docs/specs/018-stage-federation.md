@@ -210,6 +210,9 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | `weaver_proof.stageSigs` visible al cliente | `gateway/index.ts` receipt | ✅ solo entradas verificadas |
 | Substrate pesos reales | `tools/stage_runner.py` (HF slice k..n + KV sesión) + `--role edge` + `httpFront` + `--stage-ext` | ✅ Qwen2.5-0.5B partido 0-12/12-24 en 3 procesos → tokens idénticos al monolítico (paridad Δ=0 en `tools/parity_check.py`), stageSigs ed25519 reales |
 | B1 capability tokens | `stageToken()` en `stageproto.ts` + `stage.grant`/`stage.token` en `protocol.ts` + grant en `forgews.ts` + mint en `daemon.ts` + verify en `stagetransport.ts`/`stage_runner.py` | ✅ rogue TCP sin token rechazado en e2e; auth obligatoria en toda la suite |
+| B2 data plane directo | `stage.open.next` + `stage.fwd`/`stage.report`/`stage.repoint`/`stage.replay` en `stageproto.ts`; `StageRouter` + `deliver`/`runStep` en `stagetransport.ts`; `PipelineExec` `mode:"direct"` + `healDirect` en `pipeline.ts`; mismo data plane en `stage_runner.py` | ✅ TCP real: inject→fwd→out por socket dueño; rogue fwd rechazado; heal mid-job en 306ms e2e |
+| B2 boundary cross-check | `stageHalfInit`/`stageHalfStep` (seed=jobId) + `inChain`/`outChain` en close-ack + `sig_preimage_v2` + `verifyStageSigs` cruza `outChain_K==inChain_K+1` | ✅ e2e aserta frontera íntegra post-heal; mismatch → ambos striked+drop |
+| B3 heal por stage-cache | out_cache por sesión (≤8192) + dedup-redeliver + `absorb` fwd + `repoint` | ✅ K-1 replaya outs al reemplazo (K=0: `injected` del coordinator); job completa |
 
 Desviaciones vs el diseño original:
 
@@ -274,6 +277,35 @@ Bugs reales que solo salieron en implementación:
   stage WAN sin auth es un agujero): el harness ahora usa
   `WEAVER_STAGE_SECRET=e2e-stage-secret` por defecto en todos los daemons
   stage — **toda la suite corre con auth real**, no solo el test B1.
+- B2: **sesión ≠ socket** — un stage.fwd llega por la conexión del stage
+  anterior, no por la del coordinator que abrió la sesión. El `StageRouter`
+  es por SERVER: sessionId → {owner, creds, next, outCache}; el out/report/
+  fail va siempre al dueño, el cómputo puede entrar por cualquier socket.
+- B2: `fwdSock` sin handler de `'error'` = uncaughtException que mata el
+  proceso del stage entero al primer ECONNRESET — ahora el error del fwd va
+  al owner como `stage.fail` con `blame` = sessionId del next caído (sin
+  blame el vivo quedaba culpado: el fail lleva sessionId del EMISOR).
+- B2: race inject/expectOut — en loopback la cadena completa en <1ms y el
+  `stage.out` llegaba ANTES de que `expectOut` registrara el pending → se
+  perdía y el await colgaba. `outBuf` por sesión en el transport cliente.
+- B2: heal esperaba el stepTimeout completo (30s) porque el expectOut
+  espera en el stage FINAL que sigue vivo — no se enteraba del corte
+  upstream. `breaker` (fail event o onDead de cualquier transport) despierta
+  el heal al instante: e2e heal directo en ~306ms, no en timeout.
+- B2: el tag del sim era por INSTANCIA (`s1`/`s3`) — el reemplazo producía
+  outs distintos a los del muerto para los mismos seqs → el boundary check
+  detectaba la divergencia real y descartaba ambas sigs post-heal. Correcto
+  del protocolo, irreal del sim: el tag ahora es por TRAMO (`s{blocks[0]}`),
+  como el substrate real donde mismo tramo → mismo tensor bit-exacto.
+- B3: dedup con REDELIVERY — seq ya procesado → reenvía el out cacheado, no
+  recompute (doble KV-append corrompería) ni drop (la onda post-heal debe
+  atravesar los stages sanos hasta el reemplazo que sí computa).
+- B3: `absorb` fwd — el replay reconstruye KV sin propagar: los vecinos ya
+  procesaron esos seqs, re-forward inundaría la cadena con duplicados.
+- Limitación conocida B3: si K y K-1 mueren juntos (cascada), no hay cache
+  upstream disponible para K — el heal falla honesto (multi-fail es trabajo
+  futuro; relay del coordinator sigue siendo fallback universal).
 
-Regresión: forge-net 124 · forge 61 · gateway 209 · e2e 16 (15 sim + 1
-pesos reales Qwen2.5-0.5B split 0-12/12-24, ambos con B1 auth) — todo verde.
+Regresión: forge-net 130 · forge 66 · gateway 209 · e2e 17 (16 sim +
+direct e2e con boundary check; 1 pesos reales Qwen2.5-0.5B split 0-12/12-24
+con B1 auth) — todo verde.

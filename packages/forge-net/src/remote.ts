@@ -21,7 +21,7 @@ import type {
 import type { ForgeMsg, GatewayMsg, JobDoneMsg } from "./protocol.ts";
 import type { ForgePool } from "./pool.ts";
 import type { StagePool } from "./stagepool.ts";
-import { stageSigPreimage } from "./stageproto.ts";
+import { stageSigPreimage, stageSigPreimageV2 } from "./stageproto.ts";
 import type { VerifyFn } from "./session.ts";
 
 // Canal abstracto — testeable con un fake duplex, sin socket real.
@@ -194,13 +194,41 @@ export class RemoteForgeExec implements ForgeExec {
     for (const s of sigs) {
       const e = loan.find((x) => x.endpoint === s.endpoint && x.blocks[0] === s.blocks[0] && x.blocks[1] === s.blocks[1]);
       if (!e) continue;
+      // v2 (B2): si la entrada trae par in/out, la firma ata
+      // sha256(jobId:sid:in:out); v1 legacy ata sha256(jobId:sid:chain).
+      const pre =
+        s.inChain && s.outChain
+          ? stageSigPreimageV2(jobId, s.sessionId, s.inChain, s.outChain)
+          : s.chain
+            ? stageSigPreimage(jobId, s.sessionId, s.chain)
+            : null;
+      if (!pre) continue;
       // VerifyFn puede ser sync (ed25519) — Promise.resolve unifica y un
       // throw de verify = firma inválida, nunca crash del handler.
       const ok = await Promise.resolve(
-        this.verifyFn(e.forgePubkey, stageSigPreimage(jobId, s.sessionId, s.chain), Buffer.from(s.sig, "hex")),
+        this.verifyFn(e.forgePubkey, pre, Buffer.from(s.sig, "hex")),
       ).catch(() => false);
       if (ok) out.push(s);
       else this.stagePool.strikeWorker(jobId, s.endpoint);
+    }
+    // Cross-check de frontera (B2): ordenadas por tramo, outChain_K debe
+    // igualar inChain_K+1 — una activación tampered/perdida en el hop
+    // rompe la convergencia. Simétrico: no se sabe cuál mintió → ambas
+    // entradas se descartan y ambos stages toman strike.
+    const byBlocks = out.slice().sort((a, b) => a.blocks[0] - b.blocks[0]);
+    const bad = new Set<StageSig>();
+    for (let i = 0; i + 1 < byBlocks.length; i++) {
+      const a = byBlocks[i];
+      const b = byBlocks[i + 1];
+      if (a.outChain && b.inChain && a.outChain !== b.inChain) {
+        bad.add(a);
+        bad.add(b);
+      }
+    }
+    if (bad.size) {
+      for (const s of bad) this.stagePool.strikeWorker(jobId, s.endpoint);
+      const kept = out.filter((s) => !bad.has(s));
+      return kept.length ? kept : undefined;
     }
     return out.length ? out : undefined;
   }
