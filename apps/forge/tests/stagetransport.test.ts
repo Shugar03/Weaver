@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { tcpStageDial } from "../src/stagetransport.ts";
 import { startStageServer } from "../src/stageserver.ts";
 import { simStageCompute } from "../src/pipeline.ts";
-import { stageChainInit, stageChainStep, stageSigPreimage } from "@weaver/forge-net";
+import { stageChainInit, stageChainStep, stageSigPreimage, stageToken } from "@weaver/forge-net";
 import { stellarKeypair, stellarVerify } from "@weaver/settlement";
 
 const bind = async (compute: ReturnType<typeof simStageCompute>) => {
@@ -92,6 +92,41 @@ describe("S47 stage transport TCP", () => {
     // Y una cadena distinta NO verifica — la firma está ligada al trabajo real.
     assert.equal(stellarVerify(kp.pubkey, stageSigPreimage("j1", "j1:s0", "00".repeat(32)), Buffer.from(sig!, "hex")), false);
     t.dispose();
+    srv.close();
+  });
+
+  it("B1: open sin capability → stage.fail, cero sesión alocada (TCP real)", async () => {
+    const SECRET = "w4n-s3cr3t";
+    const compute = simStageCompute([0, 16], "s0", undefined, SECRET);
+    const { srv, endpoint } = await bind(compute);
+    // Un cliente de Internet sin token → rechazado ANTES de reservar KV.
+    const t = tcpStageDial(endpoint);
+    await assert.rejects(
+      t.open({ jobId: "j1", sessionId: "s1", model: "m", blocks: [0, 16] }),
+      /capability/,
+    );
+    assert.equal(compute.sessions(), 0); // nada alocado
+    t.dispose();
+    // Token minteado por otro secret → también rechazado.
+    const t2 = tcpStageDial(endpoint);
+    await assert.rejects(
+      t2.open({ jobId: "j1", sessionId: "s1", model: "m", blocks: [0, 16], token: stageToken("otro-secret", "j1", "GCOORD"), coordPubkey: "GCOORD" }),
+      /capability/,
+    );
+    // Token del jobId equivocado → rechazado (ata (jobId, coordPubkey)).
+    const t3 = tcpStageDial(endpoint);
+    await assert.rejects(
+      t3.open({ jobId: "j1", sessionId: "s1", model: "m", blocks: [0, 16], token: stageToken(SECRET, "jOTRO", "GCOORD"), coordPubkey: "GCOORD" }),
+      /capability/,
+    );
+    assert.equal(compute.sessions(), 0);
+    t2.dispose();
+    t3.dispose();
+    // Capability válida → sesión normal.
+    const t4 = tcpStageDial(endpoint);
+    await t4.open({ jobId: "j1", sessionId: "s1", model: "m", blocks: [0, 16], token: stageToken(SECRET, "j1", "GCOORD"), coordPubkey: "GCOORD" });
+    assert.equal(compute.sessions(), 1);
+    t4.dispose();
     srv.close();
   });
 });

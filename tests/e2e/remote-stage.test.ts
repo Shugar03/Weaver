@@ -15,6 +15,7 @@ import {
   type Stack,
 } from "./harness.ts";
 import type { ForgeDaemon, StageServer } from "@weaver/forge";
+import { tcpStageDial } from "@weaver/forge";
 
 const stacks: Stack[] = [];
 const daemons: ForgeDaemon[] = [];
@@ -141,5 +142,40 @@ describe("S47 stage-federation wire e2e", () => {
     const body = await res.text();
     assert.match(body, /forge-failed|error/i);
     assert.doesNotMatch(body, /\[DONE\]/);
+  });
+
+  it("B1 auth: con secrets, el job completa via capabilities minteadas; un cliente TCP sin token es rechazado", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    const SECRET = "e2e-stage-secret";
+    // Workers con auth: el daemon mintea ante stage.grant; el stage-server
+    // verifica la capability antes de alocar sesión (fail closed).
+    const s1 = await upStageDaemon(stack, "s1", [0, 40], undefined, undefined, { stageSecret: SECRET });
+    const s2 = await upStageDaemon(stack, "s2", [40, 80], undefined, undefined, { stageSecret: SECRET });
+    daemons.push(s1.daemon, s2.daemon);
+    servers.push(s1.server, s2.server);
+    await untilStageWorkers(stack, 2);
+
+    // Un cliente TCP crudo SIN token: no abre sesión (fail, cero KV).
+    const rogue = tcpStageDial(s1.endpoint);
+    await assert.rejects(
+      rogue.open({ jobId: "j-rogue", sessionId: "s-rogue", model: "qwen3.5:4b", blocks: [0, 40] }),
+      /capability/,
+    );
+    assert.equal(s1.compute.sessions(), 0);
+    rogue.dispose();
+
+    const c = await upPipelineDaemon(stack, "c0", 80);
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 15_000); // attest ya usa capabilities reales
+
+    const res = await chatRequest(stack.url, "a b c");
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /\[DONE\]/);
+    assert.match(body, /"a "/);
+    // stageSigs igual de verificadas — auth no rompe la atribución A4.
+    const sigs = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof.stageSigs;
+    assert.equal(sigs.length, 2);
   });
 });

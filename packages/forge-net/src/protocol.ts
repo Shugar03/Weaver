@@ -83,6 +83,10 @@ export type PongMsg = { type: "pong"; t: number }; // eco del ping — RTT medid
 // gateway es la única autoridad de leases — sin esto el coordinator tendría
 // que adivinar endpoints (split-brain de préstamos).
 export type StageNeedMsg = { type: "stage.need"; jobId: string; dead: string; blocks: [number, number] };
+// B1 (WAN auth): el gateway le pide al daemon del worker un capability
+// token para un stage.loan — el worker mintea HMAC(secret, jobId|coordPubkey)
+// y lo devuelve por stage.token; el gateway lo porta al coordinator.
+export type StageTokenMsg = { type: "stage.token"; jobId: string; stageInstanceId: string; token: string };
 
 export type ForgeMsg =
   | AuthMsg
@@ -93,7 +97,8 @@ export type ForgeMsg =
   | JobFailMsg
   | ImageResultMsg
   | PongMsg
-  | StageNeedMsg;
+  | StageNeedMsg
+  | StageTokenMsg;
 
 // ---------- gateway → daemon ----------
 
@@ -116,7 +121,8 @@ export type JobAssignMsg = {
   rpcPeers?: string[];
   // S47 stage-federation: cadena ORDENADA de stage-workers — el daemon arma
   // PipelineExec (embeddings+lmhead locales, stages remotos por rango).
-  stages?: { endpoint: string; blocks: [number, number] }[];
+  // token = capability B1 minteada por el daemon del worker (HMAC opaco).
+  stages?: { endpoint: string; blocks: [number, number]; token?: string }[];
 };
 export type ImageAssignMsg = {
   type: "image.assign";
@@ -138,9 +144,34 @@ export type JobFundedMsg = { type: "job.funded"; chainJobId: number; resultHash:
 export type JobCancelMsg = { type: "job.cancel"; jobId: string };
 // S47: respuesta a stage.need — endpoint+blocks del reemplazo, o ausentes
 // (null honesto: no hay stage que cubra ese tramo → el coordinator falla).
-export type StageOfferMsg = { type: "stage.offer"; jobId: string; endpoint?: string; blocks?: [number, number] };
+// token = capability B1 para abrir la sesión en ese stage (lo minteó el
+// daemon del worker, el gateway solo lo porta).
+export type StageOfferMsg = {
+  type: "stage.offer";
+  jobId: string;
+  endpoint?: string;
+  blocks?: [number, number];
+  token?: string;
+};
+// B1: el gateway le pide al daemon del WORKER un token para este loan —
+// va por el canal autenticado del worker (el coordinator nunca lo toca).
+export type StageGrantMsg = {
+  type: "stage.grant";
+  jobId: string;
+  stageInstanceId: string; // qué instance del worker está siendo prestada
+  coordPubkey: string; // ligada al coordinator que la va a presentar
+};
 
-export type GatewayMsg = JobAssignMsg | ImageAssignMsg | PingMsg | AuthOkMsg | AuthFailMsg | JobFundedMsg | JobCancelMsg | StageOfferMsg;
+export type GatewayMsg =
+  | JobAssignMsg
+  | ImageAssignMsg
+  | PingMsg
+  | AuthOkMsg
+  | AuthFailMsg
+  | JobFundedMsg
+  | JobCancelMsg
+  | StageOfferMsg
+  | StageGrantMsg;
 
 // ---------- codec ----------
 
@@ -295,6 +326,9 @@ export function decode(raw: string): ForgeMsg | null {
     case "stage.need":
       if (!isStr(m.jobId) || !isStr(m.dead) || !isLayers(m.blocks)) return null;
       return { type: "stage.need", jobId: m.jobId, dead: m.dead, blocks: m.blocks };
+    case "stage.token":
+      if (!isStr(m.jobId) || !isStr(m.stageInstanceId) || !isStr(m.token) || (m.token as string).length > 256) return null;
+      return { type: "stage.token", jobId: m.jobId, stageInstanceId: m.stageInstanceId, token: m.token };
     default:
       return null;
   }
@@ -315,7 +349,8 @@ export function decodeGateway(raw: string): GatewayMsg | null {
       if (m.rpcPeers !== undefined && (!Array.isArray(m.rpcPeers) || m.rpcPeers.length > MAX_RPC_PEERS || !m.rpcPeers.every(isEndpoint))) return null;
       if (m.stages !== undefined &&
         (!Array.isArray(m.stages) || m.stages.length > MAX_STAGES ||
-         !m.stages.every((s) => isObj(s) && isEndpoint(s.endpoint) && isLayers(s.blocks)))) return null;
+         !m.stages.every((s) => isObj(s) && isEndpoint(s.endpoint) && isLayers(s.blocks) &&
+           (s.token === undefined || (isStr(s.token) && (s.token as string).length <= 256))))) return null;
       return m as unknown as JobAssignMsg;
     case "image.assign":
       if (!isStr(m.jobId) || !isStr(m.instanceId) || !isStr(m.model) || !isStr(m.prompt)) return null;
@@ -340,7 +375,17 @@ export function decodeGateway(raw: string): GatewayMsg | null {
       if (!isStr(m.jobId)) return null;
       if (m.endpoint !== undefined && !isEndpoint(m.endpoint)) return null;
       if (m.blocks !== undefined && !isLayers(m.blocks)) return null;
-      return { type: "stage.offer", jobId: m.jobId, ...(isStr(m.endpoint) ? { endpoint: m.endpoint } : {}), ...(isLayers(m.blocks) ? { blocks: m.blocks } : {}) };
+      if (m.token !== undefined && (!isStr(m.token) || (m.token as string).length > 256)) return null;
+      return {
+        type: "stage.offer",
+        jobId: m.jobId,
+        ...(isStr(m.endpoint) ? { endpoint: m.endpoint } : {}),
+        ...(isLayers(m.blocks) ? { blocks: m.blocks } : {}),
+        ...(isStr(m.token) ? { token: m.token } : {}),
+      };
+    case "stage.grant":
+      if (!isStr(m.jobId) || !isStr(m.stageInstanceId) || !isStr(m.coordPubkey) || (m.coordPubkey as string).length > 128) return null;
+      return { type: "stage.grant", jobId: m.jobId, stageInstanceId: m.stageInstanceId, coordPubkey: m.coordPubkey };
     default:
       return null;
   }

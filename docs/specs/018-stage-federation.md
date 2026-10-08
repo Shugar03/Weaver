@@ -136,10 +136,25 @@ Campos extra ignorados.
     al stage (penalize), no al coordinator.
 - Gate: e2e verde con stage-sim real por WS/TCP (no mocks).
 
-**B — WAN hardening (post-MVP)**: directo stage→stage con checksum async
-(Petals §3.2), dynamic blockwise quant de hidden states, TOPLOC commitments,
-NAT traversal o relay-pool, payout-split on-chain por stage, `acceptPooled`
-opt-in explícito del usuario.
+**B — WAN hardening (post-MVP)**:
+- **B1 — capability tokens en `stage.open`** (✅ implementado): antes de B1,
+  cualquier cliente TCP de Internet podía abrir sesiones e inyectar
+  activaciones en un stage endpoint. Ahora el daemon del worker mintea
+  `token = HMAC-SHA256(stageSecret, jobId|coordPubkey)` a pedido del gateway
+  (`stage.grant` → `stage.token`); el gateway lo porta opaco dentro de
+  `job.assign.stages[]`/`stage.offer`; el coordinator lo presenta en
+  `stage.open` junto a su pubkey; el stage (TS y Python) verifica el HMAC
+  **antes** de alocar sesión/KV — inválido o ausente → `stage.fail` cerrado.
+  Grant timeout = worker no confiable → strike + re-chain (misma disciplina
+  que probe). Los replacements reciben capability fresca. `--stage-secret`/
+  `WEAVER_STAGE_SECRET`; stage-worker sin secret loguea warning y nunca es
+  prestado (fail closed).
+- Pendiente: directo stage→stage con checksum async (Petals §3.2), dynamic
+  blockwise quant de hidden states, TOPLOC commitments, NAT traversal o
+  relay-pool, payout-split on-chain por stage, `acceptPooled` opt-in
+  explícito del usuario, rotación/escopado fino de `stageSecret` (hoy es un
+  shared secret por daemon — un coordinator malicioso con token puede hablar
+  ese tramo; la firma A4 sigue atando el historial).
 
 **C — substrate real**: `llama.cpp --stage k..n --hidden-in/--hidden-out`
 (modo stage en nuestro build, ~C++ contenido) — sustituye stage-sim en live
@@ -194,6 +209,7 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | Firma por stage (stageSigs en done + verif gateway) | `stageproto` chain + `pipeline.ts` + `stagepool.chainOf` + `remote.verifyStageSigs` | ✅ ed25519 real en e2e; inválida → strike+drop, ajena → ignorada |
 | `weaver_proof.stageSigs` visible al cliente | `gateway/index.ts` receipt | ✅ solo entradas verificadas |
 | Substrate pesos reales | `tools/stage_runner.py` (HF slice k..n + KV sesión) + `--role edge` + `httpFront` + `--stage-ext` | ✅ Qwen2.5-0.5B partido 0-12/12-24 en 3 procesos → tokens idénticos al monolítico (paridad Δ=0 en `tools/parity_check.py`), stageSigs ed25519 reales |
+| B1 capability tokens | `stageToken()` en `stageproto.ts` + `stage.grant`/`stage.token` en `protocol.ts` + grant en `forgews.ts` + mint en `daemon.ts` + verify en `stagetransport.ts`/`stage_runner.py` | ✅ rogue TCP sin token rechazado en e2e; auth obligatoria en toda la suite |
 
 Desviaciones vs el diseño original:
 
@@ -244,6 +260,20 @@ Bugs reales que solo salieron en implementación:
   seguiría atribuible (lo arregla `replace()`).
 - `it.return()` no interrumpe un `await` en vuelo — el release del loan
   viaja sobre la promesa del acquire, no sobre un flag post-await (S46).
+- B1: `instanceOwner` se llenaba solo desde `registry.views()` — que
+  **excluye** stage/rpc-workers por diseño (son recursos del pool, no rutas).
+  El grant nunca encontraba el canal del worker → timeout → strike → cadena
+  imposible → attest del coordinator fallaba con `sin execs`. Fix:
+  `syncExecs()` registra owners desde `stageWorkers()`+`workers()` además de
+  las views. Lección: el gateway habla con los workers por DOS caminos —
+  el scheduler (views) y el pool (loans) — y el segundo necesita su propio
+  mapa de sesiones.
+- B1: activar `grant` obligatorio hizo fallar toda la e2e con `sin execs` —
+  los daemons stage del harness no tenían secret, todos los grants daban
+  timeout y el pool los marcaba no-confiables. Correcto en espíritu (un
+  stage WAN sin auth es un agujero): el harness ahora usa
+  `WEAVER_STAGE_SECRET=e2e-stage-secret` por defecto en todos los daemons
+  stage — **toda la suite corre con auth real**, no solo el test B1.
 
-Regresión: forge-net 117 · forge 57 · gateway 209 · e2e 15 (14 sim + 1
-pesos reales Qwen2.5-0.5B split 0-12/12-24) — todo verde.
+Regresión: forge-net 124 · forge 61 · gateway 209 · e2e 16 (15 sim + 1
+pesos reales Qwen2.5-0.5B split 0-12/12-24, ambos con B1 auth) — todo verde.

@@ -15,7 +15,7 @@
 # el coordinator recomputa con stageChainInit/Step en TS (ver stageproto.ts).
 # --sign-seed toma el seed Stellar del daemon (S...) → el G... derivado matchea
 # forgePubkey del heartbeat → dualVerify del gateway verifica sin cambios.
-import argparse, asyncio, base64, hashlib, json, os, struct, sys, time
+import argparse, asyncio, base64, hashlib, hmac, json, os, struct, sys, time
 from typing import Optional
 
 import numpy as np
@@ -33,6 +33,14 @@ def chain_step(chain: str, seq: int, in_b64: str, out_b64: str) -> str:
 
 def sig_preimage(job_id: str, session_id: str, chain: str) -> bytes:
     return hashlib.sha256(f"{job_id}:{session_id}:{chain}".encode()).digest()
+
+
+# ---------- capability token (B1 WAN auth — idéntico a stageToken en TS)
+# HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea ante
+# stage.grant del gateway; el runner lo verifica con el MISMO secret local.
+def token_ok(secret: str, job_id: str, coord_pk: str, token: str) -> bool:
+    want = hmac.new(secret.encode(), f"{job_id}|{coord_pk}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, token)
 
 
 # ---------- strkey Stellar → seed ed25519 (S...) — base32 + crc16-xmodem
@@ -156,10 +164,11 @@ def hidden_to_b64(hidden) -> str:
 
 
 class StageServer:
-    def __init__(self, model: StageModel, sign_seed: Optional[bytes], tag: str):
+    def __init__(self, model: StageModel, sign_seed: Optional[bytes], tag: str, secret: Optional[str] = None):
         self.model = model
         self.sign_seed = sign_seed
         self.tag = tag
+        self.secret = secret  # B1: seteado → open sin capability válida = fail
         self.sessions = {}  # sessionId → {cache, pos, chain, jobId, blocks}
         self.seen = []      # seqs recibidos — evidencia de replay para tests
 
@@ -176,6 +185,12 @@ class StageServer:
                     if t == "stage.open":
                         sid = msg["sessionId"]
                         k, n = msg["blocks"]
+                        # B1: capability ANTES de reservar KV — un cliente de
+                        # Internet sin token no abre sesión ni inyecta nada.
+                        if self.secret and not token_ok(
+                            self.secret, msg.get("jobId", ""), msg.get("coordPubkey", ""), msg.get("token", "")
+                        ):
+                            raise ValueError("stage.open sin capability válida")
                         if k < self.model.k or n > self.model.n:
                             raise ValueError(f"blocks [{k},{n}] fuera de mi rango [{self.model.k},{self.model.n}]")
                         self.sessions[sid] = {
@@ -260,6 +275,7 @@ async def main():
     ap.add_argument("--blocks", nargs=2, type=int, default=[0, 12])
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--sign-seed", default=os.environ.get("STAGE_SIGN_SEED"))
+    ap.add_argument("--stage-secret", default=os.environ.get("WEAVER_STAGE_SECRET"))
     ap.add_argument("--tag", default="stage")
     args = ap.parse_args()
 
@@ -270,9 +286,10 @@ async def main():
 
     seed = seed_from_stellar(args.sign_seed) if args.sign_seed else None
     model = StageModel(args.model, args.blocks[0], args.blocks[1])
-    srv_state = StageServer(model, seed, args.tag)
+    srv_state = StageServer(model, seed, args.tag, secret=args.stage_secret)
     srv = await asyncio.start_server(srv_state.handle, "0.0.0.0", args.port)
-    print(f"stage {args.tag} listo :{args.port} blocks=[{args.blocks[0]},{args.blocks[1]}) d={model.d}", flush=True)
+    print(f"stage {args.tag} listo :{args.port} blocks=[{args.blocks[0]},{args.blocks[1]}) d={model.d}"
+          f"{' auth' if args.stage_secret else ''}", flush=True)
     await srv.serve_forever()
 
 

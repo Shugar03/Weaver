@@ -25,8 +25,10 @@ export type StageWorker = {
 };
 
 // Lo que viaja en job.assign.stages (privado) — instanceId queda interno del
-// loan; el coordinator solo necesita endpoint+rango.
-export type StageAssign = { endpoint: string; blocks: [number, number] }[];
+// loan; el coordinator solo necesita endpoint+rango. token = capability B1
+// minteada por el daemon del worker (HMAC del secret local — el gateway la
+// porta sin poder leerla ni forjarla).
+export type StageAssign = { endpoint: string; blocks: [number, number]; token?: string }[];
 // El loan guarda la cadena COMPLETA con pubkey — la verificación de
 // stageSigs (A4) resuelve endpoint→signer sin tocar el registry (el worker
 // pudo desconectarse antes del done; su firma sigue siendo chequeable).
@@ -38,6 +40,12 @@ export type StagePoolDeps = {
   stageWorkers(): StageWorker[];
   probe?(endpoint: string): Promise<boolean>;
   now?(): number;
+  // B1 WAN auth: tras reservar el worker, el pool le pide a SU daemon un
+  // capability token (HMAC del secret local — el gateway no lo fabrica).
+  // Presente = token obligatorio: un worker que no responde stage.token no
+  // puede ser confiado con sesiones → strike y se reintenta sin él.
+  // Ausente = modo lab sin auth (sim/local).
+  grant?(jobId: string, stageInstanceId: string, coordPubkey: string): Promise<string | undefined>;
 };
 
 type Loan = { coordInstance: string; coordPk: string; workers: string[]; chain: StageChain };
@@ -76,15 +84,21 @@ export class StagePool {
       // Reserva atómica PRE-probe: dos acquires concurrentes no se solapan.
       for (const s of chain) this.busy.add(s.instanceId);
       const oks = await Promise.all(chain.map((s) => this.probe(s.endpoint).catch(() => false)));
-      if (oks.every(Boolean)) {
+      // B1: capability token por entry — el daemon del worker mintea; un
+      // worker que no responde es tan sospechoso como uno que no contesta TCP.
+      const grants = this.deps.grant
+        ? await Promise.all(chain.map((s) => this.deps.grant!(jobId, s.instanceId, coordinatorPubkey).catch(() => undefined)))
+        : chain.map(() => undefined);
+      const ok = (i: number) => oks[i] && (!this.deps.grant || grants[i] !== undefined);
+      if (chain.every((_, i) => ok(i))) {
         this.loans.set(jobId, { coordInstance: instanceId, coordPk: coordinatorPubkey, workers: chain.map((s) => s.instanceId), chain });
-        return chain.map(({ endpoint, blocks }) => ({ endpoint, blocks }));
+        return chain.map(({ endpoint, blocks }, i) => ({ endpoint, blocks, ...(grants[i] ? { token: grants[i] } : {}) }));
       }
-      // Los que fallaron el probe: strike + se banean para el próximo build.
-      // Los sanos: se sueltan (el reintento puede re-elegirlos o no).
+      // Los que fallaron el probe/grant: strike + se banean para el próximo
+      // build. Los sanos: se sueltan (el reintento puede re-elegirlos o no).
       for (const [i, s] of chain.entries()) {
         this.busy.delete(s.instanceId);
-        if (!oks[i]) this.strike(s.instanceId);
+        if (!ok(i)) this.strike(s.instanceId);
       }
     }
     return null;
@@ -172,7 +186,19 @@ export class StagePool {
     }
     loan.workers.push(pick.instanceId);
     loan.chain.push({ endpoint: pick.endpoint, blocks, instanceId: pick.instanceId, forgePubkey: pick.forgePubkey });
-    return { endpoint: pick.endpoint, blocks };
+    // B1: capability token del reemplazo — sin grant no hay offer (el stage
+    // nuevo exige token si el pool corre con auth).
+    const token = this.deps.grant
+      ? await this.deps.grant(jobId, pick.instanceId, loan.coordPk).catch(() => undefined)
+      : undefined;
+    if (this.deps.grant && token === undefined) {
+      this.busy.delete(pick.instanceId);
+      this.strike(pick.instanceId);
+      loan.workers = loan.workers.filter((id) => id !== pick.instanceId);
+      loan.chain = loan.chain.filter((c) => c.endpoint !== pick.endpoint);
+      return null;
+    }
+    return { endpoint: pick.endpoint, blocks, ...(token ? { token } : {}) };
   }
 
   // La cadena del loan con pubkeys — la verificación de stageSigs resuelve

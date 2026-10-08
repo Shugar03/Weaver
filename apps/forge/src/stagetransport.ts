@@ -12,6 +12,10 @@ export type StageSessionInfo = {
   model: string;
   blocks: [number, number];
   kvLenHint?: number;
+  // B1 WAN auth: capability minteada por el daemon del worker + pubkey del
+  // coordinator que la presenta. El compute con auth la exige.
+  token?: string;
+  coordPubkey?: string;
 };
 
 // Canal coordinator→stage: lo que el PipelineExec necesita — nada más.

@@ -102,6 +102,7 @@ async function spawnDaemon(
   kp: Kp,
   pooledFactory?: ConstructorParameters<typeof ForgeDaemon>[0]["pooledFactory"],
   pipelineFactory?: PipelineFactory,
+  stageSecret?: string,
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   const channel = await connect({
     gateway: stack.url, chain: "stellar", pubkey: kp.pubkey, secret: kp.secret, instances: [],
@@ -117,6 +118,7 @@ async function spawnDaemon(
     probes: { idleMs: async () => null, vramUsedGb: async () => null },
     ...(pooledFactory ? { pooledFactory } : {}),
     ...(pipelineFactory ? { pipelineFactory } : {}),
+    ...(stageSecret ? { stageSecret } : {}),
   });
   d.start();
   return { daemon: d, kp };
@@ -197,7 +199,7 @@ export async function upStageDaemon(
   layers: [number, number],
   model = "qwen3.5:4b",
   kp: Kp = stellarKeypair(),
-  opts: { stepDelayMs?: number } = {},
+  opts: { stepDelayMs?: number; stageSecret?: string | null } = {},
 ): Promise<{
   daemon: ForgeDaemon;
   kp: Kp;
@@ -207,7 +209,12 @@ export async function upStageDaemon(
 }> {
   // sign con la keypair del forge (misma que en job.done) — el close-ack
   // lleva la firma del tramo y el gateway la verifica contra el loan (A4).
-  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""), async (h) => kp.sign(h).toString("hex"));
+  // stageSecret (B1): el compute exige capability en open y el daemon la
+  // mintea ante stage.grant — mismo secret en ambos lados. DEFAULT en el
+  // harness: auth siempre activa (un stage WAN sin auth es un agujero — el
+  // e2e corre siempre en la postura segura; null explícito = modo sin-auth).
+  const secret = opts.stageSecret === null ? undefined : (opts.stageSecret ?? "e2e-stage-secret");
+  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""), async (h) => kp.sign(h).toString("hex"), secret);
   const compute = inner as ReturnType<typeof simStageCompute>;
   if (opts.stepDelayMs) {
     // stepDelayMs: pasos más lentos → la ventana mid-job existe para matarlo
@@ -241,6 +248,9 @@ export async function upStageDaemon(
       },
     ],
     kp,
+    undefined,
+    undefined,
+    secret,
   );
   return { daemon, kp: k, server, endpoint, compute };
 }
@@ -279,6 +289,7 @@ export function upPipelineDaemon(
           stages,
           dial: tcpStageDial,
           front: front ?? simFront(),
+          coordPubkey: kp.pubkey, // B1: el token del assign ata a ESTA identidad
           ...(requestStage ? { requestStage } : {}),
         }),
       ),
@@ -295,15 +306,22 @@ export function upPyStageDaemon(
   layers: [number, number],
   model: string,
   kp: Kp = stellarKeypair(),
+  stageSecret?: string | null,
 ): Promise<{ daemon: ForgeDaemon; kp: Kp; endpoint: string; proc: ChildProcess }> {
   return (async () => {
     const port = 52000 + Math.floor(Math.random() * 5000);
     const endpoint = `127.0.0.1:${port}`;
+    // B1 default igual que upStageDaemon: auth siempre activa en e2e —
+    // null explícito = modo sin-auth (tests de compat).
+    const secret = stageSecret === null ? undefined : (stageSecret ?? "e2e-stage-secret");
     const proc = spawn("python3", [
       "tools/stage_runner.py", "--role", "stage", "--model", model,
       "--blocks", String(layers[0]), String(layers[1]),
       "--port", String(port), "--tag", instanceId.replace(/\W/g, ""),
       "--sign-seed", kp.secret,
+      // B1: el runner verifica la capability con el MISMO secret que el
+      // daemon usa para mintearla (env WEAVER_STAGE_SECRET en prod).
+      ...(secret ? ["--stage-secret", secret] : []),
     ], { stdio: ["ignore", "pipe", "inherit"] });
     const ready = new Promise<void>((res, rej) => {
       const to = setTimeout(() => rej(new Error(`stage_runner ${instanceId} no levantó en 180s`)), 180_000);
@@ -322,6 +340,9 @@ export function upPyStageDaemon(
         maxConcurrent: 1, loadTimeMs: 0,
       }],
       kp,
+      undefined,
+      undefined,
+      secret,
     );
     return { daemon, kp: k, endpoint, proc };
   })();

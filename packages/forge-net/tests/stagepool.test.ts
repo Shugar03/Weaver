@@ -254,4 +254,64 @@ describe("S47 StagePool", () => {
     const c3 = await p.acquire("c0", "PK_A", "j3");
     assert.equal(c3?.[0].endpoint, "10.0.0.6:1"); // s1 evictado aunque esté libre
   });
+
+  it("B1 grant: capability por entry viaja en el assign", async () => {
+    const p = new StagePool({
+      reportOf: (id) => [coord()].find((r) => r.instanceId === id),
+      stageWorkers: () => [
+        stg({ instanceId: "s1", endpoint: "10.0.0.5:1", layers: [0, 40] }),
+        stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [40, 80] }),
+      ],
+      probe: async () => true,
+      grant: async (jobId, inst, pk) => `tok:${jobId}:${inst}:${pk}`,
+    });
+    const chain = await p.acquire("c0", "PK_A", "j1");
+    assert.deepEqual(chain?.map((s) => s.token), ["tok:j1:s1:PK_A", "tok:j1:s2:PK_A"]);
+  });
+
+  it("B1 grant: worker que no responde → strike + cadena sin él", async () => {
+    const granted: string[] = [];
+    const p = new StagePool({
+      reportOf: (id) => [coord()].find((r) => r.instanceId === id),
+      stageWorkers: () => [
+        // s-mudo es más rápido (gana el sort) pero no mintea — el pool lo salta
+        stg({ instanceId: "s-mudo", endpoint: "10.0.0.9:1", layers: [0, 40], rttMs: 10 }),
+        stg({ instanceId: "s-bueno", endpoint: "10.0.0.5:1", layers: [0, 40], rttMs: 50 }),
+        stg({ instanceId: "s-fin", endpoint: "10.0.0.6:1", layers: [40, 80] }),
+      ],
+      probe: async () => true,
+      grant: async (_j, inst) => {
+        granted.push(inst);
+        return inst === "s-mudo" ? undefined : `tok:${inst}`;
+      },
+    });
+    const chain = await p.acquire("c0", "PK_A", "j1");
+    assert.deepEqual(
+      chain?.map((s) => s.endpoint),
+      ["10.0.0.5:1", "10.0.0.6:1"],
+    );
+    // Segundo strike al mudo → evictado (grant-fail cuenta como falla de protocolo)
+    await p.acquire("c0", "PK_A", "j2");
+    p.release("j1");
+    p.release("j2");
+    assert.ok(granted.filter((g) => g === "s-mudo").length >= 2);
+  });
+
+  it("B1 grant en replace: el offer lleva token del spare; sin grant → null", async () => {
+    const workers = [
+      stg({ instanceId: "s1", endpoint: "10.0.0.5:1", layers: [0, 40] }),
+      stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [40, 80] }),
+      stg({ instanceId: "sp", endpoint: "10.0.0.7:1", layers: [0, 40] }),
+    ];
+    const p = new StagePool({
+      reportOf: (id) => [coord()].find((r) => r.instanceId === id),
+      stageWorkers: () => workers,
+      probe: async () => true,
+      grant: async (jobId, inst, pk) => `tok:${jobId}:${inst}:${pk}`,
+    });
+    await p.acquire("c0", "PK_A", "j1");
+    const rep = await p.replace("j1", "10.0.0.5:1", [0, 40]);
+    assert.equal(rep?.endpoint, "10.0.0.7:1");
+    assert.equal(rep?.token, "tok:j1:sp:PK_A");
+  });
 });

@@ -263,6 +263,40 @@ describe("S47 stage-federation: stage-worker + stages (spec 018)", () => {
     assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "h:1", blocks: [5, 5] })), null);
   });
 
+  it("B1: token viaja en assign.stages, offer, grant y stage.token", () => {
+    const tok = "ab".repeat(32);
+    // assign con capability por entry
+    const assign = decodeGateway(
+      JSON.stringify({
+        type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p",
+        stages: [{ endpoint: "10.0.0.5:50100", blocks: [0, 40], token: tok }],
+      }),
+    ) as { stages?: { token?: string }[] };
+    assert.equal(assign.stages?.[0].token, tok);
+    // token inválido dentro de stages → frame entero rechazado (fail closed)
+    assert.equal(
+      decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", stages: [{ endpoint: "h:1", blocks: [0, 2], token: 7 }] })),
+      null,
+    );
+    assert.equal(
+      decodeGateway(JSON.stringify({ type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p", stages: [{ endpoint: "h:1", blocks: [0, 2], token: "x".repeat(257) }] })),
+      null,
+    );
+    // offer con capability del reemplazo
+    const offer = decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "h:1", blocks: [0, 4], token: tok }));
+    assert.deepEqual(offer, { type: "stage.offer", jobId: "j1", endpoint: "h:1", blocks: [0, 4], token: tok });
+    assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", token: "x".repeat(257) })), null);
+    // grant gw→worker
+    const grant = decodeGateway(JSON.stringify({ type: "stage.grant", jobId: "j1", stageInstanceId: "s1", coordPubkey: "GPK" }));
+    assert.deepEqual(grant, { type: "stage.grant", jobId: "j1", stageInstanceId: "s1", coordPubkey: "GPK" });
+    assert.equal(decodeGateway(JSON.stringify({ type: "stage.grant", jobId: "j1", stageInstanceId: "s1" })), null); // coordPubkey requerido
+    // token worker→gw
+    const t = decode(JSON.stringify({ type: "stage.token", jobId: "j1", stageInstanceId: "s1", token: tok }));
+    assert.deepEqual(t, { type: "stage.token", jobId: "j1", stageInstanceId: "s1", token: tok });
+    assert.equal(decode(JSON.stringify({ type: "stage.token", jobId: "j1", stageInstanceId: "s1" })), null);
+    assert.equal(decode(JSON.stringify({ type: "stage.token", jobId: "j1", stageInstanceId: "s1", token: "x".repeat(257) })), null);
+  });
+
   it("job.done.stageSigs (A4): entradas firmables bien formadas; malas → filtradas", () => {
     const sig = "ab".repeat(64);
     const chain = "cd".repeat(32);

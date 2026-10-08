@@ -30,6 +30,8 @@ export {
   stageChainInit,
   stageChainStep,
   stageSigPreimage,
+  stageToken,
+  stageTokenOk,
   type CoordMsg,
   type StageMsg,
   type StageOpenMsg,

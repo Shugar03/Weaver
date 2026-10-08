@@ -9,6 +9,7 @@
 // sign() llega inyectado.
 import { createHash } from "node:crypto";
 import type { DaemonChannel, GatewayMsg, InstanceReport } from "@weaver/forge-net";
+import { stageToken } from "@weaver/forge-net";
 import type { ForgeExec, ImageExec } from "@weaver/forge-exec";
 import { commitProof, promptHashOf } from "@weaver/forge-exec";
 import { ollamaVramUsedGb, osIdleMs } from "./budgets.ts";
@@ -89,12 +90,12 @@ export type PooledFactory = {
 export type StageRequester = (
   dead: string,
   blocks: [number, number],
-) => Promise<{ endpoint?: string; blocks?: [number, number] }>;
+) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>;
 
 export type PipelineFactory = {
   (
     inst: DaemonInstance,
-    stages: { endpoint: string; blocks: [number, number] }[],
+    stages: { endpoint: string; blocks: [number, number]; token?: string }[],
     signal?: AbortSignal,
     requestStage?: StageRequester,
   ): Promise<ForgeExec>;
@@ -127,7 +128,11 @@ export class ForgeDaemon {
   private readonly running = new Map<string, AbortController>(); // jobId → cancel
   // stage.need en vuelo: jobId → resolver del offer. Uno por job (el heal
   // del pipeline es secuencial); el timeout resuelve vacío = "sin reemplazo".
-  private readonly stageNeeds = new Map<string, (o: { endpoint?: string; blocks?: [number, number] }) => void>();
+  private readonly stageNeeds = new Map<string, (o: { endpoint?: string; blocks?: [number, number]; token?: string }) => void>();
+  // B1 WAN auth: secret local para mintear capabilities de stage. Solo las
+  // instances stage-worker las sirven — sin secret no hay grant (el pool
+  // gateway-side lo trata como worker no confiable: strike, no lease).
+  private readonly stageSecret?: string;
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private unMsg: (() => void) | null = null;
   private unClose: (() => void) | null = null;
@@ -145,6 +150,7 @@ export class ForgeDaemon {
     pipelineFactory?: PipelineFactory;
     allowRpcPeers?: PeerAllowlist;
     allowStages?: PeerAllowlist;
+    stageSecret?: string;
   }) {
     this.channel = deps.channel;
     this.instances = new Map(deps.instances.map((i) => [i.instanceId, i]));
@@ -161,6 +167,7 @@ export class ForgeDaemon {
     this.pipelineFactory = deps.pipelineFactory;
     this.allowRpcPeers = deps.allowRpcPeers;
     this.allowStages = deps.allowStages;
+    this.stageSecret = deps.stageSecret;
   }
 
   start(): void {
@@ -330,10 +337,29 @@ export class ForgeDaemon {
       case "stage.offer": {
         // Respuesta al stage.need de un pipeline en vuelo — offer vacío =
         // "no hay reemplazo" (el exec falla honesto, no espera de más).
+        // token = capability B1 del reemplazo — el exec la presenta en open.
         this.stageNeeds.get(m.jobId)?.({
           ...(m.endpoint ? { endpoint: m.endpoint } : {}),
           ...(m.blocks ? { blocks: m.blocks } : {}),
+          ...(m.token ? { token: m.token } : {}),
         });
+        break;
+      }
+      case "stage.grant": {
+        // B1 WAN auth: el gateway pidió una capability para que SU
+        // coordinator autorizado abra sesión en MI stage-server. Minteo
+        // solo para instances stage-worker propias y solo si tengo secret —
+        // un grant por una instance ajena/no-stage no emite nada (el pool
+        // lo trata como worker no confiable, igual que un probe muerto).
+        const inst = this.instances.get(m.stageInstanceId);
+        if (this.stageSecret && inst?.capability === "stage-worker") {
+          this.channel.send({
+            type: "stage.token",
+            jobId: m.jobId,
+            stageInstanceId: m.stageInstanceId,
+            token: stageToken(this.stageSecret, m.jobId, m.coordPubkey),
+          });
+        }
         break;
       }
       default:
@@ -372,9 +398,9 @@ export class ForgeDaemon {
     jobId: string,
     dead: string,
     blocks: [number, number],
-  ): Promise<{ endpoint?: string; blocks?: [number, number] }> {
+  ): Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }> {
     return new Promise((res) => {
-      const resolve = (o: { endpoint?: string; blocks?: [number, number] }) => {
+      const resolve = (o: { endpoint?: string; blocks?: [number, number]; token?: string }) => {
         if (this.stageNeeds.get(jobId) === resolve) this.stageNeeds.delete(jobId);
         clearTimeout(t);
         res(o);

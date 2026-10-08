@@ -10,7 +10,7 @@
 //   la única autoridad de leases) → open nuevo → REPLAY de la historia
 //   cacheada → el job continúa donde quedó, sin reenviar el prompt.
 import type { ExecRequest, ForgeExec, StageSig, StreamChunk } from "@weaver/forge-exec";
-import { stageChainInit, stageChainStep, stageSigPreimage } from "@weaver/forge-net";
+import { stageChainInit, stageChainStep, stageSigPreimage, stageTokenOk } from "@weaver/forge-net";
 import type { StageDial, StageTransport } from "./stagetransport.ts";
 
 // Frontera de activación entre coordinator y stage.
@@ -53,14 +53,17 @@ export function httpFront(url: string): PipelineFront {
 
 // stage.need → stage.offer: el coordinator pide reemplazo al gateway por
 // endpoint muerto + tramo a cubrir. null en la respuesta = no hay — fail.
+// token = capability B1 del reemplazo (el pool la minteó via el daemon del
+// worker nuevo — sin ella el stage autorizado rechaza el open).
 export type StageRequester = (
   dead: string,
   blocks: [number, number],
-) => Promise<{ endpoint?: string; blocks?: [number, number] }>;
+) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>;
 
 type ChainEntry = {
   endpoint: string;
   blocks: [number, number];
+  token?: string;
   transport: StageTransport;
   sessionId: string;
   // Chain de activaciones de ESTA sesión (stageChainInit/Step): el stage lo
@@ -80,22 +83,26 @@ const withTimeout = <T>(p: Promise<T>, ms: number, what: string): Promise<T> =>
 export class PipelineExec implements ForgeExec {
   readonly forgeId: string;
   readonly model: string;
-  private readonly stages: { endpoint: string; blocks: [number, number] }[];
+  private readonly stages: { endpoint: string; blocks: [number, number]; token?: string }[];
   private readonly dial: StageDial;
   private readonly front: PipelineFront;
   private readonly requestStage?: StageRequester;
   private readonly stepTimeoutMs: number;
   private readonly maxTokens: number;
+  private readonly coordPubkey?: string;
 
   constructor(deps: {
     forgeId: string;
     model: string;
-    stages: { endpoint: string; blocks: [number, number] }[];
+    stages: { endpoint: string; blocks: [number, number]; token?: string }[];
     dial: StageDial;
     front: PipelineFront;
     requestStage?: StageRequester;
     stepTimeoutMs?: number;
     maxTokens?: number;
+    // B1 WAN auth: pubkey del coordinator — va en stage.open para que el
+    // token minteado (HMAC secret, jobId|coordPubkey) ate a ESTA identidad.
+    coordPubkey?: string;
   }) {
     this.forgeId = deps.forgeId;
     this.model = deps.model;
@@ -105,6 +112,7 @@ export class PipelineExec implements ForgeExec {
     this.requestStage = deps.requestStage;
     this.stepTimeoutMs = deps.stepTimeoutMs ?? STEP_TIMEOUT_MS;
     this.maxTokens = deps.maxTokens ?? 512;
+    this.coordPubkey = deps.coordPubkey;
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
@@ -112,6 +120,7 @@ export class PipelineExec implements ForgeExec {
     const chain: ChainEntry[] = this.stages.map((s, i) => ({
       endpoint: s.endpoint,
       blocks: s.blocks,
+      token: s.token,
       transport: this.dial(s.endpoint),
       sessionId: `${jobId}:s${i}`,
       chain: "",
@@ -136,7 +145,15 @@ export class PipelineExec implements ForgeExec {
     try {
       for (const st of chain) {
         await withTimeout(
-          st.transport.open({ jobId, sessionId: st.sessionId, model: req.model, blocks: st.blocks, kvLenHint: 1024 }),
+          st.transport.open({
+            jobId,
+            sessionId: st.sessionId,
+            model: req.model,
+            blocks: st.blocks,
+            kvLenHint: 1024,
+            ...(st.token ? { token: st.token } : {}),
+            ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}),
+          }),
           this.stepTimeoutMs,
           `stage ${st.endpoint} open`,
         );
@@ -220,13 +237,27 @@ export class PipelineExec implements ForgeExec {
       const t = this.dial(offer.endpoint);
       const sessionId = `${st.sessionId}r${seq[i]}`;
       await withTimeout(
-        t.open({ jobId, sessionId, model: req.model, blocks: offer.blocks }),
+        t.open({
+          jobId,
+          sessionId,
+          model: req.model,
+          blocks: offer.blocks,
+          ...(offer.token ? { token: offer.token } : {}),
+          ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}),
+        }),
         this.stepTimeoutMs,
         `stage ${offer.endpoint} open`,
       );
       // Swap en la cadena — chain nuevo por sesión (el replay lo repuebla
       // idéntico al que el stage computa server-side).
-      const next: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, transport: t, sessionId, chain: stageChainInit(sessionId, offer.blocks) };
+      const next: ChainEntry = {
+        endpoint: offer.endpoint,
+        blocks: offer.blocks,
+        token: offer.token,
+        transport: t,
+        sessionId,
+        chain: stageChainInit(sessionId, offer.blocks),
+      };
       opened.add(sessionId);
       for (const [n, past] of sent[i].entries()) {
         await doStep(t, next, past, n).then(
@@ -287,13 +318,19 @@ export function simStageCompute(
   blocks: [number, number],
   tag = "s0",
   sign?: (preimage: Buffer) => Promise<string> | string,
+  // B1 WAN auth: con secret seteado, open exige token HMAC válido —
+  // cualquiera sin capability no abre sesión ni toca KV (fail closed).
+  secret?: string,
 ) {
   const sess = new Map<string, { blocks: [number, number]; jobId: string; chain: string; seqs: number[] }>();
   // Log de TODOS los seqs recibidos — sobrevive al close (el KV muere con la
   // sesión, pero la evidencia del replay queda para los tests/e2e).
   const seen: { sessionId: string; seq: number }[] = [];
   return {
-    open(s: { sessionId: string; jobId: string; blocks: [number, number] }) {
+    open(s: { sessionId: string; jobId: string; blocks: [number, number]; token?: string; coordPubkey?: string }) {
+      if (secret && (!s.coordPubkey || !s.token || !stageTokenOk(secret, s.jobId, s.coordPubkey, s.token))) {
+        throw new Error("stage.open sin capability válida");
+      }
       if (s.blocks[0] < blocks[0] || s.blocks[1] > blocks[1]) {
         throw new Error(`blocks [${s.blocks}] fuera de mi rango [${blocks}]`);
       }

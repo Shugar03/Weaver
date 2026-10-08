@@ -103,6 +103,29 @@ export function attachForgeWS(
     reportOf: (i) => deps.registry.reportOf(i),
     stageWorkers: () => deps.registry.stageWorkers(),
     ...(deps.stageProbe ? { probe: deps.stageProbe } : {}),
+    // B1 WAN auth: capability token por lease — el gateway le pide al
+    // daemon DEL WORKER (canal autenticado) un HMAC ligado a
+    // (jobId, coordPubkey). Lo porta opaco en assign/offer — jamás lo
+    // fabrica. Worker sin respuesta en 5s = no confiable → el pool lo
+    // strikea y re-arma la cadena sin él.
+    grant: (jobId, stageInstanceId, coordPubkey) =>
+      new Promise<string | undefined>((res) => {
+        const owner = instanceOwner.get(stageInstanceId);
+        if (!owner) return res(undefined);
+        const t = setTimeout(() => {
+          off();
+          res(undefined);
+        }, 5_000);
+        t.unref?.();
+        const off = owner.onMessage((m) => {
+          if (m.type === "stage.token" && m.jobId === jobId && m.stageInstanceId === stageInstanceId) {
+            clearTimeout(t);
+            off();
+            res(m.token);
+          }
+        });
+        owner.send({ type: "stage.grant", jobId, stageInstanceId, coordPubkey });
+      }),
   });
   // Reintento de attestation para coordinators pooled: el primer attest
   // puede fallar por "pool insuficiente" — condición TRANSIENTE (los workers
@@ -167,7 +190,7 @@ export function attachForgeWS(
           session.send({
             type: "stage.offer",
             jobId: m.jobId,
-            ...(r ? { endpoint: r.endpoint, blocks: r.blocks } : {}),
+            ...(r ? { endpoint: r.endpoint, blocks: r.blocks, ...(r.token ? { token: r.token } : {}) } : {}),
           }),
         )
         .catch(() => session.send({ type: "stage.offer", jobId: m.jobId }));
@@ -186,15 +209,21 @@ export function attachForgeWS(
   function syncExecs(session: ForgeSession): void {
     const pk = session.pubkey;
     if (!pk) return;
+    // stage/rpc-workers NO son ForgeViews (recursos del pool, fuera del
+    // routing) — pero el B1 grant los alcanza por canal: registrar su owner
+    // acá o stage.grant nunca llega al daemon que mintea.
+    for (const w of [...deps.registry.stageWorkers(), ...deps.registry.workers()]) {
+      if (w.forgePubkey === pk) instanceOwner.set(w.instanceId, session);
+    }
     for (const v of deps.registry.views()) {
       if (v.forgePubkey !== pk) continue;
+      instanceOwner.set(v.forgeId, session);
       if (v.capability === "image") {
         if (!remoteImageExecs.has(v.forgeId)) {
           const ex = new TrackedImageExec(
             new RemoteImageExec({ channel: session, instanceId: v.forgeId, model: v.model }),
           );
           remoteImageExecs.set(v.forgeId, ex);
-          instanceOwner.set(v.forgeId, session);
           attestImage(ex, v);
         }
       } else if (v.capability === "text") {
@@ -212,7 +241,6 @@ export function attachForgeWS(
             }),
           );
           remoteExecs.set(v.forgeId, ex);
-          instanceOwner.set(v.forgeId, session);
           attestText(ex, v);
           lastAttest.set(v.forgeId, Date.now());
         } else if (!v.attested && Date.now() - (lastAttest.get(v.forgeId) ?? 0) > ATTEST_RETRY_MS) {

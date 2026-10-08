@@ -441,6 +441,16 @@ siguiente paso: weaver-forge up`);
   // alive real). --stage-ext: los endpoints los sirve un proceso EXTERNO
   // (tools/stage_runner.py con pesos reales) — el daemon solo heartbeat+probe.
   const stageExt = process.argv.includes("--stage-ext");
+  // B1 WAN auth: secret compartido daemon↔stage-server para capabilities
+  // (stage.grant → stage.token → stage.open verificado). El MISMO valor va
+  // al runner python via --stage-secret o WEAVER_STAGE_SECRET.
+  const stageSecret = arg("--stage-secret") ?? process.env.WEAVER_STAGE_SECRET;
+  if (!stageSecret && cfg.instances.some((i) => i.capability === "stage-worker")) {
+    // WAN: sin secret el daemon no mintea ante stage.grant → el pool lo
+    // strikea en cada acquire → nunca es prestado. Fail closed, pero sin
+    // este warning el operador solo vería "ningún job llega".
+    console.warn("⚠ stage-worker sin --stage-secret/WEAVER_STAGE_SECRET — el gateway no podrá leasearlo (grant timeout)");
+  }
   const stageServers = new Map<string, StageServer>();
   for (const c of cfg.instances) {
     if (c.capability !== "stage-worker" || !c.stage?.endpoint || stageExt) continue;
@@ -453,11 +463,11 @@ siguiente paso: weaver-forge up`);
       const srv = startStageServer({
         host: m[1].replace(/^\[|\]$/g, ""),
         port: Number(m[2]),
-        compute: simStageCompute(c.stage.layers, c.instanceId.replace(/\W/g, ""), async (h) => (await sign(h)).toString("hex")),
+        compute: simStageCompute(c.stage.layers, c.instanceId.replace(/\W/g, ""), async (h) => (await sign(h)).toString("hex"), stageSecret),
       });
       await srv.ready;
       stageServers.set(c.instanceId, srv);
-      console.log(`stage-server ${c.instanceId} [${c.stage.layers}] → ${c.stage.endpoint} (substrate: sim)`);
+      console.log(`stage-server ${c.instanceId} [${c.stage.layers}] → ${c.stage.endpoint} (substrate: sim${stageSecret ? ", auth" : ""})`);
     } catch (e) {
       console.warn(`stage-server ${c.instanceId} no bindeó — heartbeateo muerto:`, e);
     }
@@ -474,7 +484,7 @@ siguiente paso: weaver-forge up`);
   // simulado — el wire es prod, el cómputo es juguete).
   const edgeUrl = arg("--edge");
   const pipelineFactory = cfg.instances.some((i) => i.pipeline)
-    ? (inst: DaemonInstance, stages: { endpoint: string; blocks: [number, number] }[], _signal?: AbortSignal, requestStage?: (dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number] }>) =>
+    ? (inst: DaemonInstance, stages: { endpoint: string; blocks: [number, number]; token?: string }[], _signal?: AbortSignal, requestStage?: (dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>) =>
         Promise.resolve(
           new PipelineExec({
             forgeId: inst.instanceId,
@@ -482,6 +492,7 @@ siguiente paso: weaver-forge up`);
             stages,
             dial: tcpStageDial,
             front: edgeUrl ? httpFront(edgeUrl) : simFront(),
+            coordPubkey: cfg.pubkey, // B1: el token minteado ata a ESTA identidad
             ...(requestStage ? { requestStage } : {}),
           }),
         )
@@ -523,6 +534,7 @@ siguiente paso: weaver-forge up`);
         ...(contractId ? { claim: makeClaimer(cfg, contractId) } : {}),
         ...(pooledFactory ? { pooledFactory } : {}),
         ...(pipelineFactory ? { pipelineFactory } : {}),
+        ...(stageSecret ? { stageSecret } : {}),
         // Allowlist operador de rpcPeers — el gateway propone, el forge
         // dispone: solo diala hosts que el operador declaró en init.
         ...(cfg.rpcAllow?.length

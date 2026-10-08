@@ -9,6 +9,11 @@ import { createHash } from "node:crypto";
 // ---------- coordinator → stage ----------
 
 // Abre sesión: el stage reserva KV para su rango (server-side, Algo 2).
+// B1 (WAN auth): `token` = capability minteada por el daemon DEL WORKER —
+// HMAC(secret, jobId:coordPubkey) portado opaco por el gateway. Sin token
+// válido un endpoint stage en Internet es atacable por cualquiera (sesiones
+// gratis / inyección de activaciones). `coordPubkey` liga el token al
+// coordinator que lo presenta — reutilizarlo con otra identidad no sirve.
 export type StageOpenMsg = {
   type: "stage.open";
   jobId: string;
@@ -16,6 +21,8 @@ export type StageOpenMsg = {
   model: string;
   blocks: [number, number]; // rango contiguo que DEBE coincidir con el suyo
   kvLenHint?: number; // tokens esperados — sizing de KV server-side
+  token?: string;
+  coordPubkey?: string;
 };
 // Un paso de pipeline: activaciones in → el stage corre sus bloques → out.
 // payload = hidden states serializados (b64 en MVP; binario/quant = fase B).
@@ -87,6 +94,8 @@ export function decodeCoord(raw: string): CoordMsg | null {
     case "stage.open":
       if (!isId(m.jobId) || !isId(m.sessionId) || !isId(m.model) || !isBlocks(m.blocks)) return null;
       if (m.kvLenHint !== undefined && (!Number.isInteger(m.kvLenHint) || (m.kvLenHint as number) < 0 || (m.kvLenHint as number) > 1_000_000)) return null;
+      if (m.token !== undefined && (!isStr(m.token) || m.token.length > 256)) return null;
+      if (m.coordPubkey !== undefined && (!isStr(m.coordPubkey) || m.coordPubkey.length > 128)) return null;
       return {
         type: "stage.open",
         jobId: m.jobId,
@@ -94,6 +103,8 @@ export function decodeCoord(raw: string): CoordMsg | null {
         model: m.model,
         blocks: m.blocks,
         ...(isNum(m.kvLenHint) ? { kvLenHint: m.kvLenHint } : {}),
+        ...(isStr(m.token) ? { token: m.token } : {}),
+        ...(isStr(m.coordPubkey) ? { coordPubkey: m.coordPubkey } : {}),
       };
     case "stage.step":
       if (!isId(m.sessionId) || !Number.isInteger(m.seq) || (m.seq as number) < 0 || (m.seq as number) > MAX_SEQ) return null;
@@ -154,3 +165,19 @@ export const stageChainStep = (chain: string, seq: number, inB64: string, outB64
 // Lo que el stage firma y el gateway recomputa (Buffer — ed25519/secp256k1).
 export const stageSigPreimage = (jobId: string, sessionId: string, chain: string): Buffer =>
   createHash("sha256").update(`${jobId}:${sessionId}:${chain}`, "utf8").digest();
+
+// ---------- capability token (B1 WAN auth) ----------
+// HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea al
+// recibir stage.grant del gateway; el runner lo verifica con el MISMO
+// secret local (WEAVER_STAGE_SECRET). El gateway solo porta el string —
+// nunca puede forjarlo ni reescribirlo (no conoce el secret).
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+export const stageToken = (secret: string, jobId: string, coordPubkey: string): string =>
+  createHmac("sha256", secret).update(`${jobId}|${coordPubkey}`, "utf8").digest("hex");
+
+export const stageTokenOk = (secret: string, jobId: string, coordPubkey: string, token: string): boolean => {
+  const a = Buffer.from(token);
+  const b = Buffer.from(stageToken(secret, jobId, coordPubkey));
+  return a.length === b.length && timingSafeEqual(a, b);
+};

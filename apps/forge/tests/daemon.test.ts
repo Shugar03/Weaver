@@ -862,3 +862,113 @@ test("S47 heal: stage.offer sin need pendiente → ignorado (no throw)", async (
   await new Promise((r) => setTimeout(r, 20));
   d.stop(); // sin crash = ok
 });
+
+// ---------- B1 WAN auth: stage.grant → stage.token ----------
+
+const stageWorkerInst = (instanceId = "stg0"): DaemonInstance => ({
+  instanceId,
+  model: "qwen-235b",
+  capability: "stage-worker",
+  stage: { layers: [0, 40], endpoint: "10.0.0.5:50100" },
+  maxConcurrent: 1,
+  loadTimeMs: 0,
+});
+
+test("B1 stage.grant → stage.token minteado HMAC(secret, jobId|coordPubkey)", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [stageWorkerInst()],
+    sign,
+    heartbeatMs: 60000,
+    stageSecret: "s3cr3t",
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "stage.grant", jobId: "j9", stageInstanceId: "stg0", coordPubkey: "GCOORD" });
+  await new Promise((r) => setTimeout(r, 20));
+  const tok = ch.last("stage.token")!;
+  assert.equal(tok.jobId, "j9");
+  assert.equal(tok.stageInstanceId, "stg0");
+  // El token es el HMAC canónico — verificable con la fórmula pública.
+  const { stageToken } = await import("@weaver/forge-net");
+  assert.equal(tok.token, stageToken("s3cr3t", "j9", "GCOORD"));
+  // Distinto coord → distinto token (la capability ata al coordinator).
+  ch.inject({ type: "stage.grant", jobId: "j9", stageInstanceId: "stg0", coordPubkey: "GOTRO" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.notEqual(ch.last("stage.token")!.token, tok.token);
+  d.stop();
+});
+
+test("B1 stage.grant sin secret o instance no-stage → silencio (el pool da timeout)", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [stageWorkerInst(), inst(new FakeForgeExec({ forgeId: "txt0" }))],
+    sign,
+    heartbeatMs: 60000,
+    // sin stageSecret
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "stage.grant", jobId: "j9", stageInstanceId: "stg0", coordPubkey: "G" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ch.last("stage.token"), undefined); // sin secret no mintea
+  d.stop();
+
+  // Con secret pero instance ajena/no-stage → tampoco mintea.
+  const ch2 = new FakeChannel();
+  const d2 = new ForgeDaemon({
+    channel: ch2,
+    instances: [inst(new FakeForgeExec({ forgeId: "txt0" }))],
+    sign,
+    heartbeatMs: 60000,
+    stageSecret: "s3cr3t",
+  });
+  d2.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch2.inject({ type: "stage.grant", jobId: "j9", stageInstanceId: "txt0", coordPubkey: "G" });
+  ch2.inject({ type: "stage.grant", jobId: "j9", stageInstanceId: "noexiste", coordPubkey: "G" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ch2.last("stage.token"), undefined);
+  d2.stop();
+});
+
+test("B1 heal: stage.offer con token → el exec lo recibe en el reemplazo", async () => {
+  const ch = new FakeChannel();
+  const exec: ForgeExec = {
+    forgeId: "c0",
+    model: "qwen-235b",
+    async *execute() {
+      const offer = await captured!("10.0.0.5:50100", [0, 40]);
+      yield { token: `tok:${offer?.token ?? "none"}`, done: false };
+      yield { token: "", done: true };
+    },
+  };
+  let captured: ((dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>) | undefined;
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(exec, { pipeline: { blocks: 80 } })],
+    sign,
+    heartbeatMs: 60000,
+    pipelineFactory: (_i, _stages, _signal, requestStage) => {
+      captured = requestStage;
+      return Promise.resolve(exec);
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({
+    type: "job.assign",
+    jobId: "jT",
+    instanceId: "c0",
+    model: "qwen-235b",
+    prompt: "p",
+    stages: [{ endpoint: "10.0.0.5:50100", blocks: [0, 40], token: "tok-inicial" }],
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  ch.inject({ type: "stage.offer", jobId: "jT", endpoint: "10.0.0.9:50100", blocks: [0, 40], token: "tok-spare" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.match(ch.last("job.chunk")!.token, /tok:tok-spare/);
+  d.stop();
+});
