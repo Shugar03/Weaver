@@ -289,6 +289,19 @@ type StageRoute = {
   outCache: Map<number, { shape: [number, number]; dtype: "f16" | "f32" | "q8"; payload: string }>;
   seqs: Set<number>; // dedup — un seq reenviado no re-corre (KV doble-append)
   fwdSock?: Socket; // socket saliente al next (lazy-connect)
+  // Cadena de ops de la sesión: step/fwd/absorb/replay/close se SERIALIZAN
+  // por sesión aunque lleguen por sockets distintos — el dispatch es
+  // `void handle` y sin esto dos absorbs (o un absorb + un replay que lee
+  // el outCache) pueden interleavese y corromper el KV (B3-cascada).
+  busy: Promise<void>;
+};
+
+// Encola una op sobre la sesión: el error del anterior no rompe la cadena
+// y el caller recibe el resultado real.
+const enqueue = <T>(route: StageRoute, fn: () => Promise<T> | T): Promise<T> => {
+  const p = route.busy.then(fn);
+  route.busy = p.then(() => {}, () => {});
+  return p;
 };
 
 export type StageRouter = {
@@ -375,12 +388,19 @@ export function createStageSocket(
   // Post-compute: el output va al next (fwd directo + report al dueño) o
   // al dueño (stage.out). "Routed-away" ⇒ el dueño recibe report por seq —
   // un mensaje por paso por sesión, siempre: blame + progreso anclados.
-  function deliver(route: StageRoute, sessionId: string, seq: number, out: { shape: [number, number]; dtype: "f16" | "f32" | "q8"; payload: string; sig?: string }): void {
-    route.outCache.set(seq, { shape: out.shape, dtype: out.dtype, payload: out.payload });
+  // El cache de outs es la fuente del heal (replay) — lo pobla TODO cómputo
+  // de la sesión, incluidos los absorb: un stage curado por cascada debe
+  // poder replayar SU historia al siguiente reemplazo (B3 multi-fail).
+  function cacheOut(route: StageRoute, seq: number, out: { shape: [number, number]; dtype: "f16" | "f32" | "q8"; payload: string }): void {
+    route.outCache.set(seq, out);
     if (route.outCache.size > OUT_CACHE_MAX) {
       const oldest = route.outCache.keys().next().value;
       if (oldest !== undefined) route.outCache.delete(oldest);
     }
+  }
+
+  function deliver(route: StageRoute, sessionId: string, seq: number, out: { shape: [number, number]; dtype: "f16" | "f32" | "q8"; payload: string; sig?: string }): void {
+    cacheOut(route, seq, { shape: out.shape, dtype: out.dtype, payload: out.payload });
     if (route.next) {
       try {
         if (!route.fwdSock || route.fwdSock.destroyed) {
@@ -459,6 +479,7 @@ export function createStageSocket(
             ...(msg.next ? { next: msg.next } : {}),
             outCache: new Map(),
             seqs: new Set(),
+            busy: Promise.resolve(),
           });
           send({
             type: "stage.ack",
@@ -469,7 +490,7 @@ export function createStageSocket(
         case "stage.step": {
           // Solo el dueño inyecta por step (modo relay/directo: coord→s1).
           if (!route || route.owner !== sock) throw new Error("step: sesión ajena o inexistente");
-          await runStep(route, msg);
+          await enqueue(route, () => runStep(route, msg));
           break;
         }
         case "stage.fwd": {
@@ -480,32 +501,42 @@ export function createStageSocket(
           if ((msg.token ?? undefined) !== route.token || (msg.coordPubkey ?? undefined) !== route.coordPubkey) {
             throw new Error("fwd: credenciales no coinciden con la sesión");
           }
-          if (msg.absorb) {
-            if (route.seqs.has(msg.seq)) break;
-            await compute.step(msg);
-            route.seqs.add(msg.seq);
-            // absorb: KV reconstruido, nada se propaga (los vecinos ya lo
-            // procesaron — el heal no inunda la cadena con duplicados).
-            break;
-          }
-          await runStep(route, msg);
+          await enqueue(route, async () => {
+            if (msg.absorb) {
+              if (route.seqs.has(msg.seq)) return;
+              const r = await compute.step(msg);
+              route.seqs.add(msg.seq);
+              // absorb: KV reconstruido, nada se propaga (los vecinos ya lo
+              // procesaron — el heal no inunda la cadena con duplicados).
+              // Pero el out SÍ va al cache: en una cascada multi-fail este
+              // stage curado es la fuente del replay para el siguiente
+              // reemplazo — sin cache el heal solo cubre un tramo.
+              cacheOut(route, msg.seq, { shape: msg.shape, dtype: msg.dtype, payload: r.payload });
+              return;
+            }
+            await runStep(route, msg);
+          });
           break;
         }
         case "stage.replay": {
           if (!route || route.owner !== sock) throw new Error("replay: sesión ajena o inexistente");
-          const seqs = [...route.outCache.keys()].filter((n) => msg.uptoSeq === undefined || n <= msg.uptoSeq).sort((a, b) => a - b);
-          await new Promise<void>((res, rej) => {
-            const sock2 = router.dial(msg.target.endpoint);
-            sock2.once("connect", () => {
-              for (const n of seqs) {
-                const o = route.outCache.get(n);
-                if (o) sock2.write(encodeStage(fwdFrame(msg.target, { seq: n, ...o }, true)) + "\n");
-              }
-              sock2.end(() => res()); // flush antes de cerrar
+          // Enqueued tras los steps/absorb pendientes — el cache que se
+          // reenvía incluye TODO lo ya recibido (serialización por sesión).
+          await enqueue(route, async () => {
+            const seqs = [...route.outCache.keys()].filter((n) => msg.uptoSeq === undefined || n <= msg.uptoSeq).sort((a, b) => a - b);
+            await new Promise<void>((res, rej) => {
+              const sock2 = router.dial(msg.target.endpoint);
+              sock2.once("connect", () => {
+                for (const n of seqs) {
+                  const o = route.outCache.get(n);
+                  if (o) sock2.write(encodeStage(fwdFrame(msg.target, { seq: n, ...o }, true)) + "\n");
+                }
+                sock2.end(() => res()); // flush antes de cerrar
+              });
+              sock2.once("error", (e) => rej(e));
             });
-            sock2.once("error", (e) => rej(e));
+            send({ type: "stage.ack", sessionId: msg.sessionId });
           });
-          send({ type: "stage.ack", sessionId: msg.sessionId });
           break;
         }
         case "stage.repoint": {
@@ -519,8 +550,10 @@ export function createStageSocket(
         }
         case "stage.close": {
           owned.delete(msg.sessionId);
+          // Espera los steps pendientes de la sesión antes de cerrar — la
+          // firma/chains deben sellar el estado FINAL, no uno a medio paso.
+          const r = route ? await enqueue(route, () => compute.close(msg.sessionId)) : await compute.close(msg.sessionId);
           router.release(msg.sessionId);
-          const r = await compute.close(msg.sessionId);
           send({
             type: "stage.ack",
             sessionId: msg.sessionId,

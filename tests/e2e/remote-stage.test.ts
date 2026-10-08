@@ -154,6 +154,51 @@ describe("S47 stage-federation wire e2e", () => {
     assert.equal(a.outChain, b.inChain, "frontera rota: out_[0,40] ≠ in_[40,80]");
   });
 
+  it("B3-cascada e2e: dos stages ADYACENTES mueren mid-job — el heal reemplaza el bloque y la historia baja por los spares", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    // Cadena de 3: s2+s3 (adyacentes) caen juntos mid-job. s1 vivo es la
+    // fuente de historia; sp2/sp3 son los spares de cada tramo.
+    const s1 = await upStageDaemon(stack, "s1", [0, 32], undefined, undefined, { stepDelayMs: 20 });
+    const s2 = await upStageDaemon(stack, "s2", [32, 64]);
+    const s3 = await upStageDaemon(stack, "s3", [64, 80]);
+    const sp2 = await upStageDaemon(stack, "sp2", [32, 64]);
+    const sp3 = await upStageDaemon(stack, "sp3", [64, 80]);
+    daemons.push(s1.daemon, s2.daemon, s3.daemon, sp2.daemon, sp3.daemon);
+    servers.push(s1.server, s2.server, s3.server, sp2.server, sp3.server);
+    await untilStageWorkers(stack, 5);
+    const c = await upPipelineDaemon(stack, "c0", 80, undefined, undefined, undefined, "direct");
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 15_000);
+
+    const res = await chatRequest(stack.url, "a b c d e f g h", { allowPooled: true });
+    assert.equal(res.status, 200);
+    let acc = await readUntil(res, "", '"a ', 15_000);
+    // Cascada real: ambos caen en la MISMA ventana — el coordinator debe
+    // detectar el bloque contiguo [1..2] y curarlo en una sola pasada.
+    s2.server.close();
+    s3.server.close();
+    acc = await readUntil(res, acc, "[DONE]", 20_000);
+    assert.match(acc, /\[DONE\]/);
+    assert.ok(acc.includes('"h "') || acc.includes('"h"'));
+    // Ambos spares recibieron replay absorb con la historia completa —
+    // sp2 desde el cache de s1, sp3 desde el cache de sp2 (cascada real:
+    // absorb pobla el outCache del curado → puede alimentar al siguiente).
+    for (const sp of [sp2, sp3]) {
+      const seqs = sp.compute.seenSeqs().map((s) => s.seq).sort((x, y) => x - y);
+      assert.ok(seqs.length >= 2 && seqs[0] === 0, `spare sin historia absorbida — ${sp.endpoint}: ${JSON.stringify(seqs)}`);
+    }
+    // Atribución completa: firman s1 (vivo) + los DOS reemplazos; las
+    // fronteras curadas verifican out_K == in_K+1 en el receipt.
+    const sigLine = acc.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1);
+    assert.ok(sigLine, "receipt sin stageSigs — el boundary check debió pasar tras la cascada");
+    const sigs = JSON.parse(sigLine.slice(5)).weaver_proof.stageSigs;
+    assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s1.endpoint, sp2.endpoint, sp3.endpoint].sort());
+    const byStart = new Map(sigs.map((s: { blocks: number[] }) => [s.blocks[0], s]));
+    assert.equal(byStart.get(0).outChain, byStart.get(32).inChain, "frontera s1→sp2 rota");
+    assert.equal(byStart.get(32).outChain, byStart.get(64).inChain, "frontera sp2→sp3 rota");
+  });
+
   it("stage muere sin spare → stage.offer vacío → job falla honesto mid-stream", async () => {
     const stack = await startStack();
     stacks.push(stack);

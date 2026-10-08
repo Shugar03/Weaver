@@ -595,17 +595,19 @@ export class PipelineExec implements ForgeExec {
     }
   }
 
-  // Heal en modo directo: el stage K muere mid-token — el coordinator no
-  // tiene el historial de K (nunca lo vio), el CACHE de K-1 sí (Petals
-  // dual-cache corrido al stage). Secuencia:
-  //   1. requestStage → reemplazo K' (mismo tramo, capability fresca).
-  //   2. open K' con el next original de K.
-  //   3. replay: K-1 reenvía sus outputs cacheados (los inputs de K) a K'
-  //      como absorb-fwd — KV reconstruido sin inundar la cadena.
-  //      (K=0: sin previo — el coordinator replaya `injected` él mismo.)
-  //   4. repoint: K-1 redirige su next a K' (el muerto sale del data plane).
-  //   5. re-inyectar seq actual en s1: la onda dedup-redeliver atraviesa los
-  //      stages sanos hasta K', que computa de verdad.
+  // Heal en modo directo: uno o más stages ADYACENTES mueren mid-token —
+  // el coordinator no tiene su historial (nunca lo vio), el CACHE del
+  // último vivo sí (Petals dual-cache corrido al stage). Cascada:
+  //   1. Detectar el set contiguo muerto [lo..hi] alrededor del culpable.
+  //   2. requestStage por cada tramo — sin cobertura completa, fail honesto.
+  //   3. Open de reemplazos en orden DESCENDENTE: el next de repl_i es
+  //      repl_{i+1} (o el vivo chain[hi+1]) — debe existir antes.
+  //   4. Replay en cascada ascendente: chain[lo-1] (o `injected` si lo=0)
+  //      alimenta a repl_lo por absorb; cada reemplazo —cuyo absorb pobló
+  //      su outCache— replaya al siguiente hasta repl_hi.
+  //   5. repoint: chain[lo-1] redirige su next a repl_lo.
+  //   6. Re-inyectar seq en s1 (o en repl_0 si lo=0): la onda
+  //      dedup-redeliver atraviesa los sanos hasta el bloque curado.
   private async healDirect(
     chain: ChainEntry[],
     seq: number,
@@ -618,81 +620,150 @@ export class PipelineExec implements ForgeExec {
     opened: Set<string>,
   ): Promise<void> {
     if (!this.requestStage) throw new Error("stage murió y no hay requestStage — sin heal");
+    const credsOf = (e: { token?: string }) =>
+      ({ ...(e.token ? { token: e.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) });
     // Culprit — evidencia en orden de precisión:
     //   1. blame explícito: un stage vivo reportó que su NEXT murió (el
     //      fail lleva sessionId del emisor — sin blame culparíamos al vivo).
     //   2. transport coordinator↔stage muerto (evidencia dura).
     //   3. fail propio (sessionId del emisor ES el culpable).
     //   4. menor progreso reportado (straggler cortó la cadena).
-    let k = fail.cur?.blame ? chain.findIndex((st) => st.sessionId === fail.cur!.blame) : -1;
-    if (k < 0) k = chain.findIndex((st) => !st.transport.alive);
-    if (k < 0 && fail.cur) k = chain.findIndex((st) => st.sessionId === fail.cur!.sessionId);
-    if (k < 0) {
+    let c = fail.cur?.blame ? chain.findIndex((st) => st.sessionId === fail.cur!.blame) : -1;
+    if (c < 0) c = chain.findIndex((st) => !st.transport.alive);
+    if (c < 0 && fail.cur) c = chain.findIndex((st) => st.sessionId === fail.cur!.sessionId);
+    if (c < 0) {
       let minSeq = Infinity;
       for (const [i, st] of chain.entries()) {
         const r = lastReport.get(st.sessionId) ?? -1;
         if (r < minSeq) {
           minSeq = r;
-          k = i;
+          c = i;
         }
       }
     }
-    if (k < 0) k = 0;
-    const dead = chain[k];
-    dead.transport.dispose();
-    const offer = await this.requestStage(dead.endpoint, dead.blocks).catch(() => null);
-    if (!offer?.endpoint || !offer.blocks) {
-      throw new Error(`stage ${dead.endpoint} murió sin reemplazo (heal directo)`);
-    }
-    const t = this.dial(offer.endpoint);
-    const sessionId = `${dead.sessionId}r${seq}`;
-    const nextHop = k < chain.length - 1
-      ? { endpoint: chain[k + 1].endpoint, sessionId: chain[k + 1].sessionId, ...(chain[k + 1].token ? { token: chain[k + 1].token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) }
-      : undefined;
-    await withTimeout(
-      t.open({
-        jobId,
-        sessionId,
-        model: req.model,
-        blocks: offer.blocks,
-        ...(offer.token ? { token: offer.token } : {}),
-        ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}),
-        ...(nextHop ? { next: nextHop } : {}),
-      }),
-      this.stepTimeoutMs,
-      `stage ${offer.endpoint} open`,
-    );
-    const repl: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, token: offer.token, transport: t, sessionId, chain: stageHalfInit(jobId), inChain: stageHalfInit(jobId), outChain: stageHalfInit(jobId) };
-    watch(t); // el transport del reemplazo entra al mismo watch de reports/fails
-    // Replay del historial: el previo tiene los outs (los inputs del muerto).
-    if (k > 0) {
-      const prev = chain[k - 1];
-      await withTimeout(
-        prev.transport.replay(prev.sessionId, seq - 1, { endpoint: repl.endpoint, sessionId, ...(repl.token ? { token: repl.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) }),
-        this.stepTimeoutMs,
-        `replay ${prev.endpoint} → ${repl.endpoint}`,
-      );
-      await withTimeout(
-        prev.transport.repoint(prev.sessionId, { endpoint: repl.endpoint, sessionId, ...(repl.token ? { token: repl.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) }),
-        this.stepTimeoutMs,
-        `repoint ${prev.endpoint} → ${repl.endpoint}`,
-      );
-    } else {
-      // s1 muerto: el coordinator tiene `injected` — replay absorb propio.
-      for (const [n, h] of injected.slice(0, seq).entries()) {
-        t.injectFwd({ sessionId, seq: n, shape: h.shape, dtype: "f16", payload: h.payload, ...(repl.token ? { token: repl.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}), absorb: true });
+    if (c < 0) c = 0;
+    // B3-cascada con reintento: el set de muertos es el bloque CONTIGUO al
+    // culpable — un muerto no puede replayar su cache, la fuente es el
+    // último vivo previo a `lo` (o el coordinator si lo=0). Si un stage
+    // muere DURANTE el heal (su socket no había reportado aún), el intento
+    // falla y se re-detecta con el set ampliado — acotado por chain.length
+    // y sin gastar requestStage en tramos ya repuestos (repls reutilizables;
+    // el absorb es idempotente por dedup de seqs).
+    const repls = new Map<number, ChainEntry>(); // vivos no-commiteados, reusables entre intentos
+    let lastErr: unknown = null;
+    try {
+      for (let attempt = 0; attempt <= chain.length; attempt++) {
+        let lo = c;
+        while (lo > 0 && !chain[lo - 1].transport.alive) lo--;
+        let hi = c;
+        while (hi < chain.length - 1 && !chain[hi + 1].transport.alive) hi++;
+        try {
+          // Reemplazos por tramo — opens en orden DESCENDENTE para que el
+          // next de repl_i (repl_{i+1} o el vivo chain[hi+1]) ya exista.
+          let nextHop: { endpoint: string; sessionId: string; token?: string } | undefined =
+            chain[hi + 1] ? { endpoint: chain[hi + 1].endpoint, sessionId: chain[hi + 1].sessionId, token: chain[hi + 1].token } : undefined;
+          for (let i = hi; i >= lo; i--) {
+            const kept = repls.get(i);
+            if (kept?.transport.alive) {
+              // Sobrevivió al intento anterior — su next puede apuntar a un
+              // repl_{i+1} DISTINTO (re-creado): repoint al destino actual.
+              const moved = nextHop && i < hi
+                ? await withTimeout(
+                    kept.transport.repoint(kept.sessionId, { endpoint: nextHop.endpoint, sessionId: nextHop.sessionId, ...(nextHop.token ? { token: nextHop.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) }),
+                    this.stepTimeoutMs,
+                    `repoint ${kept.endpoint} → ${nextHop.endpoint}`,
+                  ).then(() => true).catch(() => false)
+                : true;
+              if (moved) {
+                nextHop = { endpoint: kept.endpoint, sessionId: kept.sessionId, token: kept.token };
+                continue;
+              }
+              // Sesión zombie en el spare (socket vivo, sesión muerta): no
+              // reusable — se repone por el path normal abajo.
+              repls.delete(i);
+              kept.transport.dispose();
+            }
+            const dead = chain[i];
+            dead.transport.dispose();
+            const offer = await this.requestStage(dead.endpoint, dead.blocks).catch(() => null);
+            if (!offer?.endpoint || !offer.blocks) {
+              throw new Error(`stage ${dead.endpoint} murió sin reemplazo (heal directo)`);
+            }
+            const t = this.dial(offer.endpoint);
+            const sessionId = `${dead.sessionId}r${seq}a${attempt}`;
+            await withTimeout(
+              t.open({
+                jobId,
+                sessionId,
+                model: req.model,
+                blocks: offer.blocks,
+                ...credsOf(offer),
+                ...(nextHop
+                  ? { next: { endpoint: nextHop.endpoint, sessionId: nextHop.sessionId, ...(nextHop.token ? { token: nextHop.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) } }
+                  : {}),
+              }),
+              this.stepTimeoutMs,
+              `stage ${offer.endpoint} open`,
+            );
+            const repl: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, token: offer.token, transport: t, sessionId, chain: stageHalfInit(jobId), inChain: stageHalfInit(jobId), outChain: stageHalfInit(jobId) };
+            watch(t); // el reemplazo entra al mismo watch de reports/fails
+            repls.set(i, repl);
+            nextHop = { endpoint: repl.endpoint, sessionId: repl.sessionId, token: repl.token };
+          }
+          // Historia en cascada ascendente: cada eslabón absorbe los outs
+          // del anterior (absorb pobla su outCache → alimenta al siguiente).
+          for (let i = lo; i <= hi; i++) {
+            const repl = repls.get(i)!;
+            if (i === lo && lo === 0) {
+              // s1 en el set: el coordinator tiene `injected` — absorb propio.
+              for (const [n, h] of injected.slice(0, seq).entries()) {
+                repl.transport.injectFwd({ sessionId: repl.sessionId, seq: n, shape: h.shape, dtype: "f16", payload: h.payload, ...credsOf(repl), absorb: true });
+              }
+            } else {
+              const src = i === lo ? chain[lo - 1] : repls.get(i - 1)!;
+              await withTimeout(
+                src.transport.replay(src.sessionId, seq - 1, { endpoint: repl.endpoint, sessionId: repl.sessionId, ...credsOf(repl) }),
+                this.stepTimeoutMs,
+                `replay ${src.endpoint} → ${repl.endpoint}`,
+              );
+            }
+          }
+          // El último vivo apunta al nuevo tramo de entrada — el bloque
+          // muerto sale del data plane antes de la re-inyección.
+          if (lo > 0) {
+            const prev = chain[lo - 1];
+            const repl = repls.get(lo)!;
+            await withTimeout(
+              prev.transport.repoint(prev.sessionId, { endpoint: repl.endpoint, sessionId: repl.sessionId, ...credsOf(repl) }),
+              this.stepTimeoutMs,
+              `repoint ${prev.endpoint} → ${repl.endpoint}`,
+            );
+          }
+          for (const [i, repl] of repls) {
+            opened.add(repl.sessionId);
+            chain[i] = repl;
+          }
+          // Re-inyectar el token en vuelo — la onda dedup-redeliver lo
+          // lleva por los sanos hasta el bloque curado, que computa de verdad.
+          const cur = injected[seq];
+          if (lo === 0) {
+            const repl0 = repls.get(0)!;
+            repl0.transport.injectFwd({ sessionId: repl0.sessionId, seq, shape: cur.shape, dtype: "f16", payload: cur.payload, ...credsOf(repl0) });
+          } else {
+            chain[0].transport.inject({ sessionId: chain[0].sessionId, seq, shape: cur.shape, dtype: "f16", payload: cur.payload });
+          }
+          return;
+        } catch (e) {
+          lastErr = e;
+          // Otro stage murió mid-heal (o un spare recién probado falló):
+          // el próximo intento re-detecta con transport.alive ya en false.
+        }
       }
-    }
-    opened.add(sessionId);
-    chain[k] = repl;
-    // Re-inyectar el token en vuelo en s1 — la onda dedup-redeliver lo lleva
-    // hasta K' (los sanos redeliveran cache, K' computa de verdad).
-    if (k === 0) {
-      const cur = injected[seq];
-      t.injectFwd({ sessionId, seq, shape: cur.shape, dtype: "f16", payload: cur.payload, ...(repl.token ? { token: repl.token } : {}), ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}) });
-    } else {
-      const cur = injected[seq];
-      chain[0].transport.inject({ sessionId: chain[0].sessionId, seq, shape: cur.shape, dtype: "f16", payload: cur.payload });
+      throw lastErr instanceof Error ? lastErr : new Error("heal directo sin progreso");
+    } finally {
+      // Reemplazos que no quedaron en la cadena (heal abortado): liberar su
+      // socket → el server suelta la sesión (sin esto son sesiones zombie).
+      for (const [i, r] of repls) if (chain[i] !== r) r.transport.dispose();
     }
   }
 }

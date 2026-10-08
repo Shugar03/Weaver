@@ -332,6 +332,154 @@ describe("B2 direct stage→stage (TCP real)", () => {
     a.srv.close();
     br.srv.close();
   });
+
+  it("B3-cascada: dos stages ADYACENTES mueren mid-job — heal reemplaza el bloque y la historia baja en cascada", async () => {
+    const { PipelineExec, simFront } = await import("../src/pipeline.ts");
+    const SECRET3 = "w4n-casc";
+    const COORD3 = "GCASC";
+    const tok = stageToken(SECRET3, "j1", COORD3);
+    const slow = <T extends { step: (m: never) => unknown }>(c: T, ms: number): T => {
+      const s0 = c.step.bind(c);
+      (c as { step: unknown }).step = async (m: never) => {
+        await new Promise((r) => setTimeout(r, ms));
+        return s0(m);
+      };
+      return c;
+    };
+    // s2 y s3 adyacentes caen juntas — s1 (vivo) es la fuente de historia.
+    const sign = async (h: Buffer) => kp0.sign(h).toString("hex");
+    const c1 = slow(simStageCompute([0, 6], "s0", sign, SECRET3), 10);
+    const c2 = simStageCompute([6, 12], "s6", sign, SECRET3);
+    const c3 = simStageCompute([12, 18], "s12", sign, SECRET3);
+    const c2r = simStageCompute([6, 12], "s6", sign, SECRET3);  // spare mismo tramo
+    const c3r = simStageCompute([12, 18], "s12", sign, SECRET3); // spare mismo tramo
+    const a = await bind(c1);
+    const b = await bind(c2);
+    const c = await bind(c3);
+    const br = await bind(c2r);
+    const cr = await bind(c3r);
+    const asked: string[] = [];
+    const exec = new PipelineExec({
+      forgeId: "f1",
+      model: "m",
+      stages: [
+        { endpoint: a.endpoint, blocks: [0, 6], token: tok },
+        { endpoint: b.endpoint, blocks: [6, 12], token: tok },
+        { endpoint: c.endpoint, blocks: [12, 18], token: tok },
+      ],
+      dial: (e) => tcpStageDial(e),
+      front: simFront(),
+      coordPubkey: COORD3,
+      mode: "direct",
+      stepTimeoutMs: 4_000,
+      // El pool devuelve el spare DEL TRAMO pedido — dos reemplazos, una
+      // ronda de heal (el coordinator no adivina endpoints).
+      requestStage: async (dead, blocks) => {
+        asked.push(`${dead}@[${blocks[0]},${blocks[1]})`);
+        const ep = blocks[0] === 6 ? br.endpoint : cr.endpoint;
+        return { endpoint: ep, blocks, token: stageToken(SECRET3, "j1", COORD3) };
+      },
+    });
+    const tokens: string[] = [];
+    let done: { stats?: { genTokens?: number }; stageSigs?: { endpoint: string }[] } = {};
+    const run = (async () => {
+      for await (const ch of exec.execute({ jobId: "j1", model: "m", prompt: "a b c d e f", options: { maxTokens: 6 } } as never)) {
+        if (ch.done) done = ch as typeof done;
+        else tokens.push(ch.token);
+      }
+    })();
+    // Kill determinístico: ambos mueren una vez el job está en vuelo
+    // (s2 procesó ≥2 seqs — los seqs siguientes quedan huérfanos en ambos).
+    while (c2.seenSeqs().length < 2) await new Promise((r) => setTimeout(r, 3));
+    b.srv.close();
+    c.srv.close();
+    await run;
+    assert.deepEqual(tokens, ["a ", "b ", "c ", "d ", "e ", "f "], "los 6 tokens llegaron pese a la cascada");
+    assert.equal(asked.length, 2, `dos stage.need en la misma ronda — pedidos: ${JSON.stringify(asked)}`);
+    // La cascada: s1 replayó a s2' (absorbe) y s2' —con su outCache ya
+    // poblado por el absorb— replayó a s3'. Ambos terminaron con la
+    // historia completa (≥2 absorb + los seqs nuevos).
+    const ab2 = c2r.seenSeqs().map((s) => s.seq);
+    const ab3 = c3r.seenSeqs().map((s) => s.seq);
+    assert.ok(ab2.length >= 2 && ab3.length >= 2, `reemplazos con historia — s2':${JSON.stringify(ab2)} s3':${JSON.stringify(ab3)}`);
+    // Fronteras válidas: out_s1 == in_s2' y out_s2' == in_s3' — el boundary
+    // check cruza los half-chains del bloque curado.
+    const sigs = done.stageSigs ?? [];
+    assert.equal(sigs.length, 3, "firman s1 y AMBOS reemplazos — los muertos no");
+    a.srv.close();
+    br.srv.close();
+    cr.srv.close();
+  });
+
+  it("B3-cascada desde s1: s1+s2 mueren — el coordinator replaya `injected` y la cascada sigue hasta el vivo", async () => {
+    const { PipelineExec, simFront } = await import("../src/pipeline.ts");
+    const SECRET3 = "w4n-casc0";
+    const COORD3 = "GCASC0";
+    const tok = stageToken(SECRET3, "j1", COORD3);
+    const slow = <T extends { step: (m: never) => unknown }>(c: T, ms: number): T => {
+      const s0 = c.step.bind(c);
+      (c as { step: unknown }).step = async (m: never) => {
+        await new Promise((r) => setTimeout(r, ms));
+        return s0(m);
+      };
+      return c;
+    };
+    // s1+s2 (adyacentes desde la cabeza) caen — s3 queda vivo y dedup-
+    // redeliverá lo suyo; la historia entera viene de `injected` (coord).
+    const sign = async (h: Buffer) => kp0.sign(h).toString("hex");
+    const c1 = simStageCompute([0, 6], "s0", sign, SECRET3);
+    const c2 = slow(simStageCompute([6, 12], "s6", sign, SECRET3), 10);
+    const c3 = slow(simStageCompute([12, 18], "s12", sign, SECRET3), 5);
+    const c1r = simStageCompute([0, 6], "s0", sign, SECRET3);
+    const c2r = simStageCompute([6, 12], "s6", sign, SECRET3);
+    const a = await bind(c1);
+    const b = await bind(c2);
+    const c = await bind(c3);
+    const ar = await bind(c1r);
+    const br = await bind(c2r);
+    const asked: string[] = [];
+    const exec = new PipelineExec({
+      forgeId: "f1",
+      model: "m",
+      stages: [
+        { endpoint: a.endpoint, blocks: [0, 6], token: tok },
+        { endpoint: b.endpoint, blocks: [6, 12], token: tok },
+        { endpoint: c.endpoint, blocks: [12, 18], token: tok },
+      ],
+      dial: (e) => tcpStageDial(e),
+      front: simFront(),
+      coordPubkey: COORD3,
+      mode: "direct",
+      stepTimeoutMs: 4_000,
+      requestStage: async (_dead, blocks) => {
+        asked.push(`${blocks[0]}`);
+        const ep = blocks[0] === 0 ? ar.endpoint : br.endpoint;
+        return { endpoint: ep, blocks, token: stageToken(SECRET3, "j1", COORD3) };
+      },
+    });
+    const tokens: string[] = [];
+    let done: { stats?: { genTokens?: number }; stageSigs?: { endpoint: string }[] } = {};
+    const run = (async () => {
+      for await (const ch of exec.execute({ jobId: "j1", model: "m", prompt: "a b c d e f", options: { maxTokens: 6 } } as never)) {
+        if (ch.done) done = ch as typeof done;
+        else tokens.push(ch.token);
+      }
+    })();
+    while (c1.seenSeqs().length < 2) await new Promise((r) => setTimeout(r, 3));
+    a.srv.close();
+    b.srv.close();
+    await run;
+    assert.deepEqual(tokens, ["a ", "b ", "c ", "d ", "e ", "f "]);
+    assert.equal(asked.length, 2, `dos tramos pedidos en una ronda: ${JSON.stringify(asked)}`);
+    // s1' absorbió la historia desde el coordinator y la replayó a s2'.
+    assert.ok(c1r.seenSeqs().length >= 2, "s1' absorbió los ins del coordinator");
+    assert.ok(c2r.seenSeqs().length >= 2, "s2' recibió la cascada desde s1'");
+    const sigs = done.stageSigs ?? [];
+    assert.equal(sigs.length, 3, "s1'+s2'+s3 firman — cadena atribuible completa");
+    c.srv.close();
+    ar.srv.close();
+    br.srv.close();
+  });
 });
 
 describe("B5 TOPLOC ckpts + audit-by-replay (TCP real)", () => {

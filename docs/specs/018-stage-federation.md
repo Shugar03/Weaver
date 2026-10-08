@@ -212,6 +212,7 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | B2 data plane directo | `stage.open.next` + `stage.fwd`/`stage.report`/`stage.repoint`/`stage.replay` en `stageproto.ts`; `StageRouter` + `deliver`/`runStep` en `stagetransport.ts`; `PipelineExec` `mode:"direct"` + `healDirect` en `pipeline.ts`; mismo data plane en `stage_runner.py` | ✅ TCP real: inject→fwd→out por socket dueño; rogue fwd rechazado; heal mid-job en 306ms e2e |
 | B2 boundary cross-check | `stageHalfInit`/`stageHalfStep` (seed=jobId) + `inChain`/`outChain` en close-ack + `sig_preimage_v2` + `verifyStageSigs` cruza `outChain_K==inChain_K+1` | ✅ e2e aserta frontera íntegra post-heal; mismatch → ambos striked+drop |
 | B3 heal por stage-cache | out_cache por sesión (≤8192) + dedup-redeliver + `absorb` fwd + `repoint` | ✅ K-1 replaya outs al reemplazo (K=0: `injected` del coordinator); job completa |
+| B3-cascada multi-fail | `healDirect` detecta el bloque contiguo muerto [lo..hi], reemplaza TODOS sus tramos (opens descendientes para encadenar `next`), replay absorb en cascada ascendente (absorb pobla outCache → el curado alimenta al siguiente), retry acotado si otro stage muere mid-heal; serialización `busy` por sesión en el stage | ✅ TCP: s2+s3 caen juntos → 2 stage.need en una ronda, ambos spares absorben desde seq 0, job completa; s1+s2 caen → coordinator replaya `injected`; e2e: cascada real por gateway en 446ms con boundary check verde |
 | B5 TOPLOC ckpts | `stage.ack.weights` (commitment de pesos) + `stage.report.ckpt {seq,hash,weights}` cada `CKPT_INTERVAL=8` (`ck = sha256("ck":seq:inChain:outChain)`, sin sessionId → comparable entre sesiones) en `stageproto.ts`/`stagetransport.ts`/`stage_runner.py` | ✅ ckpts por tramo incluido el último; reports nunca roban pendings |
 | B5 audit-by-replay | `PipelineExec.auditByReplay` + `stage.need audit:true` (borrow efímero — sin strike ni mutación de `loan.chain`) + requester `purpose:"audit"` | ✅ e2e: spare absorbe ≥8 seqs del tramo auditado, ckpt converge, ambas stageSigs sobreviven; mismatch → job.fail con evidencia; sin spare/historia → skip honesto |
 
@@ -303,9 +304,21 @@ Bugs reales que solo salieron en implementación:
   atravesar los stages sanos hasta el reemplazo que sí computa).
 - B3: `absorb` fwd — el replay reconstruye KV sin propagar: los vecinos ya
   procesaron esos seqs, re-forward inundaría la cadena con duplicados.
-- Limitación conocida B3: si K y K-1 mueren juntos (cascada), no hay cache
-  upstream disponible para K — el heal falla honesto (multi-fail es trabajo
-  futuro; relay del coordinator sigue siendo fallback universal).
+- B3-cascada: `absorb` no poblaba el `outCache` — un tramo curado no podía
+  replayar al siguiente → la cascada se cortaba en el segundo eslabón.
+  Ahora TODO cómputo de sesión alimenta el cache (absorb incluido).
+- B3-cascada: `void handle(msg)` despachaba frames sin serializar — dos
+  absorbs (o absorb+replay que lee el cache) por sockets distintos podían
+  interleavese y corromper el KV. `route.busy` serializa step/fwd/absorb/
+  replay/close por sesión. Residual documentado: el orden de LLEGADA entre
+  sockets TCP distintos no está garantizado por el transporte — si un seq
+  se procesa antes que su historia, el ckpt audit / boundary check lo
+  detectan (falla ruidosa, no silenciosa).
+- B3-cascada: TOCTOU en la detección — un stage podía morir después del
+  escaneo `!alive` pero antes de usarlo como fuente de replay (el heal
+  intentaba `replay` desde un socket ya cerrado → `conexión cerrada` y el
+  job moría). El heal ahora reintenta: cada intento re-detecta el bloque
+  muerto y reusa los reemplazos vivos (absorb idempotente por dedup).
 - B5: `stage.report` matcheaba por sessionId contra el MISMO pending map de
   `expectOut`/`close` → un report tardío resolvía el pending equivocado
   (out robado, close-ack perdido → stageSigs perdidas). Ahora reports van
@@ -323,6 +336,6 @@ Bugs reales que solo salieron en implementación:
   no cubre `ck.seq` completa (replay parcial daría falso positivo) → skip
   honesto; weights divergentes se diagnostican aparte del cómputo.
 
-Regresión: forge-net 135 · forge 70 · gateway 209 · e2e 19 (18 sim +
-B5 audit e2e; 1 pesos reales Qwen2.5-0.5B split 0-12/12-24
-con B1 auth) — todo verde.
+Regresión: forge-net 135 · forge 72 · gateway 209 · e2e 20 (incl. cascada
+e2e con boundary check y B5 audit; 1 pesos reales Qwen2.5-0.5B split
+0-12/12-24 con B1 auth) — todo verde.
