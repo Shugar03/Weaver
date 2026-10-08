@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { tcpStageDial } from "../src/stagetransport.ts";
 import { startStageServer } from "../src/stageserver.ts";
 import { simStageCompute } from "../src/pipeline.ts";
+import { stageChainInit, stageChainStep, stageSigPreimage } from "@weaver/forge-net";
+import { stellarKeypair, stellarVerify } from "@weaver/settlement";
 
 const bind = async (compute: ReturnType<typeof simStageCompute>) => {
   const srv = startStageServer({ host: "127.0.0.1", port: 0, compute });
@@ -72,5 +74,24 @@ describe("S47 stage transport TCP", () => {
     const t = tcpStageDial("127.0.0.1:1", 500);
     await assert.rejects(t.open({ jobId: "j", sessionId: "s", model: "m", blocks: [0, 8] }));
     t.dispose();
+  });
+
+  it("A4: close-ack lleva sig ed25519 real — verifica contra el pubkey del stage", async () => {
+    const kp = stellarKeypair();
+    const compute = simStageCompute([0, 16], "s0", async (h) => kp.sign(h).toString("hex"));
+    const { srv, endpoint } = await bind(compute);
+    const t = tcpStageDial(endpoint);
+    await t.open({ jobId: "j1", sessionId: "j1:s0", model: "m", blocks: [0, 16] });
+    const r = await t.step({ sessionId: "j1:s0", seq: 0, shape: [1, 4], dtype: "f16", payload: Buffer.from("hola").toString("base64") });
+    // El chain esperado lo recomputa el COORDINATOR (stageChainStep) — el
+    // stage lo llevó server-side; si coinciden, la sig ata la misma historia.
+    const chain = stageChainStep(stageChainInit("j1:s0", [0, 16]), 0, Buffer.from("hola").toString("base64"), r.payload);
+    const { sig } = await t.close("j1:s0");
+    assert.ok(sig, "el close-ack debía traer la firma del tramo");
+    assert.equal(stellarVerify(kp.pubkey, stageSigPreimage("j1", "j1:s0", chain), Buffer.from(sig!, "hex")), true);
+    // Y una cadena distinta NO verifica — la firma está ligada al trabajo real.
+    assert.equal(stellarVerify(kp.pubkey, stageSigPreimage("j1", "j1:s0", "00".repeat(32)), Buffer.from(sig!, "hex")), false);
+    t.dispose();
+    srv.close();
   });
 });

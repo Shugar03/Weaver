@@ -10,6 +10,10 @@ export type StreamChunk = {
   // El engine decidió llamar tools: llegan en el frame done (Ollama no las
   // streamea por partes). El caller ejecuta y re-envía con role:"tool".
   toolCalls?: ToolCall[];
+  // S47 stage-federation: atribución verificada por tramo (frame done).
+  // El gateway solo reenvía entradas cuya firma verificó contra el pubkey
+  // del stage asignado — presencia = verificada.
+  stageSigs?: StageSig[];
 };
 // Tool call del engine — arguments ya viene parseado (objeto, no string).
 export type ToolCall = { name: string; arguments: Record<string, unknown> };
@@ -30,6 +34,17 @@ export type ExecOptions = {
   think?: boolean; // false = el engine no razona (TTFT content mínimo)
   numCtx?: number; // ventana de contexto del engine (Ollama default 4096)
 };
+// Atribución por tramo de un pipeline federado (spec 018, A4). `sig` es la
+// firma del stage-worker sobre sha256(jobId:sessionId:chain) — el chain es
+// un hash encadenado de (seq,in,out) que ambas partes computan igual. El
+// gateway verifica endpoint→signer contra el loan del StagePool.
+export type StageSig = {
+  endpoint: string;
+  blocks: [number, number];
+  sessionId: string;
+  chain: string;
+  sig: string;
+};
 // Proof L0 (S23): recibo del forge — firma del commitment que ata
 // prompt+output (ver proofhash.ts). El contrato lo verifica en release:
 // pago condicionado a entrega probada DEL INPUT DESPACHADO.
@@ -42,6 +57,9 @@ export type Proof = {
   signature: Buffer;
   promptHash?: Buffer;
   outputHash?: Buffer;
+  // stageSigs verificadas (S47): quién firmó cada tramo — base del payout
+  // split por stage (fase B). Ausente = job no federado o sin firmas válidas.
+  stageSigs?: StageSig[];
 };
 // onForge: quién emitió el primer token. onProof: recibo firmado al completar.
 // Ambos por request — sin estado compartido entre requests concurrentes.

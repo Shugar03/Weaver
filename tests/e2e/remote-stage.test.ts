@@ -57,6 +57,12 @@ describe("S47 stage-federation wire e2e", () => {
     assert.equal(s2.compute.sessions(), 0);
     // Y el body lleva los tokens del sim: "a b c " en los deltas.
     assert.match(body, /"a "/);
+    // A4: el receipt lleva stageSigs VERIFICADAS — cada stage firmó su chain
+    // con su keypair ed25519 real y el gateway chequeó endpoint→signer.
+    const sigs = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof.stageSigs;
+    assert.equal(sigs.length, 2);
+    assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s1.endpoint, s2.endpoint].sort());
+    assert.ok(sigs.every((s: { sig: string }) => /^[0-9a-f]{128}$/.test(s.sig))); // ed25519 hex
   });
 
   it("stage muere mid-job → stage.need → spare reemplaza → replay → job completa", async () => {
@@ -95,6 +101,12 @@ describe("S47 stage-federation wire e2e", () => {
     }
     const healed = [...porSesion.values()].find((seqs) => seqs.length >= 3 && seqs[0] === 0 && seqs[1] === 1);
     assert.ok(healed, `esperaba sesión reemplazada con replay desde seq 0 — visto: ${JSON.stringify([...porSesion])}`);
+    // A4 post-heal: el reemplazo firma SU sesión (el loan se actualizó por
+    // replace → su pubkey es el que verifica); el muerto no firma nada.
+    const sigLine = acc.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1);
+    assert.ok(sigLine, "el receipt debía traer stageSigs verificadas del tramo reemplazado");
+    const sigs = JSON.parse(sigLine.slice(5)).weaver_proof.stageSigs;
+    assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s2.endpoint, s3.endpoint].sort());
   });
 
   it("stage muere sin spare → stage.offer vacío → job falla honesto mid-stream", async () => {

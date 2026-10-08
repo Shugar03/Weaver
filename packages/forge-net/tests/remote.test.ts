@@ -7,6 +7,7 @@ import { RemoteForgeExec, RemoteImageExec, type ForgeChannel } from "../src/remo
 import type { ExecRequest, ImageRequest, StreamChunk } from "@weaver/forge-exec";
 import { commitProof, promptHashOf } from "@weaver/forge-exec";
 import type { ForgeMsg, GatewayMsg } from "../src/protocol.ts";
+import { stageSigPreimage } from "../src/stageproto.ts";
 
 class FakeChannel implements ForgeChannel {
   sent: GatewayMsg[] = [];
@@ -648,5 +649,81 @@ describe("S47 RemoteForgeExec — stagePool", () => {
     });
     await assert.rejects(() => drain(ex.execute(req())), /stage-pool sin cobertura/);
     assert.equal(ch.lastAssign(), undefined);
+  });
+
+  it("A4: stageSigs verificadas contra el loan — firmas malas/endpoints ajenos → fuera", async () => {
+    const ch = new FakeChannel();
+    const strikes: string[] = [];
+    const verified: { pk: string; msg: Buffer; sig: Buffer }[] = [];
+    const loan = [
+      { endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number], instanceId: "s1", forgePubkey: "PK_S1" },
+      { endpoint: "10.0.0.6:50100", blocks: [40, 80] as [number, number], instanceId: "s2", forgePubkey: "PK_S2" },
+    ];
+    const stagePool = {
+      acquire: async () => loan.map(({ endpoint, blocks }) => ({ endpoint, blocks })),
+      release: () => {},
+      penalize: () => {},
+      chainOf: () => loan,
+      strikeWorker: (_j: string, ep: string) => {
+        strikes.push(ep);
+      },
+    };
+    const chain = "cd".repeat(32);
+    const goodSig = "ab".repeat(64);
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "c0",
+      model: "m",
+      stagePool: stagePool as never,
+      forgePubkey: "PK_C",
+      verify: (pk, msg, sig) => {
+        verified.push({ pk, msg, sig });
+        return pk === "PK_S1" && sig.toString("hex") === goodSig;
+      },
+    });
+    const realHash = createHash("sha256").update("ok").digest("hex");
+    const captured: { proof?: { stageSigs?: unknown[] } } = {};
+    const it = ex.execute(req({ onProof: (p) => (captured.proof = p) }));
+    const stageSigs = [
+      { endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number], sessionId: "j1:s0", chain, sig: goodSig }, // firma válida
+      { endpoint: "10.0.0.6:50100", blocks: [40, 80] as [number, number], sessionId: "j1:s1", chain, sig: goodSig }, // pk distinta → inválida
+      { endpoint: "10.9.9.9:1", blocks: [0, 40] as [number, number], sessionId: "x", chain, sig: goodSig }, // fuera del loan
+    ];
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65), stageSigs });
+    }, 10);
+    const chunks = await drain(it);
+    const done = chunks.at(-1)!;
+    // Solo la entrada con endpoint del loan + firma válida sobrevive.
+    assert.equal(done.stageSigs?.length, 1);
+    assert.equal(done.stageSigs![0].endpoint, "10.0.0.5:50100");
+    assert.equal(captured.proof?.stageSigs?.length, 1);
+    // La firma inválida recibió strike; el endpoint ajeno ni se verificó.
+    assert.deepEqual(strikes, ["10.0.0.6:50100"]);
+    assert.equal(verified.length, 2);
+    // La verify recibió el preimage canónico sha256(jobId:sessionId:chain).
+    assert.equal(verified[0].msg.toString("hex"), stageSigPreimage("j1", "j1:s0", chain).toString("hex"));
+  });
+
+  it("A4: sin verify/stagePool → stageSigs descartadas (evidencia sin chequear)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "c0", model: "m" });
+    const realHash = createHash("sha256").update("ok").digest("hex");
+    const it = ex.execute(req());
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({
+        type: "job.done",
+        jobId: "j1",
+        resultHash: realHash,
+        signature: "bb".repeat(65),
+        stageSigs: [{ endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number], sessionId: "j1:s0", chain: "cd".repeat(32), sig: "ab".repeat(64) }],
+      });
+    }, 10);
+    const chunks = await drain(it);
+    assert.equal(chunks.at(-1)?.stageSigs, undefined);
   });
 });

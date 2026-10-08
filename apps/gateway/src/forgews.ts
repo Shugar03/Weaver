@@ -208,6 +208,7 @@ export function attachForgeWS(
               pool,
               stagePool,
               forgePubkey: pk,
+              verify: deps.verify, // A4: stageSigs chequeadas contra el loan
             }),
           );
           remoteExecs.set(v.forgeId, ex);

@@ -207,4 +207,51 @@ describe("S47 StagePool", () => {
     const c = await p.acquire("c0", "PK_A", "j3");
     assert.equal(c?.[0].endpoint, "10.0.0.7:1");
   });
+
+  it("A4 chainOf: la cadena del loan con pubkeys; replace la actualiza", async () => {
+    const workers = [
+      stg({ instanceId: "s1", endpoint: "10.0.0.5:1", layers: [0, 40], forgePubkey: "PK_S1" }),
+      stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [40, 80], forgePubkey: "PK_S2" }),
+      stg({ instanceId: "sp", endpoint: "10.0.0.7:1", layers: [0, 40], forgePubkey: "PK_SP" }),
+    ];
+    const p = pool(workers);
+    assert.equal(p.chainOf("j1"), undefined); // sin loan → sin cadena
+    await p.acquire("c0", "PK_A", "j1");
+    const chain = p.chainOf("j1")!;
+    assert.deepEqual(
+      chain.map((c) => [c.endpoint, c.instanceId, c.forgePubkey]),
+      [
+        ["10.0.0.5:1", "s1", "PK_S1"],
+        ["10.0.0.6:1", "s2", "PK_S2"],
+      ],
+    );
+    // Replace: el tramo muerto sale de la cadena (por endpoint), entra el spare.
+    await p.replace("j1", "10.0.0.5:1", [0, 40]);
+    assert.deepEqual(
+      p.chainOf("j1")!.map((c) => c.endpoint),
+      ["10.0.0.6:1", "10.0.0.7:1"],
+    );
+    p.release("j1");
+    assert.equal(p.chainOf("j1"), undefined);
+  });
+
+  it("A4 strikeWorker: firma inválida → strike al firmante del loan", async () => {
+    const p = pool([
+      stg({ instanceId: "s1", endpoint: "10.0.0.5:50100", layers: [0, 80] }),
+      stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [0, 80] }),
+    ]);
+    await p.acquire("c0", "PK_A", "j1"); // s1 primero por orden estable
+    // Endpoint fuera del loan → no toca a nadie (s1 sin strikes).
+    p.strikeWorker("j1", "9.9.9.9:1");
+    p.strikeWorker("j1", "9.9.9.9:1");
+    const c2 = await p.acquire("c0", "PK_A", "j2");
+    assert.equal(c2?.[0].endpoint, "10.0.0.6:1"); // s1 está busy por j1, no evictado
+    p.release("j2");
+    // Dos firmas malas del asignado → evictado 120s.
+    p.strikeWorker("j1", "10.0.0.5:50100");
+    p.strikeWorker("j1", "10.0.0.5:50100");
+    p.release("j1");
+    const c3 = await p.acquire("c0", "PK_A", "j3");
+    assert.equal(c3?.[0].endpoint, "10.0.0.6:1"); // s1 evictado aunque esté libre
+  });
 });

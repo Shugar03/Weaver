@@ -139,9 +139,18 @@ stage-worker (TCP JSON-lines, sesiones con KV, rechaza prompts), PipelineExec
 con Petals Algo 1-3 (relay, dual attention cache, heal: stage.need →
 stage.offer → replay de activaciones cacheadas). Los 4 escenarios BDD pasan
 sobre sockets reales: cadena feliz, muerte mid-job con replay, muerte sin
-reemplazo → fail honesto, sin cobertura → forge-failed. Substrate =
-stage-sim (el wire es prod; el cómputo por bloque es simulado — pesos reales
-quedan en fase C: `llama.cpp --stage` o adapter prima.cpp).
+reemplazo → fail honesto, sin cobertura → forge-failed. Firma por stage
+implementada con diseño de close-time chain: cada stage acumula
+`chain = sha256(chain‖seq‖in‖out)` por step y firma
+`sha256(jobId:sessionId:chain)` al `stage.close`; el coordinator recomputa
+el chain sobre el tráfico que observa → `job.done.stageSigs` → el gateway
+verifica cada entrada contra `endpoint→forgePubkey` del loan (ed25519 real
+en e2e). Firma inválida → strike al worker + entrada descartada; endpoint
+ajeno → ignorado; el muerto no firma y el reemplazo firma su propia sesión.
+Ata el historial de activaciones completo de cada tramo — equivalente al
+`sig_i` de este ADR con una sola firma por stage por job (no N por token).
+Substrate = stage-sim (el wire es prod; el cómputo por bloque es simulado —
+pesos reales quedan en fase C: `llama.cpp --stage` o adapter prima.cpp).
 
 ## Consecuencias
 
@@ -150,8 +159,11 @@ quedan en fase C: `llama.cpp --stage` o adapter prima.cpp).
 - "Shared compute" en el pitch = pool-forge implementado (nivel 2.5, LAN) +
   stage-federation implementado (nivel 3, substrate sim). Claim preciso:
   "blocks of a model run on forges owned by different parties — Weaver
-  orchestrates the chain and survives mid-job stage death via
-  cached-activation replay". No esconder: el cómputo por bloque es simulado
-  hasta fase C, la privacidad se degrada a "representaciones internas"
-  (activaciones parcialmente invertibles), y proof/payout ancla en el
-  coordinator (split por stage = fase B).
+  orchestrates the chain, survives mid-job stage death via
+  cached-activation replay, and each stage signs its span (verified
+  `stageSigs` in `weaver_proof`)". No esconder: el cómputo por bloque es
+  simulado hasta fase C, la privacidad se degrada a "representaciones
+  internas" (activaciones parcialmente invertibles), y la firma ata el
+  historial del tramo — no prueba que los PESOS sean los declarados
+  (eso requiere TOPLOC/replay-audit, fase B) ni paga al stage (payout
+  split = fase B).

@@ -262,4 +262,33 @@ describe("S47 stage-federation: stage-worker + stages (spec 018)", () => {
     assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "mal" })), null);
     assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "h:1", blocks: [5, 5] })), null);
   });
+
+  it("job.done.stageSigs (A4): entradas firmables bien formadas; malas → filtradas", () => {
+    const sig = "ab".repeat(64);
+    const chain = "cd".repeat(32);
+    const entry = { endpoint: "10.0.0.7:50100", blocks: [0, 40], sessionId: "j1:s0", chain, sig };
+    const ok = decode(
+      JSON.stringify({ type: "job.done", jobId: "j1", resultHash: "aa", signature: "bb", stageSigs: [entry] }),
+    );
+    assert.deepEqual(ok, { type: "job.done", jobId: "j1", resultHash: "aa", signature: "bb", stageSigs: [entry] });
+    // chain no-hex, sig corta, endpoint feo, blocks inválidos → stageSigs
+    // descartado (el done queda válido, sin atribución).
+    for (const bad of [
+      { ...entry, chain: "zz" },
+      { ...entry, sig: "ab" },
+      { ...entry, endpoint: "sin-puerto" },
+      { ...entry, blocks: [9, 9] },
+    ]) {
+      const m = decode(
+        JSON.stringify({ type: "job.done", jobId: "j1", resultHash: "aa", signature: "bb", stageSigs: [bad] }),
+      ) as { stageSigs?: unknown };
+      assert.equal(m?.stageSigs, undefined, JSON.stringify(bad));
+    }
+    // Demasiadas entradas (> MAX_STAGES+1) → descartado entero.
+    const many = Array.from({ length: 9 }, () => entry);
+    const m = decode(
+      JSON.stringify({ type: "job.done", jobId: "j1", resultHash: "aa", signature: "bb", stageSigs: many }),
+    ) as { stageSigs?: unknown };
+    assert.equal(m?.stageSigs, undefined);
+  });
 });

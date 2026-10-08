@@ -203,7 +203,9 @@ export async function upStageDaemon(
   endpoint: string;
   compute: ReturnType<typeof simStageCompute>;
 }> {
-  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""));
+  // sign con la keypair del forge (misma que en job.done) — el close-ack
+  // lleva la firma del tramo y el gateway la verifica contra el loan (A4).
+  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""), async (h) => kp.sign(h).toString("hex"));
   const compute = inner as ReturnType<typeof simStageCompute>;
   if (opts.stepDelayMs) {
     // stepDelayMs: pasos más lentos → la ventana mid-job existe para matarlo

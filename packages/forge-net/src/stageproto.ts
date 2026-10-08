@@ -4,6 +4,7 @@
 // hidden-states frontera + su rango de bloques (Petals: "server holds a set
 // of consecutive transformer blocks").
 // Frames JSON, validación estricta — null jamás throw por input remoto.
+import { createHash } from "node:crypto";
 
 // ---------- coordinator → stage ----------
 
@@ -32,14 +33,20 @@ export type CoordMsg = StageOpenMsg | StageStepMsg | StageCloseMsg;
 
 // ---------- stage → coordinator ----------
 
-export type StageAckMsg = { type: "stage.ack"; sessionId: string };
+// Ack de open y de close. En close-ack, `sig` es la firma del stage sobre
+// sha256(jobId:sessionId:chain) — atribución del tramo para stageSigs (A4):
+// el coordinator computa el mismo chain sobre el tráfico que observó y el
+// gateway verifica sig contra el pubkey del instance asignado (loan).
+// Chain canónico (ambas partes computan bytes idénticos):
+//   chain₀   = sha256hex(sessionId + ":" + blocks.join("-"))
+//   chainₙ₊₁ = sha256hex(chainₙ + ":" + seq + ":" + inB64 + ":" + outB64)
+export type StageAckMsg = { type: "stage.ack"; sessionId: string; sig?: string };
 export type StageOutMsg = {
   type: "stage.out";
   sessionId: string;
   seq: number; // eco del seq del step — el coordinator casa req↔res
   payload: string; // b64
-  // Custodia: firma del stage sobre sha256(hashIn‖hashOut‖jobId) — el
-  // gateway verifica que cada tramo lo firmó el endpoint asignado (A4).
+  // Custodia por step (futura): firma por activación — MVP firma al close.
   sig?: string;
 };
 export type StageFailMsg = { type: "stage.fail"; sessionId: string; error: string };
@@ -113,7 +120,8 @@ export function decodeStage(raw: string): StageMsg | null {
   switch (m.type) {
     case "stage.ack":
       if (!isId(m.sessionId)) return null;
-      return { type: "stage.ack", sessionId: m.sessionId };
+      if (m.sig !== undefined && (!isStr(m.sig) || m.sig.length > 300)) return null;
+      return { type: "stage.ack", sessionId: m.sessionId, ...(isStr(m.sig) ? { sig: m.sig } : {}) };
     case "stage.out":
       if (!isId(m.sessionId) || !Number.isInteger(m.seq) || (m.seq as number) < 0 || (m.seq as number) > MAX_SEQ) return null;
       if (!isB64(m.payload)) return null;
@@ -130,3 +138,19 @@ export function decodeStage(raw: string): StageMsg | null {
 export function encode(msg: CoordMsg | StageMsg): string {
   return JSON.stringify(msg);
 }
+
+// ---------- chain de activaciones (firmable) ----------
+// Ambas partes computan el MISMO chain: el stage sobre su sesión, el
+// coordinator sobre el tráfico que observó. El sig ata (jobId, sessionId,
+// chain) — ni el stage niega su tramo ni el coordinator fabrica la firma.
+const sha256hex = (s: string): string => createHash("sha256").update(s, "utf8").digest("hex");
+
+export const stageChainInit = (sessionId: string, blocks: [number, number]): string =>
+  sha256hex(`${sessionId}:${blocks.join("-")}`);
+
+export const stageChainStep = (chain: string, seq: number, inB64: string, outB64: string): string =>
+  sha256hex(`${chain}:${seq}:${inB64}:${outB64}`);
+
+// Lo que el stage firma y el gateway recomputa (Buffer — ed25519/secp256k1).
+export const stageSigPreimage = (jobId: string, sessionId: string, chain: string): Buffer =>
+  createHash("sha256").update(`${jobId}:${sessionId}:${chain}`, "utf8").digest();

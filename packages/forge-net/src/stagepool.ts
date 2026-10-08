@@ -27,7 +27,11 @@ export type StageWorker = {
 // Lo que viaja en job.assign.stages (privado) — instanceId queda interno del
 // loan; el coordinator solo necesita endpoint+rango.
 export type StageAssign = { endpoint: string; blocks: [number, number] }[];
-type StageChain = { endpoint: string; blocks: [number, number]; instanceId: string }[];
+// El loan guarda la cadena COMPLETA con pubkey — la verificación de
+// stageSigs (A4) resuelve endpoint→signer sin tocar el registry (el worker
+// pudo desconectarse antes del done; su firma sigue siendo chequeable).
+export type StageChainEntry = { endpoint: string; blocks: [number, number]; instanceId: string; forgePubkey: string };
+type StageChain = StageChainEntry[];
 
 export type StagePoolDeps = {
   reportOf(instanceId: string): InstanceReport | undefined;
@@ -36,7 +40,7 @@ export type StagePoolDeps = {
   now?(): number;
 };
 
-type Loan = { coordInstance: string; coordPk: string; workers: string[] };
+type Loan = { coordInstance: string; coordPk: string; workers: string[]; chain: StageChain };
 type Strike = { n: number; until: number };
 
 const PENALTY_STRIKES = 2;
@@ -73,7 +77,7 @@ export class StagePool {
       for (const s of chain) this.busy.add(s.instanceId);
       const oks = await Promise.all(chain.map((s) => this.probe(s.endpoint).catch(() => false)));
       if (oks.every(Boolean)) {
-        this.loans.set(jobId, { coordInstance: instanceId, coordPk: coordinatorPubkey, workers: chain.map((s) => s.instanceId) });
+        this.loans.set(jobId, { coordInstance: instanceId, coordPk: coordinatorPubkey, workers: chain.map((s) => s.instanceId), chain });
         return chain.map(({ endpoint, blocks }) => ({ endpoint, blocks }));
       }
       // Los que fallaron el probe: strike + se banean para el próximo build.
@@ -113,7 +117,7 @@ export class StagePool {
           a.rttMs - b.rttMs,
       );
       const w = cand[0];
-      chain.push({ endpoint: w.endpoint, blocks: [pos, Math.min(w.layers[1], total)], instanceId: w.instanceId });
+      chain.push({ endpoint: w.endpoint, blocks: [pos, Math.min(w.layers[1], total)], instanceId: w.instanceId, forgePubkey: w.forgePubkey });
       chosen.add(w.instanceId);
       pos = Math.min(w.layers[1], total);
     }
@@ -136,6 +140,10 @@ export class StagePool {
       this.busy.delete(dead.instanceId);
       loan.workers = loan.workers.filter((id) => id !== dead.instanceId);
     }
+    // El tramo muerto sale de la cadena del loan por ENDPOINT — aunque su
+    // instance ya no figure en stageWorkers() (desconectó), ninguna firma
+    // suya queda atribuible a este job.
+    loan.chain = loan.chain.filter((c) => c.endpoint !== deadEndpoint);
     const model = this.deps.reportOf(loan.coordInstance)?.model;
     const cand = workers
       .filter(
@@ -163,7 +171,22 @@ export class StagePool {
       return null;
     }
     loan.workers.push(pick.instanceId);
+    loan.chain.push({ endpoint: pick.endpoint, blocks, instanceId: pick.instanceId, forgePubkey: pick.forgePubkey });
     return { endpoint: pick.endpoint, blocks };
+  }
+
+  // La cadena del loan con pubkeys — la verificación de stageSigs resuelve
+  // endpoint→signer acá (no en el registry: el worker pudo irse post-done).
+  chainOf(jobId: string): StageChain | undefined {
+    return this.loans.get(jobId)?.chain.map((c) => ({ ...c }));
+  }
+
+  // Una firma de stage que no verifica contra su pubkey = evidencia de
+  // trampa o de un stage roto — strike como cualquier falla de protocolo.
+  strikeWorker(jobId: string, endpoint: string): void {
+    const loan = this.loans.get(jobId);
+    const e = loan?.chain.find((c) => c.endpoint === endpoint);
+    if (e) this.strike(e.instanceId);
   }
 
   release(jobId: string): void {

@@ -2,7 +2,7 @@
 // Frames JSON. Validación estricta: un frame malformado devuelve null — el
 // caller cierra la sesión, jamás se throwea al proceso por input remoto.
 // Nada acá sabe de sockets ni de Stellar: tipos + codec puro.
-import type { ExecOptions, ExecStats } from "@weaver/forge-exec";
+import type { ExecOptions, ExecStats, StageSig } from "@weaver/forge-exec";
 
 // ---------- daemon → gateway ----------
 
@@ -61,6 +61,10 @@ export type JobDoneMsg = {
   promptHash?: string;
   outputHash?: string;
   signature: string;
+  // S47 A4: atribución por tramo — el coordinator recolecta la firma de cada
+  // stage al close. El gateway verifica endpoint→signer contra el loan del
+  // StagePool y solo reenvía las que verifican.
+  stageSigs?: StageSig[];
 };
 // midStream=true: falló DESPUÉS de emitir tokens — no reintentable en
 // silencio (semántica idéntica al failover local).
@@ -163,6 +167,17 @@ const isLayers = (v: unknown): v is [number, number] =>
   Array.isArray(v) && v.length === 2 &&
   Number.isInteger(v[0]) && Number.isInteger(v[1]) &&
   (v[0] as number) >= 0 && (v[1] as number) > (v[0] as number) && (v[1] as number) <= MAX_BLOCKS;
+// stageSigs: ≤ MAX_STAGES+1 entradas (un reemplazo puede sumar una sesión
+// firmada extra). chain = sha256 hex fijo; sig = ed25519/secp256k1 hex.
+const isStageSigs = (v: unknown): v is StageSig[] =>
+  Array.isArray(v) && v.length > 0 && v.length <= MAX_STAGES + 1 &&
+  v.every(
+    (s) =>
+      isObj(s) && isEndpoint(s.endpoint) && isLayers(s.blocks) &&
+      isId(s.sessionId) &&
+      isStr(s.chain) && /^[0-9a-f]{64}$/.test(s.chain) &&
+      isStr(s.sig) && /^[0-9a-fA-F]{128,300}$/.test(s.sig),
+  );
 
 function instanceReport(v: unknown): InstanceReport | null {
   if (!isObj(v)) return null;
@@ -265,6 +280,7 @@ export function decode(raw: string): ForgeMsg | null {
         ...(isStr(m.outputHash) ? { outputHash: m.outputHash } : {}),
         ...(isObj(m.stats) ? { stats: m.stats as ExecStats } : {}),
         ...(Array.isArray(m.toolCalls) ? { toolCalls: m.toolCalls as JobDoneMsg["toolCalls"] } : {}),
+        ...(isStageSigs(m.stageSigs) ? { stageSigs: m.stageSigs } : {}),
       };
     case "job.fail":
       if (!isStr(m.jobId) || !isStr(m.error) || !isBool(m.midStream)) return null;

@@ -15,10 +15,13 @@ export type StageSessionInfo = {
 };
 
 // Canal coordinator→stage: lo que el PipelineExec necesita — nada más.
+// close() devuelve el close-ack: {sig} = firma del stage sobre su cadena de
+// activaciones (atribución A4). Transporte muerto/sin ack → {} — la firma
+// es evidencia, no requisito para cerrar.
 export type StageTransport = {
   open(s: StageSessionInfo): Promise<void>;
   step(s: Omit<StageStepMsg, "type">): Promise<Pick<StageOutMsg, "payload" | "sig">>;
-  close(sessionId: string): void;
+  close(sessionId: string): Promise<{ sig?: string }>;
   dispose(): void;
   readonly alive: boolean;
   onDead?(cb: (err: Error) => void): void;
@@ -112,11 +115,17 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
       if (r.type !== "stage.out") throw new Error(`stage ${endpoint}: step sin out`);
       return { payload: r.payload, ...(r.sig ? { sig: r.sig } : {}) };
     },
-    close(sessionId) {
+    async close(sessionId) {
       try {
+        const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej }));
         send({ type: "stage.close", sessionId });
+        const r = await Promise.race([
+          p,
+          new Promise<StageMsg>((_r, rej) => setTimeout(() => rej(new Error("close-ack timeout")), 5_000).unref()),
+        ]);
+        return r.type === "stage.ack" && r.sig ? { sig: r.sig } : {};
       } catch {
-        /* ya muerto */
+        return {}; // muerto o sin ack — la firma es evidencia, no requisito
       }
     },
     dispose() {
@@ -129,10 +138,12 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
 // ---------- lado stage (server) ----------
 
 // Lo que el stage-worker implementa: KV por sesión + forward por step.
+// close() devuelve {sig} = la firma del tramo procesado (A4) — la cadena
+// la lleva la sesión; sin signer (substrate viejo) simplemente {}.
 export type StageCompute = {
   open(s: StageSessionInfo): Promise<void> | void;
   step(s: Omit<StageStepMsg, "type">): Promise<{ payload: string; sig?: string }> | { payload: string; sig?: string };
-  close(sessionId: string): void;
+  close(sessionId: string): Promise<{ sig?: string } | void> | { sig?: string } | void;
   sessions(): number;
 };
 
@@ -163,8 +174,9 @@ export function createStageSocket(
   sock.on("close", () => {
     // Socket muerto con sesiones abiertas: el coordinator no va a mandar
     // stage.close (su canal también murió) — liberar el KV acá o queda
-    // reservado para siempre (leak real de sesiones zombie).
-    for (const id of sessionIds) compute.close(id);
+    // reservado para siempre (leak real de sesiones zombie). Fire-and-forget:
+    // su sig no llega a nadie (job muerto = nada que atribuir).
+    for (const id of sessionIds) void compute.close(id);
   });
 
   async function handle(msg: CoordMsg): Promise<void> {
@@ -180,10 +192,12 @@ export function createStageSocket(
           send({ type: "stage.out", sessionId: msg.sessionId, seq: msg.seq, payload: r.payload, ...(r.sig ? { sig: r.sig } : {}) });
           break;
         }
-        case "stage.close":
+        case "stage.close": {
           sessionIds.delete(msg.sessionId);
-          compute.close(msg.sessionId);
+          const r = await compute.close(msg.sessionId);
+          send({ type: "stage.ack", sessionId: msg.sessionId, ...(r?.sig ? { sig: r.sig } : {}) });
           break;
+        }
       }
     } catch (e) {
       const sid = "sessionId" in msg ? (msg as { sessionId: string }).sessionId : "?";

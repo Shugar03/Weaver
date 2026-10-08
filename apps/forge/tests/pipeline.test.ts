@@ -6,7 +6,8 @@ import { PipelineExec, simFront } from "../src/pipeline.ts";
 import type { StageTransport } from "../src/stagetransport.ts";
 
 // Transport fake: graba opens/steps/closes; `failAtStep` mata el step N-ésimo.
-function fakeTransport(opts: { failAtStep?: number; tag?: string } = {}) {
+// `sig` simula la firma del close-ack (stage real: sign de su chain).
+function fakeTransport(opts: { failAtStep?: number; tag?: string; sig?: string } = {}) {
   const calls: { type: string; sessionId: string; seq?: number; payload?: string }[] = [];
   let steps = 0;
   const t: StageTransport & { calls: typeof calls } = {
@@ -26,8 +27,9 @@ function fakeTransport(opts: { failAtStep?: number; tag?: string } = {}) {
       // stage-sim: marca la activación — el front la limpia al final.
       return { payload: Buffer.from(`${Buffer.from(s.payload, "base64").toString("utf8")}:${opts.tag ?? "s0"}`).toString("base64") };
     },
-    close(sessionId) {
+    async close(sessionId) {
       calls.push({ type: "close", sessionId });
+      return opts.sig ? { sig: opts.sig } : {};
     },
     dispose() {
       calls.push({ type: "dispose", sessionId: "" });
@@ -142,5 +144,48 @@ describe("S47 PipelineExec", () => {
     }, /cancelado/);
     assert.ok(t1.calls.some((c) => c.type === "close"));
     assert.ok(t2.calls.some((c) => c.type === "close"));
+  });
+
+  it("A4: done lleva stageSigs — firma+chain por tramo; el muerto no firma", async () => {
+    const sig = "ab".repeat(64);
+    const t1 = fakeTransport({ tag: "s0", sig });
+    const t2 = fakeTransport({ tag: "s1", sig });
+    const exec = new PipelineExec({
+      forgeId: "c1",
+      model: "sim-32",
+      stages: STAGES,
+      dial: (e) => (e === STAGES[0].endpoint ? t1 : t2),
+      front: simFront(),
+    });
+    let done: { stageSigs?: { endpoint: string; sessionId: string; chain: string; sig: string }[] } = {};
+    for await (const c of exec.execute({ jobId: "j6", model: "sim-32", prompt: "a b" })) {
+      if (c.done) done = c;
+    }
+    assert.equal(done.stageSigs?.length, 2);
+    assert.deepEqual(done.stageSigs!.map((s) => s.endpoint), STAGES.map((s) => s.endpoint));
+    assert.ok(done.stageSigs!.every((s) => s.sig === sig && s.chain.length === 64 && s.sessionId.startsWith("j6:")));
+    // Chains distintos entre stages (cada sesión tiene su historia).
+    assert.notEqual(done.stageSigs![0].chain, done.stageSigs![1].chain);
+  });
+
+  it("A4: stage reemplazado firma SU sesión (replay incluido), el muerto no", async () => {
+    const dead = fakeTransport({ tag: "s0", failAtStep: 3, sig: "dead" });
+    const spare = fakeTransport({ tag: "s9", sig: "cd".repeat(64) });
+    const t2 = fakeTransport({ tag: "s1", sig: "ef".repeat(64) });
+    const exec = new PipelineExec({
+      forgeId: "c1",
+      model: "sim-32",
+      stages: STAGES,
+      dial: (e) => (e === "10.0.0.9:9001" ? spare : e === STAGES[0].endpoint ? dead : t2),
+      front: simFront(),
+      requestStage: async (_d, blocks) => ({ endpoint: "10.0.0.9:9001", blocks }),
+    });
+    let done: { stageSigs?: { endpoint: string; sessionId: string; sig: string }[] } = {};
+    for await (const c of exec.execute({ jobId: "j7", model: "sim-32", prompt: "a b c d" })) {
+      if (c.done) done = c;
+    }
+    // Solo los tramos que sobrevivieron firman — el muerto nunca cerró.
+    assert.deepEqual(done.stageSigs!.map((s) => s.endpoint).sort(), ["10.0.0.2:9001", "10.0.0.9:9001"]);
+    assert.ok(done.stageSigs!.every((s) => !s.sessionId.includes(":s0") || s.sessionId.includes("r")));
   });
 });

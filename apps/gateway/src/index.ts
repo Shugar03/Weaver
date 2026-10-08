@@ -1096,6 +1096,10 @@ export function createApp(deps: Deps) {
               ...(deps.forgePubkeyOf?.(proof.forgeId)
                 ? { signer: deps.forgePubkeyOf(proof.forgeId) }
                 : {}),
+              // S47: atribución por tramo — cada entrada ya verificó su firma
+              // contra el pubkey del stage asignado (remote.ts). El chip puede
+              // mostrar "N stages verificados" sin confiar en nadie.
+              ...(proof.stageSigs?.length ? { stageSigs: proof.stageSigs } : {}),
             },
           }
         : {};

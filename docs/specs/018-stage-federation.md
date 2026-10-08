@@ -188,7 +188,8 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | Transport TCP coordinator→stage (`tcpStageDial`) | `forge/stagetransport.ts` | ✅ socket real en tests |
 | `stage.need`→`stage.offer` heal por canal gateway | `daemon.ts` + `forgews.ts` | ✅ 10s timeout → vacío honesto |
 | CLI `--stage-worker` `--stage-model` `--pipeline` | `forge/cli.ts` | ✅ warn "substrate: sim" |
-| Firma por stage (stageSigs en done) | — | ⏳ sig viaja en stage.out; agregación+verif gateway = pendiente |
+| Firma por stage (stageSigs en done + verif gateway) | `stageproto` chain + `pipeline.ts` + `stagepool.chainOf` + `remote.verifyStageSigs` | ✅ ed25519 real en e2e; inválida → strike+drop, ajena → ignorada |
+| `weaver_proof.stageSigs` visible al cliente | `gateway/index.ts` receipt | ✅ solo entradas verificadas |
 | Substrate pesos reales (llama.cpp --stage / prima.cpp) | — | ⏳ fase C — sim valida wire, no modelo |
 
 Desviaciones vs el diseño original:
@@ -204,6 +205,16 @@ Desviaciones vs el diseño original:
 - **pipeline coordinator sin exec local**: heartbeat lo reporta hot por
   declaración (su capacidad la decide el StagePool en cada acquire, no un
   engine residente que no existe).
+- **Firma al CLOSE, no por step** (decisión A4): el stage acumula
+  `chain = sha256(chain‖seq‖in‖out)` por step; al `stage.close` firma
+  `sha256(jobId:sessionId:chain)` con su keypair de forge. El coordinator
+  recomputa el mismo chain sobre el tráfico que ve → `job.done.stageSigs`
+  → gateway verifica `endpoint→forgePubkey` del loan (StagePool lo retiene
+  aunque el worker ya se haya ido). Firma inválida → `strikeWorker` +
+  entrada descartada; endpoint ajeno al loan → ignorado sin penalizar.
+  El muerto no firma — el reemplazo firma SU sesión (loan actualizado).
+  Una firma por stage por job: no hay N firmas por token (MVP honesto —
+  ata el historial de activaciones completo, no cada step por separado).
 
 Bugs reales que solo salieron en implementación:
 
@@ -214,4 +225,12 @@ Bugs reales que solo salieron en implementación:
   (ahora `close()` destruye conexiones, como un crash real).
 - `seenSeqs` agregado al sim-compute: el replay es asertable post-close.
 
-Regresión: forge-net 111 · forge 54 · gateway 209 · e2e 14 — todo verde.
+- `t.close()` era fire-and-forget → ahora `Promise<{sig?}>` con wait
+  acotado (5s): el ack viaja con la firma; muerto/timeout → `{}` honesto.
+- La entrada de chain del muerto debe salir del loan **por endpoint** aunque
+  su instance ya no esté en `stageWorkers()` — si no, una sig zombie
+  seguiría atribuible (lo arregla `replace()`).
+- `it.return()` no interrumpe un `await` en vuelo — el release del loan
+  viaja sobre la promesa del acquire, no sobre un flag post-await (S46).
+
+Regresión: forge-net 117 · forge 57 · gateway 209 · e2e 14 — todo verde.

@@ -15,11 +15,14 @@ import type {
   ImageExec,
   ImageRequest,
   ImageResult,
+  StageSig,
   StreamChunk,
 } from "@weaver/forge-exec";
-import type { ForgeMsg, GatewayMsg } from "./protocol.ts";
+import type { ForgeMsg, GatewayMsg, JobDoneMsg } from "./protocol.ts";
 import type { ForgePool } from "./pool.ts";
 import type { StagePool } from "./stagepool.ts";
+import { stageSigPreimage } from "./stageproto.ts";
+import type { VerifyFn } from "./session.ts";
 
 // Canal abstracto — testeable con un fake duplex, sin socket real.
 // ws-server (gateway) y client (daemon) lo implementan sobre su transporte.
@@ -70,6 +73,7 @@ export class RemoteForgeExec implements ForgeExec {
   private readonly pool?: ForgePool;
   private readonly stagePool?: StagePool;
   private readonly forgePubkey: string;
+  private readonly verifyFn?: VerifyFn;
 
   constructor(opts: {
     channel: ForgeChannel;
@@ -86,6 +90,10 @@ export class RemoteForgeExec implements ForgeExec {
     pool?: ForgePool;
     stagePool?: StagePool;
     forgePubkey?: string;
+    // S47 A4: verifica las firmas de stage contra el loan (endpoint→pubkey).
+    // Sin verify las stageSigs se descartan — evidencia sin chequear no se
+    // reenvía como si fuera verificada.
+    verify?: VerifyFn;
   }) {
     this.channel = opts.channel;
     this.forgeId = opts.instanceId;
@@ -97,6 +105,7 @@ export class RemoteForgeExec implements ForgeExec {
     this.pool = opts.pool;
     this.stagePool = opts.stagePool;
     this.forgePubkey = opts.forgePubkey ?? "";
+    this.verifyFn = opts.verify;
   }
 
   probe(): Promise<boolean> {
@@ -105,6 +114,95 @@ export class RemoteForgeExec implements ForgeExec {
 
   resident(): Promise<boolean> {
     return Promise.resolve(this.isResident?.() ?? true);
+  }
+
+  // Cierre de un job.done del wire: mismos chequeos de siempre (contenido,
+  // proof hash, sig sana) + verificación de stageSigs contra el loan.
+  private async finishDone(
+    m: JobDoneMsg,
+    req: ExecRequest,
+    served: ReturnType<typeof createHash>,
+    servedChunks: number,
+    queue: (StreamChunk | { err: Error })[],
+    wakeUp: () => void,
+  ): Promise<void> {
+    const hasContent = servedChunks > 0 || Boolean(m.toolCalls && m.toolCalls.length > 0);
+    if (!hasContent) {
+      throw new Error(`forge ${this.forgeId}: output vacío — cero chunks servidos no generan proof`);
+    }
+    // Proof L0 del wire — el gateway NO re-firma; el recibo es del forge.
+    // Commitment moderno (promptHash presente): resultHash =
+    // sha256(promptHash‖outputHash) y el promptHash debe matchear el
+    // input que ESTE gateway despachó. Legacy: resultHash=outputHash.
+    const declared = Buffer.from(m.resultHash, "hex");
+    const servedOut = served.digest();
+    const proofOk = m.promptHash
+      ? promptHashOf({
+            model: req.model,
+            prompt: req.prompt,
+            ...(req.messages ? { messages: req.messages } : {}),
+            ...(req.resume ? { resume: req.resume.prefix } : {}),
+          }).equals(Buffer.from(m.promptHash, "hex")) &&
+        commitProof(Buffer.from(m.promptHash, "hex"), servedOut).equals(declared)
+      : servedOut.equals(declared);
+    if (!proofOk) {
+      throw new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al input/output servido`);
+    }
+    // La firma también se sanea acá: un hex malformado produce un
+    // buffer de longitud rara que el contrato rechaza on-chain —
+    // mejor fallar antes que pagar el gas de un release inválido.
+    // Válidas: 64B ed25519 (stellar) o 65B secp256k1 (evm).
+    const sigBytes = Buffer.from(m.signature, "hex");
+    if (sigBytes.length !== 64 && sigBytes.length !== 65) {
+      throw new Error(`forge ${this.forgeId}: firma malformada (${sigBytes.length}B)`);
+    }
+    // S47 A4: stageSigs — cada entrada debe estar en el loan de ESTE job y
+    // su firma verificar contra el pubkey del instance asignado. Las que no
+    // verifican quedan fuera (y el firmante recibe strike — evidencia de
+    // trampa o stage roto).
+    const stageSigs = await this.verifyStageSigs(req.jobId, m.stageSigs);
+    req.onProof?.({
+      forgeId: this.forgeId,
+      resultHash: declared,
+      signature: sigBytes,
+      ...(m.promptHash ? { promptHash: Buffer.from(m.promptHash, "hex"), outputHash: servedOut } : {}),
+      ...(stageSigs ? { stageSigs } : {}),
+    });
+    queue.push({
+      token: "",
+      done: true,
+      // genTokens MEDIDO: los chunks que relayeamos (atados al hash
+      // verificado), no el conteo que el forge declara — su stats
+      // declarativo puede inflar el pago; el nuestro no.
+      stats: { ...(m.stats ?? {}), genTokens: servedChunks },
+      ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
+      ...(stageSigs ? { stageSigs } : {}),
+    });
+    wakeUp();
+  }
+
+  // Una stageSig es válida si: (a) su endpoint+blocks está en la cadena que
+  // ESTE loan asignó, y (b) sig verifica contra el pubkey del instance — la
+  // firma ata sha256(jobId:sessionId:chain) que stage y coordinator
+  // computaron sobre el mismo tráfico. Endpoint ajeno al loan → no
+  // atribuible; firma mala → strike al firmante.
+  private async verifyStageSigs(jobId: string, sigs: StageSig[] | undefined): Promise<StageSig[] | undefined> {
+    if (!sigs?.length || !this.stagePool || !this.verifyFn) return undefined;
+    const loan = this.stagePool.chainOf(jobId);
+    if (!loan?.length) return undefined;
+    const out: StageSig[] = [];
+    for (const s of sigs) {
+      const e = loan.find((x) => x.endpoint === s.endpoint && x.blocks[0] === s.blocks[0] && x.blocks[1] === s.blocks[1]);
+      if (!e) continue;
+      // VerifyFn puede ser sync (ed25519) — Promise.resolve unifica y un
+      // throw de verify = firma inválida, nunca crash del handler.
+      const ok = await Promise.resolve(
+        this.verifyFn(e.forgePubkey, stageSigPreimage(jobId, s.sessionId, s.chain), Buffer.from(s.sig, "hex")),
+      ).catch(() => false);
+      if (ok) out.push(s);
+      else this.stagePool.strikeWorker(jobId, s.endpoint);
+    }
+    return out.length ? out : undefined;
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
@@ -151,55 +249,9 @@ export class RemoteForgeExec implements ForgeExec {
           break;
         case "job.done": {
           completed = true;
-          const hasContent = servedChunks > 0 || Boolean(m.toolCalls && m.toolCalls.length > 0);
-          if (!hasContent) {
-            fail(new Error(`forge ${this.forgeId}: output vacío — cero chunks servidos no generan proof`));
-            break;
-          }
-          // Proof L0 del wire — el gateway NO re-firma; el recibo es del forge.
-          // Commitment moderno (promptHash presente): resultHash =
-          // sha256(promptHash‖outputHash) y el promptHash debe matchear el
-          // input que ESTE gateway despachó. Legacy: resultHash=outputHash.
-          const declared = Buffer.from(m.resultHash, "hex");
-          const servedOut = served.digest();
-          const proofOk = m.promptHash
-            ? promptHashOf({
-                  model: req.model,
-                  prompt: req.prompt,
-                  ...(req.messages ? { messages: req.messages } : {}),
-                  ...(req.resume ? { resume: req.resume.prefix } : {}),
-                }).equals(Buffer.from(m.promptHash, "hex")) &&
-              commitProof(Buffer.from(m.promptHash, "hex"), servedOut).equals(declared)
-            : servedOut.equals(declared);
-          if (!proofOk) {
-            fail(new Error(`forge ${this.forgeId}: proof hash mismatch — el recibo no ata al input/output servido`));
-            break;
-          }
-          // La firma también se sanea acá: un hex malformado produce un
-          // buffer de longitud rara que el contrato rechaza on-chain —
-          // mejor fallar antes que pagar el gas de un release inválido.
-          // Válidas: 64B ed25519 (stellar) o 65B secp256k1 (evm).
-          const sigBytes = Buffer.from(m.signature, "hex");
-          if (sigBytes.length !== 64 && sigBytes.length !== 65) {
-            fail(new Error(`forge ${this.forgeId}: firma malformada (${sigBytes.length}B)`));
-            break;
-          }
-          req.onProof?.({
-            forgeId: this.forgeId,
-            resultHash: declared,
-            signature: sigBytes,
-            ...(m.promptHash ? { promptHash: Buffer.from(m.promptHash, "hex"), outputHash: servedOut } : {}),
-          });
-          queue.push({
-            token: "",
-            done: true,
-            // genTokens MEDIDO: los chunks que relayeamos (atados al hash
-            // verificado), no el conteo que el forge declara — su stats
-            // declarativo puede inflar el pago; el nuestro no.
-            stats: { ...(m.stats ?? {}), genTokens: servedChunks },
-            ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
-          });
-          wakeUp();
+          // Async: la verificación de stageSigs puede ser async (verify EVM).
+          // `completed` ya quedó — un job.fail posterior se ignora.
+          void this.finishDone(m, req, served, servedChunks, queue, wakeUp).catch(fail);
           break;
         }
         case "job.fail":

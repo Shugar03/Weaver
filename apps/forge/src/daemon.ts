@@ -525,6 +525,8 @@ export class ForgeDaemon {
             signature: (await this.sign(hash)).toString("hex"),
             ...(c.stats ? { stats: c.stats } : {}),
             ...(c.toolCalls ? { toolCalls: c.toolCalls } : {}),
+            // S47: firmas de los stages recolectadas al close (pipeline).
+            ...(c.stageSigs ? { stageSigs: c.stageSigs } : {}),
           });
         }
       }

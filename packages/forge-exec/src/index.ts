@@ -11,4 +11,4 @@ export type { ResultSigner } from "./proven.ts";
 export { RoutedExec } from "./routed.ts";
 export { SwitchableExec } from "./switchable.ts";
 export { TrackedExec, TrackedImageExec } from "./tracked.ts";
-export type { ExecOptions, ExecRequest, ExecStats, ForgeExec, ImageExec, ImageRequest, ImageResult, Proof, StreamChunk, ToolCall } from "./ports.ts";
+export type { ExecOptions, ExecRequest, ExecStats, ForgeExec, ImageExec, ImageRequest, ImageResult, Proof, StageSig, StreamChunk, ToolCall } from "./ports.ts";

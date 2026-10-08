@@ -9,7 +9,8 @@
 // - Stage muere mid-job → ban local → requestStage() al gateway (el pool es
 //   la única autoridad de leases) → open nuevo → REPLAY de la historia
 //   cacheada → el job continúa donde quedó, sin reenviar el prompt.
-import type { ExecRequest, ForgeExec, StreamChunk } from "@weaver/forge-exec";
+import type { ExecRequest, ForgeExec, StageSig, StreamChunk } from "@weaver/forge-exec";
+import { stageChainInit, stageChainStep, stageSigPreimage } from "@weaver/forge-net";
 import type { StageDial, StageTransport } from "./stagetransport.ts";
 
 // Frontera de activación entre coordinator y stage.
@@ -34,6 +35,10 @@ type ChainEntry = {
   blocks: [number, number];
   transport: StageTransport;
   sessionId: string;
+  // Chain de activaciones de ESTA sesión (stageChainInit/Step): el stage lo
+  // computa sobre su lado y firma al close; nosotros sobre el tráfico que
+  // vimos — mismatch = el stage firmó otra historia (el gateway lo nota).
+  chain: string;
 };
 
 const STEP_TIMEOUT_MS = 30_000;
@@ -81,20 +86,34 @@ export class PipelineExec implements ForgeExec {
       blocks: s.blocks,
       transport: this.dial(s.endpoint),
       sessionId: `${jobId}:s${i}`,
+      chain: "",
     }));
     // sent[i] = historial completo de inputs enviados al stage i — el replay
     // buffer del dual-cache (Petals Algo 1: cache[server].append(inputs)).
     const sent: Hidden[][] = chain.map(() => []);
     const seq = chain.map(() => 0);
-    const opened = new Set<number>();
+    const opened = new Set<string>(); // sessionIds con open confirmado
+    const closed = new Set<string>();
+    // stage.close espera el close-ack: {sig} = el stage firma su cadena.
+    // `collect` no-null = happy path (firma → stageSigs); null = limpieza
+    // tras fallo — se cierra igual pero la firma no se atribuye a nada.
+    const closeSession = async (st: ChainEntry, collect: StageSig[] | null): Promise<void> => {
+      if (!opened.has(st.sessionId) || closed.has(st.sessionId)) return;
+      closed.add(st.sessionId);
+      const { sig } = await st.transport.close(st.sessionId);
+      if (sig && collect) {
+        collect.push({ endpoint: st.endpoint, blocks: st.blocks, sessionId: st.sessionId, chain: st.chain, sig });
+      }
+    };
     try {
-      for (const [i, st] of chain.entries()) {
+      for (const st of chain) {
         await withTimeout(
           st.transport.open({ jobId, sessionId: st.sessionId, model: req.model, blocks: st.blocks, kvLenHint: 1024 }),
           this.stepTimeoutMs,
           `stage ${st.endpoint} open`,
         );
-        opened.add(i);
+        st.chain = stageChainInit(st.sessionId, st.blocks);
+        opened.add(st.sessionId);
       }
       let cur = this.front.embed(jobId, req.prompt);
       let genTokens = 0;
@@ -103,7 +122,7 @@ export class PipelineExec implements ForgeExec {
       while (genTokens < limit) {
         if (req.signal?.aborted) throw new Error("job cancelado");
         for (let i = 0; i < chain.length; i++) {
-          cur = await this.step(chain, i, cur, sent, seq, jobId, req);
+          cur = await this.step(chain, i, cur, sent, seq, jobId, req, opened);
         }
         const r = this.front.next(cur);
         if (r.done) break;
@@ -111,14 +130,19 @@ export class PipelineExec implements ForgeExec {
         yield { token: r.token, done: false };
         cur = r.embed;
       }
+      // Close-acks ANTES del done: el stage firma su chain completo — las
+      // stageSigs viajan en el done chunk (atribución por tramo, A4).
+      const stageSigs: StageSig[] = [];
+      for (const st of chain) await closeSession(st, stageSigs);
       yield {
         token: "",
         done: true,
         stats: { genTokens, decodeMs: Date.now() - t0, promptTokens: Math.ceil(req.prompt.length / 4) },
+        ...(stageSigs.length ? { stageSigs } : {}),
       };
     } finally {
-      for (const [i, st] of chain.entries()) {
-        if (opened.has(i)) st.transport.close(st.sessionId);
+      for (const st of chain) {
+        await closeSession(st, null);
         st.transport.dispose();
       }
     }
@@ -134,16 +158,22 @@ export class PipelineExec implements ForgeExec {
     seq: number[],
     jobId: string,
     req: ExecRequest,
+    opened: Set<string>,
   ): Promise<Hidden> {
     const st = chain[i];
-    const doStep = async (t: StageTransport, sessionId: string, payload: Hidden, n: number) =>
-      withTimeout(
-        t.step({ sessionId, seq: n, shape: payload.shape, dtype: "f16", payload: payload.payload }),
+    // doStep devuelve la activación Y actualiza el chain de la sesión — la
+    // misma fórmula que el stage lleva server-side (stageChainStep).
+    const doStep = async (t: StageTransport, st2: ChainEntry, payload: Hidden, n: number) => {
+      const r = await withTimeout(
+        t.step({ sessionId: st2.sessionId, seq: n, shape: payload.shape, dtype: "f16", payload: payload.payload }),
         this.stepTimeoutMs,
-        `stage ${chain[i].endpoint} step`,
+        `stage ${st2.endpoint} step`,
       );
+      st2.chain = stageChainStep(st2.chain, n, payload.payload, r.payload);
+      return r;
+    };
     try {
-      const r = await doStep(st.transport, st.sessionId, input, seq[i]);
+      const r = await doStep(st.transport, st, input, seq[i]);
       sent[i].push(input);
       seq[i]++;
       return { shape: input.shape, payload: r.payload };
@@ -166,19 +196,22 @@ export class PipelineExec implements ForgeExec {
         this.stepTimeoutMs,
         `stage ${offer.endpoint} open`,
       );
+      // Swap en la cadena — chain nuevo por sesión (el replay lo repuebla
+      // idéntico al que el stage computa server-side).
+      const next: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, transport: t, sessionId, chain: stageChainInit(sessionId, offer.blocks) };
+      opened.add(sessionId);
       for (const [n, past] of sent[i].entries()) {
-        await doStep(t, sessionId, past, n).then(
+        await doStep(t, next, past, n).then(
           () => {},
           (re) => {
             throw new Error(`stage ${offer.endpoint} replay seq ${n} falló: ${re instanceof Error ? re.message : re}`);
           },
         );
       }
-      // Swap en la cadena — el tramo queda cubierto por el reemplazo.
       st.transport.dispose();
-      chain[i] = { endpoint: offer.endpoint, blocks: offer.blocks, transport: t, sessionId };
+      chain[i] = next;
       // Ahora sí el input actual: seq continúa donde el historial quedó.
-      const r = await doStep(t, sessionId, input, seq[i]);
+      const r = await doStep(t, next, input, seq[i]);
       sent[i].push(input);
       seq[i]++;
       return { shape: input.shape, payload: r.payload };
@@ -220,27 +253,38 @@ export function simFront(): PipelineFront {
 // realmente pasó por ESTE stage (cadena verificable sin pesos reales).
 // Guarda la historia de seqs recibidas → el test puede afirmar que el
 // reemplazo recibió el REPLAY completo antes del step nuevo.
-export function simStageCompute(blocks: [number, number], tag = "s0") {
-  const sess = new Map<string, { blocks: [number, number]; seqs: number[] }>();
+// sign: la firma del forge (misma key que en job.done) — ata (jobId,
+// sessionId, chain) del tramo procesado. Sin signer → close devuelve {}.
+export function simStageCompute(
+  blocks: [number, number],
+  tag = "s0",
+  sign?: (preimage: Buffer) => Promise<string> | string,
+) {
+  const sess = new Map<string, { blocks: [number, number]; jobId: string; chain: string; seqs: number[] }>();
   // Log de TODOS los seqs recibidos — sobrevive al close (el KV muere con la
   // sesión, pero la evidencia del replay queda para los tests/e2e).
   const seen: { sessionId: string; seq: number }[] = [];
   return {
-    open(s: { sessionId: string; blocks: [number, number] }) {
+    open(s: { sessionId: string; jobId: string; blocks: [number, number] }) {
       if (s.blocks[0] < blocks[0] || s.blocks[1] > blocks[1]) {
         throw new Error(`blocks [${s.blocks}] fuera de mi rango [${blocks}]`);
       }
-      sess.set(s.sessionId, { blocks: s.blocks, seqs: [] });
+      sess.set(s.sessionId, { blocks: s.blocks, jobId: s.jobId, chain: stageChainInit(s.sessionId, s.blocks), seqs: [] });
     },
     step(s: { sessionId: string; seq: number; payload: string }) {
       const x = sess.get(s.sessionId);
       if (!x) throw new Error("sin sesión — open primero");
       x.seqs.push(s.seq);
       seen.push({ sessionId: s.sessionId, seq: s.seq });
-      return { payload: Buffer.from(`${Buffer.from(s.payload, "base64").toString("utf8")}:${tag}`).toString("base64") };
+      const out = Buffer.from(`${Buffer.from(s.payload, "base64").toString("utf8")}:${tag}`).toString("base64");
+      x.chain = stageChainStep(x.chain, s.seq, s.payload, out);
+      return { payload: out };
     },
-    close(sessionId: string) {
+    async close(sessionId: string) {
+      const x = sess.get(sessionId);
       sess.delete(sessionId);
+      if (!x || !sign) return {};
+      return { sig: await sign(stageSigPreimage(x.jobId, sessionId, x.chain)) };
     },
     sessions: () => sess.size,
     seqsOf: (sessionId: string) => sess.get(sessionId)?.seqs ?? [],

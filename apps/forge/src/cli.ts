@@ -423,6 +423,13 @@ siguiente paso: weaver-forge up`);
       console.warn(`rpc-server ${c.instanceId} no spawneó — heartbeateo muerto:`, e);
     }
   }
+  // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
+  // Arriba del stage-server: el compute firma su cadena con ESTA misma key —
+  // la atribución de tramo queda ligada a la identidad del forge (A4).
+  const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
+    cfg.chain === "evm"
+      ? evmForgeKeypair(cfg.secret as Hex).sign
+      : ((hash) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(hash)));
   // S47 worker: stage-server TCP por instance stage-worker — bindea el
   // endpoint declarado ANTES de conectar (el primer heartbeat ya reporta
   // alive real). Substrate sim por ahora — el wire es el de prod.
@@ -438,7 +445,7 @@ siguiente paso: weaver-forge up`);
       const srv = startStageServer({
         host: m[1].replace(/^\[|\]$/g, ""),
         port: Number(m[2]),
-        compute: simStageCompute(c.stage.layers, c.instanceId.replace(/\W/g, "")),
+        compute: simStageCompute(c.stage.layers, c.instanceId.replace(/\W/g, ""), async (h) => (await sign(h)).toString("hex")),
       });
       await srv.ready;
       stageServers.set(c.instanceId, srv);
@@ -468,11 +475,6 @@ siguiente paso: weaver-forge up`);
           }),
         )
     : undefined;
-  // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
-  const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
-    cfg.chain === "evm"
-      ? evmForgeKeypair(cfg.secret as Hex).sign
-      : ((hash) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(hash)));
   const contractId = arg("--contract") ?? process.env.SETTLEMENT_CONTRACT;
   if (contractId) {
     try {
