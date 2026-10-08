@@ -9,8 +9,9 @@
 // - Stage muere mid-job → ban local → requestStage() al gateway (el pool es
 //   la única autoridad de leases) → open nuevo → REPLAY de la historia
 //   cacheada → el job continúa donde quedó, sin reenviar el prompt.
+import { createHash } from "node:crypto";
 import type { ExecRequest, ForgeExec, StageSig, StreamChunk } from "@weaver/forge-exec";
-import { stageChainInit, stageChainStep, stageHalfInit, stageHalfStep, stageSigPreimage, stageSigPreimageV2, stageTokenOk } from "@weaver/forge-net";
+import { CKPT_INTERVAL, stageChainInit, stageChainStep, stageCkpt, stageHalfInit, stageHalfStep, stageSigPreimage, stageSigPreimageV2, stageTokenOk } from "@weaver/forge-net";
 import type { StageDial, StageTransport } from "./stagetransport.ts";
 
 // Frontera de activación entre coordinator y stage.
@@ -58,6 +59,9 @@ export function httpFront(url: string): PipelineFront {
 export type StageRequester = (
   dead: string,
   blocks: [number, number],
+  // "audit" (B5): borrow efímero — el "dead" está vivo; el pool no lo
+  // strikea ni lo saca del loan.chain (su sig sigue atribuible al job).
+  purpose?: "heal" | "audit",
 ) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>;
 
 type ChainEntry = {
@@ -70,6 +74,15 @@ type ChainEntry = {
   // computa sobre su lado y firma al close; nosotros sobre el tráfico que
   // vimos — mismatch = el stage firmó otra historia (el gateway lo nota).
   chain: string;
+  // B5: half-chains coordinator-side — en relay los computamos sobre los
+  // tensores que atraviesan; en direct los lleva el stage y sus ckpts los
+  // recibimos por stage.report. Mismo seed jobId → comparable entre sesiones.
+  inChain: string;
+  outChain: string;
+  // B5: weightsHash declarado por el stage en su open-ack — commitment a
+  // qué pesos cargó; el auditor lo contrasta con el suyo (diagnóstico
+  // "pesos distintos" separado de "cómputo diverge").
+  weights?: string;
 };
 
 const STEP_TIMEOUT_MS = 30_000;
@@ -91,6 +104,7 @@ export class PipelineExec implements ForgeExec {
   private readonly maxTokens: number;
   private readonly coordPubkey?: string;
   private readonly mode: "relay" | "direct";
+  private readonly auditRate: number;
 
   constructor(deps: {
     forgeId: string;
@@ -109,6 +123,12 @@ export class PipelineExec implements ForgeExec {
     // stages deben poder dialarse entre sí; relay queda como fallback para
     // endpoints NAT'd o substrate sin soporte fwd.
     mode?: "relay" | "direct";
+    // B5 audit-by-replay (TOPLOC): probabilidad [0,1] de que tras completar
+    // la generación se audite un ckpt — un spare del tramo reabsorbe los
+    // ins hasta ese seq y su ckpt recomputado debe igualar el reportado.
+    // Divergencia = cómputo deshonesto → el job falla post-tokens (honesto:
+    // el output salió pero la evidencia dice que no es confiable).
+    auditRate?: number;
   }) {
     this.forgeId = deps.forgeId;
     this.model = deps.model;
@@ -120,6 +140,7 @@ export class PipelineExec implements ForgeExec {
     this.maxTokens = deps.maxTokens ?? 512;
     this.coordPubkey = deps.coordPubkey;
     this.mode = deps.mode ?? "relay";
+    this.auditRate = deps.auditRate ?? 0;
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
@@ -139,7 +160,12 @@ export class PipelineExec implements ForgeExec {
       transport: this.dial(s.endpoint),
       sessionId: `${jobId}:s${i}`,
       chain: "",
+      inChain: stageHalfInit(jobId),
+      outChain: stageHalfInit(jobId),
     }));
+    // B5: ckpts coordinator-side — en relay derivamos el commitment de las
+    // half-chains locales cada CKPT_INTERVAL (el auditor las recomputa).
+    const ckpts = new Map<string, { seq: number; hash: string; weights?: string }>();
     // sent[i] = historial completo de inputs enviados al stage i — el replay
     // buffer del dual-cache (Petals Algo 1: cache[server].append(inputs)).
     const sent: Hidden[][] = chain.map(() => []);
@@ -167,7 +193,7 @@ export class PipelineExec implements ForgeExec {
     };
     try {
       for (const st of chain) {
-        await withTimeout(
+        const ack = await withTimeout(
           st.transport.open({
             jobId,
             sessionId: st.sessionId,
@@ -180,6 +206,7 @@ export class PipelineExec implements ForgeExec {
           this.stepTimeoutMs,
           `stage ${st.endpoint} open`,
         );
+        st.weights = ack.weights;
         st.chain = stageChainInit(st.sessionId, st.blocks);
         opened.add(st.sessionId);
       }
@@ -190,7 +217,7 @@ export class PipelineExec implements ForgeExec {
       while (genTokens < limit) {
         if (req.signal?.aborted) throw new Error("job cancelado");
         for (let i = 0; i < chain.length; i++) {
-          cur = await this.step(chain, i, cur, sent, seq, jobId, req, opened);
+          cur = await this.step(chain, i, cur, sent, seq, jobId, req, opened, ckpts);
         }
         const r = await this.front.next(cur);
         if (r.done) break;
@@ -198,6 +225,10 @@ export class PipelineExec implements ForgeExec {
         yield { token: r.token, done: false };
         cur = r.embed;
       }
+      // B5 audit-by-replay: post-generación, pre-close — un tramo auditado
+      // que diverge mata el job con evidencia (los tokens ya salieron; la
+      // confianza no).
+      await this.auditByReplay(chain, ckpts, (i) => sent[i], jobId, req);
       // Close-acks ANTES del done: el stage firma su chain completo — las
       // stageSigs viajan en el done chunk (atribución por tramo, A4).
       const stageSigs: StageSig[] = [];
@@ -227,6 +258,7 @@ export class PipelineExec implements ForgeExec {
     jobId: string,
     req: ExecRequest,
     opened: Set<string>,
+    ckpts?: Map<string, { seq: number; hash: string; weights?: string }>,
   ): Promise<Hidden> {
     const st = chain[i];
     // doStep devuelve la activación Y actualiza el chain de la sesión — la
@@ -238,6 +270,13 @@ export class PipelineExec implements ForgeExec {
         `stage ${st2.endpoint} step`,
       );
       st2.chain = stageChainStep(st2.chain, n, payload.payload, r.payload);
+      st2.inChain = stageHalfStep(st2.inChain, n, payload.payload);
+      st2.outChain = stageHalfStep(st2.outChain, n, r.payload);
+      // B5: ckpt derivado local — el auditor reabsorbe ins[0..n] y debe
+      // producir este mismo commitment (comparable por seed compartido).
+      if (ckpts && (n + 1) % CKPT_INTERVAL === 0) {
+        ckpts.set(st2.sessionId, { seq: n, hash: stageCkpt(n, st2.inChain, st2.outChain), ...(st2.weights ? { weights: st2.weights } : {}) });
+      }
       return r;
     };
     try {
@@ -280,6 +319,8 @@ export class PipelineExec implements ForgeExec {
         transport: t,
         sessionId,
         chain: stageChainInit(sessionId, offer.blocks),
+        inChain: stageHalfInit(jobId),
+        outChain: stageHalfInit(jobId),
       };
       opened.add(sessionId);
       for (const [n, past] of sent[i].entries()) {
@@ -300,6 +341,90 @@ export class PipelineExec implements ForgeExec {
     }
   }
 
+  // ---------- B5: audit-by-replay (TOPLOC) ----------
+  // Post-generación, pre-close: toma el ÚLTIMO ckpt reportado por una
+  // sesión del chain y le pide a un SPARE del mismo tramo que recomputé
+  // esa ventana — los ins llegan por absorb (coordinator-side si los tiene,
+  // replay del predecesor vivo si no). El auditor cierra: sus half-chains
+  // recomputan el ckpt — divergir del reportado prueba que el original no
+  // corrió el cómputo declarado (pesos distintos, lazy, otro modelo).
+  // Sin auditor disponible → skip honesto (audit es best-effort, no gate).
+  private async auditByReplay(
+    chain: ChainEntry[],
+    ckpts: Map<string, { seq: number; hash: string; weights?: string }>,
+    insOf: (i: number) => Hidden[] | null,
+    jobId: string,
+    req: ExecRequest,
+  ): Promise<void> {
+    if (this.auditRate <= 0 || Math.random() >= this.auditRate) return;
+    if (!this.requestStage) return;
+    const eligible = chain.map((st, i) => ({ st, i, ck: ckpts.get(st.sessionId) })).filter((e) => e.ck);
+    if (!eligible.length) return; // ningún tramo llegó a un ckpt — nada que auditar
+    const { st, i: idx, ck } = eligible[Math.floor(Math.random() * eligible.length)] as { st: ChainEntry; i: number; ck: { seq: number; hash: string; weights?: string } };
+    const offer = await this.requestStage(st.endpoint, st.blocks, "audit").catch(() => null);
+    if (!offer?.endpoint || !offer.blocks) return; // sin spare del tramo → skip honesto
+    const t = this.dial(offer.endpoint);
+    const auditSid = `${st.sessionId}:audit`;
+    try {
+      const ack0 = await withTimeout(
+        t.open({
+          jobId,
+          sessionId: auditSid,
+          model: req.model,
+          blocks: offer.blocks,
+          ...(offer.token ? { token: offer.token } : {}),
+          ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}),
+        }),
+        this.stepTimeoutMs,
+        `audit ${offer.endpoint} open`,
+      );
+      // Weights primero: si el auditor cargó otros pesos, el ckpt jamás
+      // converge — diagnóstico específico antes de gastar el replay.
+      if (ck.weights && ack0.weights && ack0.weights !== ck.weights) {
+        throw new Error(
+          `B5 audit stage [${st.blocks[0]},${st.blocks[1]}) ${st.endpoint}: weights divergen (reportado ${ck.weights.slice(0, 12)}… vs auditor ${ack0.weights.slice(0, 12)}…) — el tramo no corre los pesos declarados`,
+        );
+      }
+      const creds = {
+        ...(offer.token ? { token: offer.token } : {}),
+        ...(this.coordPubkey ? { coordPubkey: this.coordPubkey } : {}),
+      };
+      const ins = insOf(idx);
+      if (ins) {
+        // Relay / K=0: el coordinator tiene los ins — absorb directo.
+        // Si la historia no cubre el ckpt, absorb parcial daría un falso
+        // mismatch → skip honesto.
+        if (ins.length <= ck.seq || ins.slice(0, ck.seq + 1).some((h) => !h)) return;
+        for (let n = 0; n <= ck.seq; n++) {
+          const h = ins[n]!;
+          t.injectFwd({ sessionId: auditSid, seq: n, shape: h.shape, dtype: "f16", payload: h.payload, ...creds, absorb: true });
+        }
+      } else {
+        // Direct K>0: el predecesor vivo replaya sus outs (los ins del
+        // auditado) hasta el ckpt — absorb en la sesión auditora.
+        const prev = chain[idx - 1];
+        if (!prev?.transport.alive) return; // sin fuente de ins → skip
+        await withTimeout(
+          prev.transport.replay(prev.sessionId, ck.seq, { endpoint: offer.endpoint, sessionId: auditSid, ...creds }),
+          this.stepTimeoutMs,
+          `audit replay ${prev.endpoint} → ${offer.endpoint}`,
+        );
+      }
+      // Close → chains finales del auditor = estado a ck.seq (absorb no
+      // propaga). El ckpt recomputado debe igualar el reportado.
+      const ack = await t.close(auditSid);
+      if (!ack.inChain || !ack.outChain) return; // auditor sin chains — skip
+      const recomputed = stageCkpt(ck.seq, ack.inChain, ack.outChain);
+      if (recomputed !== ck.hash) {
+        throw new Error(
+          `B5 audit mismatch stage [${st.blocks[0]},${st.blocks[1]}) ${st.endpoint}: ckpt@seq${ck.seq} diverge — cómputo deshonesto`,
+        );
+      }
+    } finally {
+      t.dispose();
+    }
+  }
+
   // ---------- B2: data plane directo (stage→stage) ----------
   // El coordinator inyecta cada token en s1 y espera el out de sN — los
   // tramos medios corren fuera de banda (N+1 hops por token). El control
@@ -315,8 +440,15 @@ export class PipelineExec implements ForgeExec {
       token: s.token,
       transport: this.dial(s.endpoint),
       sessionId: `${jobId}:s${i}`,
-      chain: stageHalfInit(jobId), // half-chains: el seed es jobId (compartido)
+      // En direct el coordinator no ve los tensores medios — los half-chains
+      // viven server-side; los nuestros quedan al seed (los ckpts reales
+      // llegan por stage.report → ckpts).
+      chain: stageHalfInit(jobId),
+      inChain: stageHalfInit(jobId),
+      outChain: stageHalfInit(jobId),
     }));
+    // B5: ckpts reportados por los stages (TOPLOC) — audit-by-replay.
+    const ckpts = new Map<string, { seq: number; hash: string; weights?: string }>();
     const opened = new Set<string>();
     const closed = new Set<string>();
     // injected[n] = input enviado a s1 en seq n — la re-inyección del heal.
@@ -346,7 +478,12 @@ export class PipelineExec implements ForgeExec {
     };
     const watch = (t: StageTransport) => {
       t.onEvent?.((m) => {
-        if (m.type === "stage.report") lastReport.set(m.sessionId, m.seq);
+        if (m.type === "stage.report") {
+          lastReport.set(m.sessionId, m.seq);
+          // B5: el ckpt ata la historia a ese seq — comparable contra la
+          // sesión auditora (hash sin sessionId, mismo seed jobId).
+          if (m.ckpt) ckpts.set(m.sessionId, { seq: m.ckpt.seq, hash: m.ckpt.hash, ...(m.ckpt.weights ? { weights: m.ckpt.weights } : {}) });
+        }
         if (m.type === "stage.fail") {
           fail.cur = { sessionId: m.sessionId, error: m.error, ...(m.blame ? { blame: m.blame } : {}) };
           breaker.fire(new Error(`stage.fail ${m.sessionId}: ${m.error}`));
@@ -371,7 +508,7 @@ export class PipelineExec implements ForgeExec {
       }
     };
     const openOne = async (st: ChainEntry, i: number) => {
-      await withTimeout(
+      const ack = await withTimeout(
         st.transport.open({
           jobId,
           sessionId: st.sessionId,
@@ -387,6 +524,7 @@ export class PipelineExec implements ForgeExec {
         this.stepTimeoutMs,
         `stage ${st.endpoint} open`,
       );
+      st.weights = ack.weights;
       opened.add(st.sessionId);
     };
     try {
@@ -438,6 +576,9 @@ export class PipelineExec implements ForgeExec {
         cur = r.embed;
         seq++;
       }
+      // B5: audit post-generación — en direct los ins viven en el
+      // coordinator solo para s1; tramos medios los replaya el predecesor.
+      await this.auditByReplay(chain, ckpts, (i) => (i === 0 ? injected : null), jobId, req);
       const stageSigs: StageSig[] = [];
       for (const st of chain) await closeSession(st, stageSigs);
       yield {
@@ -521,7 +662,7 @@ export class PipelineExec implements ForgeExec {
       this.stepTimeoutMs,
       `stage ${offer.endpoint} open`,
     );
-    const repl: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, token: offer.token, transport: t, sessionId, chain: stageHalfInit(jobId) };
+    const repl: ChainEntry = { endpoint: offer.endpoint, blocks: offer.blocks, token: offer.token, transport: t, sessionId, chain: stageHalfInit(jobId), inChain: stageHalfInit(jobId), outChain: stageHalfInit(jobId) };
     watch(t); // el transport del reemplazo entra al mismo watch de reports/fails
     // Replay del historial: el previo tiene los outs (los inputs del muerto).
     if (k > 0) {
@@ -599,6 +740,10 @@ export function simStageCompute(
   // B1 WAN auth: con secret seteado, open exige token HMAC válido —
   // cualquiera sin capability no abre sesión ni toca KV (fail closed).
   secret?: string,
+  // B5 test hook: un stage "lazy" altera su output desde este seq — el
+  // chain queda consistente (transporte intacto) pero el ckpt diverge del
+  // auditor honesto → el audit-by-replay lo atrapa (cómputo, no transporte).
+  corruptFromSeq?: number,
 ) {
   const sess = new Map<string, { blocks: [number, number]; jobId: string; chain: string; inChain: string; outChain: string; seqs: number[] }>();
   // Log de TODOS los seqs recibidos — sobrevive al close (el KV muere con la
@@ -627,7 +772,9 @@ export function simStageCompute(
       if (!x) throw new Error("sin sesión — open primero");
       x.seqs.push(s.seq);
       seen.push({ sessionId: s.sessionId, seq: s.seq });
-      const out = Buffer.from(`${Buffer.from(s.payload, "base64").toString("utf8")}:${tag}`).toString("base64");
+      const out = Buffer.from(
+        `${Buffer.from(s.payload, "base64").toString("utf8")}:${tag}${corruptFromSeq !== undefined && s.seq >= corruptFromSeq ? ":corrupt" : ""}`,
+      ).toString("base64");
       x.chain = stageChainStep(x.chain, s.seq, s.payload, out);
       x.inChain = stageHalfStep(x.inChain, s.seq, s.payload);
       x.outChain = stageHalfStep(x.outChain, s.seq, out);
@@ -648,5 +795,13 @@ export function simStageCompute(
     sessions: () => sess.size,
     seqsOf: (sessionId: string) => sess.get(sessionId)?.seqs ?? [],
     seenSeqs: () => [...seen],
+    // B5: commitment de "pesos" = identidad del tramo — dos daemons del
+    // mismo rango declaran el mismo hash (como dos réplicas del mismo
+    // checkpoint HF declararían el mismo state_dict hash).
+    weightsHash: () => createHash("sha256").update(`w:${tag}:${blocks.join("-")}`, "utf8").digest("hex"),
+    chains: (sessionId: string) => {
+      const x = sess.get(sessionId);
+      return x ? { inChain: x.inChain, outChain: x.outChain } : undefined;
+    },
   };
 }

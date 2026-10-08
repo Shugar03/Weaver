@@ -334,4 +334,129 @@ describe("B2 direct stage→stage (TCP real)", () => {
   });
 });
 
+describe("B5 TOPLOC ckpts + audit-by-replay (TCP real)", () => {
+  const SECRET = "w4n-t0pl0c";
+  const COORD = "GTOPLOC";
+
+  it("ckpt cada CKPT_INTERVAL seqs viaja en stage.report (último stage incluido)", async () => {
+    const c1 = simStageCompute([0, 16], "s0", undefined, SECRET);
+    const a = await bind(c1);
+    const t1 = tcpStageDial(a.endpoint);
+    const tok = stageToken(SECRET, "j1", COORD);
+    const ack = await t1.open({ jobId: "j1", sessionId: "j1:s0", model: "m", blocks: [0, 16], token: tok, coordPubkey: COORD });
+    assert.ok(ack.weights, "el open-ack declara el weightsHash del tramo");
+    const ckpts: { seq: number; hash: string; weights?: string }[] = [];
+    t1.onEvent?.((m) => {
+      if (m.type === "stage.report" && m.ckpt) ckpts.push(m.ckpt);
+    });
+    // Stage único (sin next): 9 seqs → ckpt en seq 7 (CKPT_INTERVAL=8).
+    for (let n = 0; n < 9; n++) {
+      const out = t1.expectOut("j1:s0", n);
+      t1.inject({ sessionId: "j1:s0", seq: n, shape: [1, 4], dtype: "f16", payload: Buffer.from(`p${n}`).toString("base64") });
+      await out;
+    }
+    assert.equal(ckpts.length, 1);
+    assert.equal(ckpts[0].seq, 7);
+    assert.equal(ckpts[0].weights, ack.weights);
+    assert.match(ckpts[0].hash, /^[0-9a-f]{64}$/);
+    t1.dispose();
+    a.srv.close();
+  });
+
+  it("audit match — spare honesto reabsorbe y su ckpt converge → job ok", async () => {
+    const { PipelineExec, simFront } = await import("../src/pipeline.ts");
+    const tok = stageToken(SECRET, "j1", COORD);
+    const c1 = simStageCompute([0, 16], "s0", async (h) => kp0.sign(h).toString("hex"), SECRET);
+    const spare = simStageCompute([0, 16], "s0", async (h) => kp0.sign(h).toString("hex"), SECRET); // réplica honesta del tramo
+    const a = await bind(c1);
+    const asp = await bind(spare);
+    let requested = 0;
+    const exec = new PipelineExec({
+      forgeId: "f1",
+      model: "m",
+      stages: [{ endpoint: a.endpoint, blocks: [0, 16], token: tok }],
+      dial: (e) => tcpStageDial(e),
+      front: simFront(),
+      coordPubkey: COORD,
+      mode: "direct",
+      stepTimeoutMs: 4_000,
+      auditRate: 1, // audit siempre — el test ejerce el path completo
+      requestStage: async () => {
+        requested++;
+        return { endpoint: asp.endpoint, blocks: [0, 16], token: stageToken(SECRET, "j1", COORD) };
+      },
+    });
+    const tokens: string[] = [];
+    for await (const c of exec.execute({ jobId: "j1", model: "m", prompt: "a b c d e f g h i", options: { maxTokens: 9 } } as never)) {
+      if (!c.done) tokens.push(c.token);
+    }
+    assert.equal(tokens.length, 9, "job completó con audit ejecutado");
+    assert.equal(requested, 1, "el audit pidió exactamente un spare");
+    // El auditor absorbió los 8 ins hasta el ckpt (seqs 0..7) en su sesión.
+    assert.deepEqual(
+      spare.seenSeqs().filter((s) => s.sessionId.endsWith(":audit")).map((s) => s.seq),
+      [0, 1, 2, 3, 4, 5, 6, 7],
+    );
+    a.srv.close();
+    asp.srv.close();
+  });
+
+  it("audit mismatch — stage lazy diverge del ckpt reportado → el job falla con evidencia", async () => {
+    const { PipelineExec, simFront } = await import("../src/pipeline.ts");
+    const tok = stageToken(SECRET, "j1", COORD);
+    // Stage deshonesto: altera su output desde seq 3 — el ckpt que reporta
+    // lleva su historia corrupta; el auditor honesto produce otra.
+    const c1 = simStageCompute([0, 16], "s0", async (h) => kp0.sign(h).toString("hex"), SECRET, 3);
+    const spare = simStageCompute([0, 16], "s0", async (h) => kp0.sign(h).toString("hex"), SECRET);
+    const a = await bind(c1);
+    const asp = await bind(spare);
+    const exec = new PipelineExec({
+      forgeId: "f1",
+      model: "m",
+      stages: [{ endpoint: a.endpoint, blocks: [0, 16], token: tok }],
+      dial: (e) => tcpStageDial(e),
+      front: simFront(),
+      coordPubkey: COORD,
+      mode: "direct",
+      stepTimeoutMs: 4_000,
+      auditRate: 1,
+      requestStage: async () => ({ endpoint: asp.endpoint, blocks: [0, 16], token: stageToken(SECRET, "j1", COORD) }),
+    });
+    let caught: unknown = null;
+    try {
+      for await (const c of exec.execute({ jobId: "j1", model: "m", prompt: "a b c d e f g h i", options: { maxTokens: 9 } } as never)) void c;
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof Error && /B5 audit mismatch/.test(caught.message), `esperaba B5 audit mismatch, llegó: ${caught}`);
+    a.srv.close();
+    asp.srv.close();
+  });
+
+  it("audit sin spare disponible → skip honesto, el job completa igual", async () => {
+    const { PipelineExec, simFront } = await import("../src/pipeline.ts");
+    const tok = stageToken(SECRET, "j1", COORD);
+    const c1 = simStageCompute([0, 16], "s0", async (h) => kp0.sign(h).toString("hex"), SECRET);
+    const a = await bind(c1);
+    const exec = new PipelineExec({
+      forgeId: "f1",
+      model: "m",
+      stages: [{ endpoint: a.endpoint, blocks: [0, 16], token: tok }],
+      dial: (e) => tcpStageDial(e),
+      front: simFront(),
+      coordPubkey: COORD,
+      mode: "direct",
+      stepTimeoutMs: 4_000,
+      auditRate: 1,
+      requestStage: async () => ({}), // el pool no tiene réplica del tramo
+    });
+    const tokens: string[] = [];
+    for await (const c of exec.execute({ jobId: "j1", model: "m", prompt: "a b c d e f g h i", options: { maxTokens: 9 } } as never)) {
+      if (!c.done) tokens.push(c.token);
+    }
+    assert.equal(tokens.length, 9, "sin auditor el job no se castiga — audit es best-effort");
+    a.srv.close();
+  });
+});
+
 const kp0 = stellarKeypair();

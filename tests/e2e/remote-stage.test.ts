@@ -251,4 +251,36 @@ describe("S47 stage-federation wire e2e", () => {
     const sigs = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof.stageSigs;
     assert.equal(sigs.length, 2);
   });
+
+  it("B5 audit-by-replay: post-job un spare absorbe la historia del tramo auditado y su ckpt converge", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    // Tramos con spares dedicados: el audit elige uno al azar — ambos deben
+    // tener réplica honesta disponible para que nunca skippee por falta de
+    // auditor (en prod la probabilidad de cobertura es la postura honesta).
+    const s1 = await upStageDaemon(stack, "s1", [0, 40]);
+    const s2 = await upStageDaemon(stack, "s2", [40, 80]);
+    const sp1 = await upStageDaemon(stack, "sp1", [0, 40]);
+    const sp2 = await upStageDaemon(stack, "sp2", [40, 80]);
+    daemons.push(s1.daemon, s2.daemon, sp1.daemon, sp2.daemon);
+    servers.push(s1.server, s2.server, sp1.server, sp2.server);
+    await untilStageWorkers(stack, 4);
+    // auditRate=1: todo job de este coordinator audita un ckpt al azar.
+    const c = await upPipelineDaemon(stack, "c0", 80, undefined, undefined, undefined, "direct", 1);
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 15_000);
+
+    // 9+ tokens → al menos un ckpt por tramo (CKPT_INTERVAL=8).
+    const res = await chatRequest(stack.url, "a b c d e f g h i j", { allowPooled: true });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /\[DONE\]/); // el audit convergió — el job no se castigó
+    // La evidencia: algún spare recibió una sesión ":audit" con absorbs —
+    // replayó los ins del tramo hasta el ckpt y su ckpt recomputado igualó.
+    const auditSeqs = [...sp1.compute.seenSeqs(), ...sp2.compute.seenSeqs()].filter((s) => s.sessionId.endsWith(":audit"));
+    assert.ok(auditSeqs.length >= 8, `esperaba ≥8 absorbs de audit — visto: ${JSON.stringify(auditSeqs)}`);
+    // Y siguió la atribución normal: ambos stages firmaron su tramo.
+    const sigs = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof.stageSigs;
+    assert.equal(sigs.length, 2, `sigs recibidas: ${JSON.stringify(sigs)}`);
+  });
 });

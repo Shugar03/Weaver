@@ -286,6 +286,8 @@ export function upPipelineDaemon(
   front?: PipelineFront,
   // B2: "direct" = data plane stage→stage (fwd/replay/repoint); relay default.
   mode: "relay" | "direct" = "relay",
+  // B5: audit-by-replay rate [0,1] — 1 = auditar siempre (tests).
+  auditRate = 0,
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   return spawnDaemon(
     stack,
@@ -312,6 +314,7 @@ export function upPipelineDaemon(
           coordPubkey: kp.pubkey, // B1: el token del assign ata a ESTA identidad
           ...(requestStage ? { requestStage } : {}),
           mode,
+          ...(auditRate > 0 ? { auditRate } : {}),
         }),
       ),
   );

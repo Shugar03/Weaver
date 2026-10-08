@@ -29,6 +29,8 @@ export {
   encode as encodeStage,
   stageChainInit,
   stageChainStep,
+  stageCkpt,
+  CKPT_INTERVAL,
   stageHalfInit,
   stageHalfStep,
   stageSigPreimage,

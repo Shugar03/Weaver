@@ -90,6 +90,7 @@ export type PooledFactory = {
 export type StageRequester = (
   dead: string,
   blocks: [number, number],
+  purpose?: "heal" | "audit", // B5: "audit" = borrow efímero (stage.need audit:true)
 ) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>;
 
 export type PipelineFactory = {
@@ -398,6 +399,7 @@ export class ForgeDaemon {
     jobId: string,
     dead: string,
     blocks: [number, number],
+    purpose?: "heal" | "audit",
   ): Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }> {
     return new Promise((res) => {
       const resolve = (o: { endpoint?: string; blocks?: [number, number]; token?: string }) => {
@@ -408,7 +410,8 @@ export class ForgeDaemon {
       const t = setTimeout(() => resolve({}), 10_000);
       t.unref?.();
       this.stageNeeds.set(jobId, resolve);
-      this.channel.send({ type: "stage.need", jobId, dead, blocks });
+      // B5: audit pide réplica efímera — el gateway no debe mutar el loan.
+      this.channel.send({ type: "stage.need", jobId, dead, blocks, ...(purpose === "audit" ? { audit: true } : {}) });
     });
   }
 
@@ -484,8 +487,8 @@ export class ForgeDaemon {
       }
       this.running.set(m.jobId, ac);
       try {
-        exec = await this.pipelineFactory(i, m.stages, ac.signal, (dead, blocks) =>
-          this.requestStage(m.jobId, dead, blocks),
+        exec = await this.pipelineFactory(i, m.stages, ac.signal, (dead, blocks, purpose) =>
+          this.requestStage(m.jobId, dead, blocks, purpose),
         );
       } catch (e) {
         this.running.delete(m.jobId);

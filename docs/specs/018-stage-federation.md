@@ -149,12 +149,11 @@ Campos extra ignorados.
   que probe). Los replacements reciben capability fresca. `--stage-secret`/
   `WEAVER_STAGE_SECRET`; stage-worker sin secret loguea warning y nunca es
   prestado (fail closed).
-- Pendiente: directo stage→stage con checksum async (Petals §3.2), dynamic
-  blockwise quant de hidden states, TOPLOC commitments, NAT traversal o
-  relay-pool, payout-split on-chain por stage, `acceptPooled` opt-in
-  explícito del usuario, rotación/escopado fino de `stageSecret` (hoy es un
-  shared secret por daemon — un coordinator malicioso con token puede hablar
-  ese tramo; la firma A4 sigue atando el historial).
+- Pendiente: dynamic blockwise quant de hidden states, NAT traversal o
+  relay-pool, payout-split on-chain por stage, rotación/escopado fino de
+  `stageSecret` (hoy es un shared secret por daemon — un coordinator
+  malicioso con token puede hablar ese tramo; la firma A4 sigue atando el
+  historial).
 
 **C — substrate real**: `llama.cpp --stage k..n --hidden-in/--hidden-out`
 (modo stage en nuestro build, ~C++ contenido) — sustituye stage-sim en live
@@ -213,6 +212,8 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | B2 data plane directo | `stage.open.next` + `stage.fwd`/`stage.report`/`stage.repoint`/`stage.replay` en `stageproto.ts`; `StageRouter` + `deliver`/`runStep` en `stagetransport.ts`; `PipelineExec` `mode:"direct"` + `healDirect` en `pipeline.ts`; mismo data plane en `stage_runner.py` | ✅ TCP real: inject→fwd→out por socket dueño; rogue fwd rechazado; heal mid-job en 306ms e2e |
 | B2 boundary cross-check | `stageHalfInit`/`stageHalfStep` (seed=jobId) + `inChain`/`outChain` en close-ack + `sig_preimage_v2` + `verifyStageSigs` cruza `outChain_K==inChain_K+1` | ✅ e2e aserta frontera íntegra post-heal; mismatch → ambos striked+drop |
 | B3 heal por stage-cache | out_cache por sesión (≤8192) + dedup-redeliver + `absorb` fwd + `repoint` | ✅ K-1 replaya outs al reemplazo (K=0: `injected` del coordinator); job completa |
+| B5 TOPLOC ckpts | `stage.ack.weights` (commitment de pesos) + `stage.report.ckpt {seq,hash,weights}` cada `CKPT_INTERVAL=8` (`ck = sha256("ck":seq:inChain:outChain)`, sin sessionId → comparable entre sesiones) en `stageproto.ts`/`stagetransport.ts`/`stage_runner.py` | ✅ ckpts por tramo incluido el último; reports nunca roban pendings |
+| B5 audit-by-replay | `PipelineExec.auditByReplay` + `stage.need audit:true` (borrow efímero — sin strike ni mutación de `loan.chain`) + requester `purpose:"audit"` | ✅ e2e: spare absorbe ≥8 seqs del tramo auditado, ckpt converge, ambas stageSigs sobreviven; mismatch → job.fail con evidencia; sin spare/historia → skip honesto |
 
 Desviaciones vs el diseño original:
 
@@ -305,7 +306,23 @@ Bugs reales que solo salieron en implementación:
 - Limitación conocida B3: si K y K-1 mueren juntos (cascada), no hay cache
   upstream disponible para K — el heal falla honesto (multi-fail es trabajo
   futuro; relay del coordinator sigue siendo fallback universal).
+- B5: `stage.report` matcheaba por sessionId contra el MISMO pending map de
+  `expectOut`/`close` → un report tardío resolvía el pending equivocado
+  (out robado, close-ack perdido → stageSigs perdidas). Ahora reports van
+  siempre a `onEvent`, outs a su waiter por seq, y el close-ack tiene waiter
+  dedicado que ningún fail/out histórico invalida.
+- B5: el ckpt excluye `sessionId` del preimage — si lo incluyera, una
+  sesión auditora jamás podría recomputar el mismo commitment (cada sesión
+  tiene seed propio). El binding a la sesión vive en la firma v2 del close.
+- B5: pedir el auditor por el `stage.need` normal hacía `replace()` →
+  strike al stage auditado (vivo) y lo sacaba de `loan.chain` → su stageSig
+  quedaba sin atribución y el gateway la descartaba (1 sig en vez de 2).
+  `audit:true` lo convierte en borrow efímero: entra a `loan.workers` (se
+  libera con el job), nunca a `loan.chain`, sin strike al auditado.
+- B5: auditoría elige al azar entre tramos CON ckpt; si la historia de ins
+  no cubre `ck.seq` completa (replay parcial daría falso positivo) → skip
+  honesto; weights divergentes se diagnostican aparte del cómputo.
 
-Regresión: forge-net 130 · forge 66 · gateway 209 · e2e 17 (16 sim +
-direct e2e con boundary check; 1 pesos reales Qwen2.5-0.5B split 0-12/12-24
+Regresión: forge-net 135 · forge 70 · gateway 209 · e2e 19 (18 sim +
+B5 audit e2e; 1 pesos reales Qwen2.5-0.5B split 0-12/12-24
 con B1 auth) — todo verde.

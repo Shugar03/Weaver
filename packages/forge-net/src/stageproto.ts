@@ -111,6 +111,11 @@ export type StageAckMsg = {
   // (checksum async, Petals §3.2). sig v2 = sign(sha256(jobId:sid:in:out)).
   inChain?: string;
   outChain?: string;
+  // B5 (TOPLOC): commitment de los PESOS cargados para el tramo — el
+  // stage declara sha256(state_dict[k:n]) al abrir. Self-reported: su
+  // fuerza es que el audit-by-replay lo contrasta contra un segundo
+  // cómputo — mismos ins, mismos pesos honestos → mismo ckpt.
+  weights?: string;
 };
 export type StageOutMsg = {
   type: "stage.out";
@@ -126,7 +131,16 @@ export type StageOutMsg = {
 export type StageFailMsg = { type: "stage.fail"; sessionId: string; error: string; blame?: string };
 // B2: reporte ligero por step al coordinator (blame + progreso). Bytes,
 // no tensor — el data plane va directo, el control sigue anclado al coord.
-export type StageReportMsg = { type: "stage.report"; sessionId: string; seq: number };
+// B5 ckpt (TOPLOC): cada CKPT_INTERVAL seqs el report ancla un commitment
+// sha256("ck":seq:inChain:outChain) — la historia comprimida a ese punto.
+// SIN sessionId en el hash: una sesión AUDITORA del mismo tramo produce
+// ckpts comparables (audit-by-replay). weights viaja declarado.
+export type StageReportMsg = {
+  type: "stage.report";
+  sessionId: string;
+  seq: number;
+  ckpt?: { seq: number; hash: string; weights?: string };
+};
 export type StageMsg = StageAckMsg | StageOutMsg | StageFailMsg | StageReportMsg;
 
 // ---------- codec ----------
@@ -275,12 +289,14 @@ export function decodeStage(raw: string): StageMsg | null {
       if ((m.inChain === undefined) !== (m.outChain === undefined)) return null;
       if (m.inChain !== undefined && !isHex64(m.inChain)) return null;
       if (m.outChain !== undefined && !isHex64(m.outChain)) return null;
+      if (m.weights !== undefined && !isHex64(m.weights)) return null;
       return {
         type: "stage.ack",
         sessionId: m.sessionId,
         ...(isStr(m.sig) ? { sig: m.sig } : {}),
         ...(isStr(m.inChain) ? { inChain: m.inChain } : {}),
         ...(isStr(m.outChain) ? { outChain: m.outChain } : {}),
+        ...(isStr(m.weights) ? { weights: m.weights } : {}),
       };
     case "stage.out":
       if (!isId(m.sessionId) || !Number.isInteger(m.seq) || (m.seq as number) < 0 || (m.seq as number) > MAX_SEQ) return null;
@@ -293,7 +309,24 @@ export function decodeStage(raw: string): StageMsg | null {
       return { type: "stage.fail", sessionId: m.sessionId, error: m.error, ...(isStr(m.blame) ? { blame: m.blame } : {}) };
     case "stage.report":
       if (!isId(m.sessionId) || !isSeq(m.seq)) return null;
-      return { type: "stage.report", sessionId: m.sessionId, seq: m.seq as number };
+      if (m.ckpt !== undefined) {
+        if (!isObj(m.ckpt) || !isSeq(m.ckpt.seq) || !isHex64(m.ckpt.hash)) return null;
+        if (m.ckpt.weights !== undefined && !isHex64(m.ckpt.weights)) return null;
+      }
+      return {
+        type: "stage.report",
+        sessionId: m.sessionId,
+        seq: m.seq as number,
+        ...(isObj(m.ckpt)
+          ? {
+              ckpt: {
+                seq: m.ckpt.seq as number,
+                hash: m.ckpt.hash as string,
+                ...(isStr(m.ckpt.weights) ? { weights: m.ckpt.weights } : {}),
+              },
+            }
+          : {}),
+      };
     default:
       return null;
   }
@@ -336,6 +369,18 @@ export const stageHalfStep = (chain: string, seq: number, payloadB64: string): s
 // entrada que no produjo su salida ni viceversa.
 export const stageSigPreimageV2 = (jobId: string, sessionId: string, inChain: string, outChain: string): Buffer =>
   createHash("sha256").update(`${jobId}:${sessionId}:${inChain}:${outChain}`, "utf8").digest();
+
+// ---------- checkpoint commitments (B5, TOPLOC) ----------
+// Cada CKPT_INTERVAL seqs el stage reporta ckpt = sha256("ck":seq:in:out)
+// — la historia comprimida a ese punto. El hash NO ata sessionId ni
+// weightsHash: una sesión auditora del MISMO tramo, alimentada con los
+// mismos inputs por replay-absorb, debe producir el ckpt idéntico si el
+// stage original corrió los pesos declarados honestamente. Un stage lazy
+// (zeros, truncado, otro modelo) diverge → audit-by-replay lo atrapa.
+export const CKPT_INTERVAL = 8;
+
+export const stageCkpt = (seq: number, inChain: string, outChain: string): string =>
+  sha256hex(`ck:${seq}:${inChain}:${outChain}`);
 
 // ---------- capability token (B1 WAN auth) ----------
 // HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea al

@@ -17,6 +17,7 @@ function fakeTransport(opts: { failAtStep?: number; tag?: string; sig?: string }
     },
     async open(s) {
       calls.push({ type: "open", sessionId: s.sessionId });
+      return {};
     },
     async step(s) {
       steps++;

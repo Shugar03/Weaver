@@ -7,7 +7,7 @@
 // inyecta en s1 (inject) y espera el out de sN (expectOut) por el socket
 // dueño de la sesión. Relay mode = sin next: idéntico al comportamiento S47.
 import { connect, type Socket } from "node:net";
-import { decodeCoord, decodeStage, encodeStage, type CoordMsg, type StageFwdMsg, type StageMsg, type StageOutMsg, type StageStepMsg } from "@weaver/forge-net";
+import { CKPT_INTERVAL, decodeCoord, decodeStage, encodeStage, stageCkpt, type CoordMsg, type StageFwdMsg, type StageMsg, type StageOutMsg, type StageStepMsg } from "@weaver/forge-net";
 
 export type StageSessionInfo = {
   jobId: string;
@@ -29,7 +29,7 @@ export type StageSessionInfo = {
 // sobre su cadena de activaciones + half-chains de frontera (B2). Transporte
 // muerto/sin ack → {} — la firma es evidencia, no requisito para cerrar.
 export type StageTransport = {
-  open(s: StageSessionInfo): Promise<void>;
+  open(s: StageSessionInfo): Promise<{ weights?: string }>;
   step(s: Omit<StageStepMsg, "type">): Promise<Pick<StageOutMsg, "payload" | "sig">>;
   // B2 direct: inyecta un step sin esperar out (s1 forwardea, no responde)
   // y expectOut espera el stage.out que sN manda por su socket dueño.
@@ -43,7 +43,7 @@ export type StageTransport = {
   // hacia el reemplazo (el tramo muerto sale del data plane).
   injectFwd(m: Omit<StageFwdMsg, "type">): void;
   repoint(sessionId: string, next: { endpoint: string; sessionId: string; token?: string; coordPubkey?: string }): Promise<void>;
-  close(sessionId: string): Promise<{ sig?: string; inChain?: string; outChain?: string }>;
+  close(sessionId: string): Promise<{ sig?: string; inChain?: string; outChain?: string; weights?: string }>;
   dispose(): void;
   readonly alive: boolean;
   onDead?(cb: (err: Error) => void): void;
@@ -66,7 +66,15 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
   let deadErr: Error | null = null;
   const deadCbs = new Set<(e: Error) => void>();
   const eventCbs = new Set<(m: StageMsg) => void>();
-  const pending = new Map<string, { res: (m: StageMsg) => void; rej: (e: Error) => void }>();
+  // Pending por sessionId CON lo que espera: "out@seq" para step/expectOut,
+  // "ack" para open/replay/repoint. Sin esto, un frame histórico del mismo
+  // sessionId (out dup de una wave post-heal, report tardío) roba el pending
+  // de la operación siguiente y corrompe el protocolo.
+  const pending = new Map<string, { res: (m: StageMsg) => void; rej: (e: Error) => void; want: "out" | "ack"; seq?: number }>();
+  // El close-ack usa waiter dedicado: la firma del stage es evidencia — un
+  // stage.fail histórico (fwdSock viejo post-repoint) o un out dup no deben
+  // matarla. Vive hasta el ack o el timeout del close.
+  const closeWaiters = new Map<string, (m: StageMsg) => void>();
   // B2: stage.out puede llegar ANTES de que expectOut registre su pending
   // (loopback: inject→fwd→out completa en <1ms). Sin buffer se pierde y el
   // await cuelga. Los outs sin pending se encolan por sessionId.
@@ -79,6 +87,7 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
     deadErr = e;
     for (const p of pending.values()) p.rej(e);
     pending.clear();
+    closeWaiters.clear();
     for (const cb of deadCbs) cb(e);
   };
 
@@ -96,13 +105,43 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
         sock.destroy();
         return;
       }
-      // stage.out casa por sessionId; ack por sessionId; fail por sessionId.
+      // Dispatch por tipo — correlación estricta para no robar pendings:
+      // report → telemetría al onEvent siempre; ack de close → su waiter
+      // dedicado; fail → rechaza el pending (señal) o al onEvent (blame);
+      // out → pending que espera ESE seq, si no al buffer; ack suelto →
+      // onEvent (llegó sin que nadie lo espere — informativo).
+      if (msg.type === "stage.report") {
+        for (const cb of eventCbs) cb(msg);
+        continue;
+      }
+      if (msg.type === "stage.ack") {
+        const cw = closeWaiters.get(msg.sessionId);
+        if (cw) {
+          closeWaiters.delete(msg.sessionId);
+          cw(msg);
+          continue;
+        }
+      }
       const p = pending.get(msg.sessionId);
       if (p) {
-        pending.delete(msg.sessionId);
-        if (msg.type === "stage.fail") p.rej(new Error(msg.error));
-        else p.res(msg);
-      } else if (msg.type === "stage.out") {
+        if (msg.type === "stage.fail") {
+          pending.delete(msg.sessionId);
+          p.rej(new Error(msg.error));
+          continue;
+        }
+        if (p.want === "out" && msg.type === "stage.out" && msg.seq === p.seq) {
+          pending.delete(msg.sessionId);
+          p.res(msg);
+          continue;
+        }
+        if (p.want === "ack" && msg.type === "stage.ack") {
+          pending.delete(msg.sessionId);
+          p.res(msg);
+          continue;
+        }
+        // No es lo que el pending espera → manejo general (no se roba).
+      }
+      if (msg.type === "stage.out") {
         const q = outBuf.get(msg.sessionId);
         if (q) q.push(msg);
         else outBuf.set(msg.sessionId, [msg]);
@@ -142,13 +181,16 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
     },
     async open(s) {
       await waitConnect;
-      const p = new Promise<StageMsg>((res, rej) => pending.set(s.sessionId, { res, rej }));
+      const p = new Promise<StageMsg>((res, rej) => pending.set(s.sessionId, { res, rej, want: "ack" }));
       send({ type: "stage.open", ...s });
       const r = await p;
       if (r.type !== "stage.ack") throw new Error(`stage ${endpoint}: open sin ack`);
+      // B5: el ack declara los pesos del tramo (commitment self-reported —
+      // el audit-by-replay es quien lo contrasta contra un segundo cómputo).
+      return r.weights ? { weights: r.weights } : {};
     },
     async step(s) {
-      const p = new Promise<StageMsg>((res, rej) => pending.set(s.sessionId, { res, rej }));
+      const p = new Promise<StageMsg>((res, rej) => pending.set(s.sessionId, { res, rej, want: "out", seq: s.seq }));
       send({ type: "stage.step", ...s });
       const r = await p;
       if (r.type !== "stage.out") throw new Error(`stage ${endpoint}: step sin out`);
@@ -163,13 +205,13 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
       const bi = buffered?.findIndex((m) => m.seq === seq) ?? -1;
       const r = buffered && bi >= 0
         ? buffered.splice(bi, 1)[0]
-        : await new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej }));
+        : await new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej, want: "out", seq }));
       if (r.type !== "stage.out") throw new Error(`stage ${endpoint}: expectOut seq ${seq} → ${r.type}`);
       if (r.seq !== seq) throw new Error(`stage ${endpoint}: out seq ${r.seq} ≠ esperado ${seq}`);
       return { payload: r.payload, ...(r.sig ? { sig: r.sig } : {}) };
     },
     async replay(sessionId, uptoSeq, target) {
-      const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej }));
+      const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej, want: "ack" }));
       send({ type: "stage.replay", sessionId, uptoSeq, target });
       const r = await p;
       if (r.type !== "stage.ack") throw new Error(`stage ${endpoint}: replay sin ack`);
@@ -178,24 +220,27 @@ export function tcpStageDial(endpoint: string, timeoutMs = 10_000): StageTranspo
       send({ type: "stage.fwd", ...m });
     },
     async repoint(sessionId, next) {
-      const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej }));
+      const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej, want: "ack" }));
       send({ type: "stage.repoint", sessionId, next });
       const r = await p;
       if (r.type !== "stage.ack") throw new Error(`stage ${endpoint}: repoint sin ack`);
     },
     async close(sessionId) {
       try {
-        const p = new Promise<StageMsg>((res, rej) => pending.set(sessionId, { res, rej }));
+        // Waiter dedicado — un stage.fail/out histórico de la sesión (wave
+        // post-heal, fwdSock viejo) no puede robar el close-ack.
+        const p = new Promise<StageMsg>((res) => closeWaiters.set(sessionId, res));
         send({ type: "stage.close", sessionId });
         const r = await Promise.race([
           p,
-          new Promise<StageMsg>((_r, rej) => setTimeout(() => rej(new Error("close-ack timeout")), 5_000).unref()),
+          new Promise<StageMsg>((_r, rej) => setTimeout(() => { closeWaiters.delete(sessionId); rej(new Error("close-ack timeout")); }, 5_000).unref()),
         ]);
         return r.type === "stage.ack"
           ? {
               ...(r.sig ? { sig: r.sig } : {}),
               ...(r.inChain ? { inChain: r.inChain } : {}),
               ...(r.outChain ? { outChain: r.outChain } : {}),
+              ...(r.weights ? { weights: r.weights } : {}),
             }
           : {};
       } catch {
@@ -222,6 +267,13 @@ export type StageCompute = {
   step(s: Omit<StageStepMsg, "type">): Promise<{ payload: string; sig?: string }> | { payload: string; sig?: string };
   close(sessionId: string): Promise<{ sig?: string; inChain?: string; outChain?: string } | void> | { sig?: string; inChain?: string; outChain?: string } | void;
   sessions(): number;
+  // B5 (TOPLOC): sha256 del state_dict del tramo — commitment self-reported
+  // que viaja en el open-ack y los ckpts. Ausente = substrate sin pesos
+  // hasheables (el audit-by-replay sigue funcionando por chains).
+  weightsHash?(): string;
+  // B5: half-chains vigentes de una sesión — el router los consulta al
+  // emitir ckpts (los chains los acumula el compute, no el socket).
+  chains?(sessionId: string): { inChain: string; outChain: string } | undefined;
 };
 
 // B2 — router por SERVER (compartido entre sockets): una sesión stage
@@ -349,10 +401,27 @@ export function createStageSocket(
         sendTo(route.owner, { type: "stage.fail", sessionId, error: `fwd a ${route.next.endpoint}: ${e instanceof Error ? e.message : e}`, blame: route.next.sessionId });
         return;
       }
-      sendTo(route.owner, { type: "stage.report", sessionId, seq });
+      // B5 ckpt (TOPLOC): cada CKPT_INTERVAL seqs el report ancla la
+      // historia — sha256("ck":seq:in:out). El coordinator lo guarda para
+      // audit-by-replay (spare del tramo + replay absorb + comparar).
+      const ckpt = ckptOf(compute, sessionId, seq);
+      sendTo(route.owner, { type: "stage.report", sessionId, seq, ...(ckpt ? { ckpt } : {}) });
     } else {
       sendTo(route.owner, { type: "stage.out", sessionId, seq, payload: out.payload, ...(out.sig ? { sig: out.sig } : {}) });
+      // B5: el último stage también es auditable — su ckpt viaja como
+      // report (no compite con el out: cae en onEvent del coordinator).
+      const ckpt = ckptOf(compute, sessionId, seq);
+      if (ckpt) sendTo(route.owner, { type: "stage.report", sessionId, seq, ckpt });
     }
+  }
+
+  // B5 ckpt (TOPLOC): cada CKPT_INTERVAL seqs se ancla la historia —
+  // sha256("ck":seq:in:out). Comparable entre sesiones (seed jobId).
+  function ckptOf(c: StageCompute, sessionId: string, seq: number): { seq: number; hash: string; weights?: string } | undefined {
+    if ((seq + 1) % CKPT_INTERVAL !== 0) return undefined;
+    const chains = c.chains?.(sessionId);
+    if (!chains) return undefined;
+    return { seq, hash: stageCkpt(seq, chains.inChain, chains.outChain), ...(c.weightsHash ? { weights: c.weightsHash() } : {}) };
   }
 
   async function runStep(route: StageRoute, msg: { sessionId: string; seq: number; shape: [number, number]; dtype: "f16" | "f32" | "q8"; payload: string }): Promise<void> {
@@ -391,7 +460,11 @@ export function createStageSocket(
             outCache: new Map(),
             seqs: new Set(),
           });
-          send({ type: "stage.ack", sessionId: msg.sessionId });
+          send({
+            type: "stage.ack",
+            sessionId: msg.sessionId,
+            ...(compute.weightsHash ? { weights: compute.weightsHash() } : {}),
+          });
           break;
         case "stage.step": {
           // Solo el dueño inyecta por step (modo relay/directo: coord→s1).

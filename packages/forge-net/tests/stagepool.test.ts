@@ -235,6 +235,48 @@ describe("S47 StagePool", () => {
     assert.equal(p.chainOf("j1"), undefined);
   });
 
+  it("B5 replace audit: borrow efímero — el auditado NO sale del loan ni acumula strike", async () => {
+    const workers = [
+      stg({ instanceId: "s1", endpoint: "10.0.0.5:1", layers: [0, 40], forgePubkey: "PK_S1" }),
+      stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [40, 80], forgePubkey: "PK_S2" }),
+      stg({ instanceId: "sp", endpoint: "10.0.0.7:1", layers: [0, 40], forgePubkey: "PK_SP" }),
+    ];
+    const p = pool(workers);
+    await p.acquire("c0", "PK_A", "j1");
+    // Audit del tramo [0,40): el "dead" está VIVO — requestStage(…, "audit").
+    const rep = await p.replace("j1", "10.0.0.5:1", [0, 40], { audit: true });
+    assert.deepEqual(rep, { endpoint: "10.0.0.7:1", blocks: [0, 40] });
+    // La cadena NO mutó: s1 sigue atribuible (su stageSig cuenta para B6)
+    // y el auditor no se cuela en la atribución del job.
+    assert.deepEqual(
+      p.chainOf("j1")!.map((c) => c.endpoint),
+      ["10.0.0.5:1", "10.0.0.6:1"],
+    );
+    p.release("j1");
+    // El auditado no acumuló strike y el auditor se liberó con el job:
+    // el próximo acquire ve la flota completa (s1 re-eligible para tramos).
+    const c = await p.acquire("c0", "PK_A", "j2");
+    assert.deepEqual(
+      c?.map((s) => s.endpoint),
+      ["10.0.0.5:1", "10.0.0.6:1"],
+    );
+  });
+
+  it("B5 replace audit: el auditor queda busy durante el borrow — no se autopresta ni se duplica", async () => {
+    const workers = [
+      stg({ instanceId: "s1", endpoint: "10.0.0.5:1", layers: [0, 40] }),
+      stg({ instanceId: "s2", endpoint: "10.0.0.6:1", layers: [40, 80] }),
+      stg({ instanceId: "sp", endpoint: "10.0.0.7:1", layers: [0, 40] }),
+    ];
+    const p = pool(workers);
+    await p.acquire("c0", "PK_A", "j1");
+    const a1 = await p.replace("j1", "10.0.0.5:1", [0, 40], { audit: true });
+    assert.equal(a1?.endpoint, "10.0.0.7:1");
+    // Segundo audit del mismo tramo: el único spare ya está busy → null
+    // honesto (skip), nunca el propio auditado (endpoint !== dead filtra).
+    assert.equal(await p.replace("j1", "10.0.0.5:1", [0, 40], { audit: true }), null);
+  });
+
   it("A4 strikeWorker: firma inválida → strike al firmante del loan", async () => {
     const p = pool([
       stg({ instanceId: "s1", endpoint: "10.0.0.5:50100", layers: [0, 80] }),

@@ -483,6 +483,9 @@ siguiente paso: weaver-forge up`);
   // HF via tools/stage_runner.py --role edge); sin edge = sim (substrate
   // simulado — el wire es prod, el cómputo es juguete).
   const edgeUrl = arg("--edge");
+  // B5 (TOPLOC): audit-by-replay post-job — probabilidad [0,1] de auditar un
+  // ckpt de un tramo contra un spare. Default 0 (opt-in: cuesta un replay).
+  const auditRate = Number(arg("--audit-rate") ?? process.env.WEAVER_AUDIT_RATE ?? "0");
   const pipelineFactory = cfg.instances.some((i) => i.pipeline)
     ? (inst: DaemonInstance, stages: { endpoint: string; blocks: [number, number]; token?: string }[], _signal?: AbortSignal, requestStage?: (dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number]; token?: string }>) =>
         Promise.resolve(
@@ -494,6 +497,7 @@ siguiente paso: weaver-forge up`);
             front: edgeUrl ? httpFront(edgeUrl) : simFront(),
             coordPubkey: cfg.pubkey, // B1: el token minteado ata a ESTA identidad
             ...(requestStage ? { requestStage } : {}),
+            ...(auditRate > 0 ? { auditRate } : {}),
           }),
         )
     : undefined;

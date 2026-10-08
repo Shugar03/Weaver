@@ -185,7 +185,9 @@ export function attachForgeWS(
     session.onMessage((m) => {
       if (m.type !== "stage.need") return;
       void stagePool
-        .replace(m.jobId, m.dead, m.blocks)
+        // B5: audit:true = borrow efímero — el "dead" está vivo y auditado;
+        // sin strike ni mutación del loan.chain (sus sigs siguen contando).
+        .replace(m.jobId, m.dead, m.blocks, { audit: m.audit === true })
         .then((r) =>
           session.send({
             type: "stage.offer",

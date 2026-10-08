@@ -82,7 +82,11 @@ export type PongMsg = { type: "pong"; t: number }; // eco del ping — RTT medid
 // S47: el coordinator pide reemplazo de un stage muerto mid-job. El pool del
 // gateway es la única autoridad de leases — sin esto el coordinator tendría
 // que adivinar endpoints (split-brain de préstamos).
-export type StageNeedMsg = { type: "stage.need"; jobId: string; dead: string; blocks: [number, number] };
+// audit: el need NO es un heal — el coordinator pide una réplica efímera
+// para audit-by-replay (B5). El "dead" está vivo: sin strike, sin mutar
+// el loan.chain; el auditor entra a workers (se libera con el job) pero
+// nunca a chain (sus firmas no son atribuibles al job).
+export type StageNeedMsg = { type: "stage.need"; jobId: string; dead: string; blocks: [number, number]; audit?: boolean };
 // B1 (WAN auth): el gateway le pide al daemon del worker un capability
 // token para un stage.loan — el worker mintea HMAC(secret, jobId|coordPubkey)
 // y lo devuelve por stage.token; el gateway lo porta al coordinator.
@@ -333,7 +337,8 @@ export function decode(raw: string): ForgeMsg | null {
       return { type: "pong", t: m.t };
     case "stage.need":
       if (!isStr(m.jobId) || !isStr(m.dead) || !isLayers(m.blocks)) return null;
-      return { type: "stage.need", jobId: m.jobId, dead: m.dead, blocks: m.blocks };
+      if (m.audit !== undefined && m.audit !== true) return null;
+      return { type: "stage.need", jobId: m.jobId, dead: m.dead, blocks: m.blocks, ...(m.audit === true ? { audit: true } : {}) };
     case "stage.token":
       if (!isStr(m.jobId) || !isStr(m.stageInstanceId) || !isStr(m.token) || (m.token as string).length > 256) return null;
       return { type: "stage.token", jobId: m.jobId, stageInstanceId: m.stageInstanceId, token: m.token };

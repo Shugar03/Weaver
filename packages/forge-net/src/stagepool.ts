@@ -143,21 +143,26 @@ export class StagePool {
   // ESTE loan (un endpoint ajeno al préstamo no toca nada). Strike al muerto
   // + liberarlo + elegir otro stage que cubra el mismo tramo. El nuevo entra
   // al loan para que release(jobId) lo devuelva al terminar.
-  async replace(jobId: string, deadEndpoint: string, blocks: [number, number]): Promise<StageAssign[number] | null> {
+  async replace(jobId: string, deadEndpoint: string, blocks: [number, number], opts?: { audit?: boolean }): Promise<StageAssign[number] | null> {
     const loan = this.loans.get(jobId);
     if (!loan) return null;
     this.evictStale();
     const workers = this.deps.stageWorkers();
     const dead = workers.find((w) => w.endpoint === deadEndpoint && loan.workers.includes(w.instanceId));
-    if (dead) {
-      this.strike(dead.instanceId);
-      this.busy.delete(dead.instanceId);
-      loan.workers = loan.workers.filter((id) => id !== dead.instanceId);
+    // B5 audit: el "dead" está VIVO y auditado — no se strikea ni sale del
+    // loan; si lo quitáramos, su stageSig quedaría sin atribución (chainOf
+    // ya no lo encontraría) y castigaríamos al honesto.
+    if (!opts?.audit) {
+      if (dead) {
+        this.strike(dead.instanceId);
+        this.busy.delete(dead.instanceId);
+        loan.workers = loan.workers.filter((id) => id !== dead.instanceId);
+      }
+      // El tramo muerto sale de la cadena del loan por ENDPOINT — aunque su
+      // instance ya no figure en stageWorkers() (desconectó), ninguna firma
+      // suya queda atribuible a este job.
+      loan.chain = loan.chain.filter((c) => c.endpoint !== deadEndpoint);
     }
-    // El tramo muerto sale de la cadena del loan por ENDPOINT — aunque su
-    // instance ya no figure en stageWorkers() (desconectó), ninguna firma
-    // suya queda atribuible a este job.
-    loan.chain = loan.chain.filter((c) => c.endpoint !== deadEndpoint);
     const model = this.deps.reportOf(loan.coordInstance)?.model;
     const cand = workers
       .filter(
@@ -185,7 +190,11 @@ export class StagePool {
       return null;
     }
     loan.workers.push(pick.instanceId);
-    loan.chain.push({ endpoint: pick.endpoint, blocks, instanceId: pick.instanceId, forgePubkey: pick.forgePubkey });
+    // B5 audit: el auditor se libera con el job (loan.workers) pero NO entra
+    // a loan.chain — su firma no es atribuible ni reemplaza la del auditado.
+    if (!opts?.audit) {
+      loan.chain.push({ endpoint: pick.endpoint, blocks, instanceId: pick.instanceId, forgePubkey: pick.forgePubkey });
+    }
     // B1: capability token del reemplazo — sin grant no hay offer (el stage
     // nuevo exige token si el pool corre con auth).
     const token = this.deps.grant

@@ -51,6 +51,15 @@ def sig_preimage_v2(job_id: str, session_id: str, in_chain: str, out_chain: str)
     return hashlib.sha256(f"{job_id}:{session_id}:{in_chain}:{out_chain}".encode()).digest()
 
 
+# B5 (TOPLOC): ckpt = sha256("ck":seq:in:out) — sin sessionId ni weights en
+# el hash: la sesión auditora del mismo tramo converge al mismo commitment.
+CKPT_INTERVAL = 8
+
+
+def ckpt_hash(seq: int, in_chain: str, out_chain: str) -> str:
+    return hashlib.sha256(f"ck:{seq}:{in_chain}:{out_chain}".encode()).hexdigest()
+
+
 # ---------- capability token (B1 WAN auth — idéntico a stageToken en TS)
 # HMAC(secret, "jobId|coordPubkey") — el daemon del worker lo mintea ante
 # stage.grant del gateway; el runner lo verifica con el MISMO secret local.
@@ -107,7 +116,22 @@ class StageModel:
         self.k, self.n = k, n
         self.torch_dtype = dtype
         self._cache_cls = DynamicCache
+        self._whash: Optional[str] = None
         del full  # el resto de los pesos no queda residente en el stage
+
+    def weights_hash(self) -> str:
+        """B5 (TOPLOC): sha256 del state_dict del tramo — commitment a QUÉ
+        pesos corrió este stage. Self-reported; el audit-by-replay lo
+        contrasta contra un segundo cómputo del mismo tramo."""
+        if self._whash is None:
+            h = hashlib.sha256()
+            for layer in self.layers:
+                for name in sorted(dict(layer.named_parameters())):
+                    p = dict(layer.named_parameters())[name]
+                    h.update(name.encode())
+                    h.update(p.detach().to(torch.float32).numpy().tobytes())
+            self._whash = h.hexdigest()
+        return self._whash
 
     def new_cache(self):
         return self._cache_cls()
@@ -230,10 +254,23 @@ class StageServer:
                 await self._send(s["owner"], {"type": "stage.fail", "sessionId": session_id,
                                               "error": f"fwd a {nxt['endpoint']}: {e}", "blame": nxt["sessionId"]})
                 return
-            await self._send(s["owner"], {"type": "stage.report", "sessionId": session_id, "seq": seq})
+            rep = {"type": "stage.report", "sessionId": session_id, "seq": seq}
+            # B5 ckpt (TOPLOC): cada CKPT_INTERVAL seqs se ancla la historia
+            # — sha256("ck":seq:in:out). Sin sessionId en el hash: una
+            # sesión auditora del mismo tramo produce ckpts comparables.
+            if (seq + 1) % CKPT_INTERVAL == 0:
+                rep["ckpt"] = {"seq": seq, "hash": ckpt_hash(seq, s["in_chain"], s["out_chain"]),
+                               "weights": self.model.weights_hash()}
+            await self._send(s["owner"], rep)
         else:
             await self._send(s["owner"], {"type": "stage.out", "sessionId": session_id, "seq": seq,
                                           "shape": shape, "dtype": dtype, "payload": out_b64})
+            # B5: el último stage también es auditable — su ckpt viaja
+            # como report (cae en onEvent del coordinator, no al pending).
+            if (seq + 1) % CKPT_INTERVAL == 0:
+                await self._send(s["owner"], {"type": "stage.report", "sessionId": session_id, "seq": seq,
+                                              "ckpt": {"seq": seq, "hash": ckpt_hash(seq, s["in_chain"], s["out_chain"]),
+                                                       "weights": self.model.weights_hash()}})
 
     async def _run_step(self, s, session_id: str, msg):
         """Dedup con redelivery: seq ya procesado → reenvía el cache (no
@@ -290,7 +327,9 @@ class StageServer:
                             "next": msg.get("next"), "fwd_writer": None,
                         }
                         owned.append(sid)
-                        await self._send(writer, {"type": "stage.ack", "sessionId": sid})
+                        # B5: el open-ack declara los pesos del tramo.
+                        await self._send(writer, {"type": "stage.ack", "sessionId": sid,
+                                                  "weights": self.model.weights_hash()})
                     elif t == "stage.step":
                         # Solo el dueño inyecta por step (coord→s1).
                         if s is None or s["owner"] is not writer:
