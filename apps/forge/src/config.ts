@@ -10,7 +10,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 export type InstanceCfg = {
   instanceId: string;
   model: string;
-  capability: "text" | "image" | "rpc-worker";
+  capability: "text" | "image" | "rpc-worker" | "stage-worker";
   maxConcurrent: number;
   loadTimeMs: number;
   vramGb?: number; // footprint estimado — init lo llena desde /api/tags size
@@ -28,6 +28,12 @@ export type InstanceCfg = {
   // GGUF local para el llama-server pooled (coordinator). Sin él el
   // pooledFactory no puede spawnear — fail honesto al assign.
   modelFile?: string;
+  // S47 stage-federation (spec 018):
+  // stage-worker: rango de bloques hospedado + endpoint del stage-server TCP.
+  stage?: { layers: [number, number]; endpoint: string; vramGb?: number; tps?: number };
+  // coordinator federado: el modelo tiene `blocks` transformer blocks — sin
+  // stages en el assign no puede servir (no tiene el modelo entero local).
+  pipeline?: { blocks: number };
 };
 
 export type ForgeChain = "stellar" | "evm";

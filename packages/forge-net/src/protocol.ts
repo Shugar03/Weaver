@@ -16,7 +16,7 @@ export type AuthMsg = { type: "auth"; pubkey: string; nonce: string; signature: 
 export type InstanceReport = {
   instanceId: string;
   model: string;
-  capability: "text" | "image" | "rpc-worker";
+  capability: "text" | "image" | "rpc-worker" | "stage-worker";
   hot: boolean; // modelo residente AHORA en el engine local del forge
   inFlight: number; // jobs corriendo ahora mismo (medido, no declarado)
   saturated: boolean; // llegó a su cap propio (el forge conoce su límite)
@@ -30,6 +30,14 @@ export type InstanceReport = {
   // minVramGb: VRAM mínima por worker — un worker de 2GB no sirve para un 70B
   // aunque sea "uno de cuatro" (el pairing lo filtra, no lo descubre al fallar).
   pool?: { needs: number; minVramGb?: number };
+  // S47 stage-federation (spec 018): stage-worker hospeda bloques contiguos
+  // [k,n) del modelo y procesa hidden-states (nunca ve tokens ni prompts).
+  // endpoint: canal forge→forge que el coordinator diala para stage.open/step.
+  // layers es SIEMPRE contiguo (Petals §3.3: split rompe latencia).
+  stage?: { layers: [number, number]; endpoint: string; vramGb?: number; tps?: number };
+  // coordinator federado: "sirvo este modelo si me armás una cadena que cubra
+  // [0..blocks)" — el gateway paira stage-workers por rango de bloques.
+  pipeline?: { blocks: number };
 };
 // agentId: identidad ERC-8004 del forge (EVM, opcional — forges Stellar no
 // la tienen). Va a nivel heartbeat, no por instance: es del dueño, no del slot.
@@ -67,6 +75,10 @@ export type JobFailMsg = {
 };
 export type ImageResultMsg = { type: "image.result"; jobId: string; b64: string; ms: number };
 export type PongMsg = { type: "pong"; t: number }; // eco del ping — RTT medido real
+// S47: el coordinator pide reemplazo de un stage muerto mid-job. El pool del
+// gateway es la única autoridad de leases — sin esto el coordinator tendría
+// que adivinar endpoints (split-brain de préstamos).
+export type StageNeedMsg = { type: "stage.need"; jobId: string; dead: string; blocks: [number, number] };
 
 export type ForgeMsg =
   | AuthMsg
@@ -76,7 +88,8 @@ export type ForgeMsg =
   | JobDoneMsg
   | JobFailMsg
   | ImageResultMsg
-  | PongMsg;
+  | PongMsg
+  | StageNeedMsg;
 
 // ---------- gateway → daemon ----------
 
@@ -97,6 +110,9 @@ export type JobAssignMsg = {
   // gateway — el daemon spawnea el engine con --rpc peers. Solo viaja al
   // coordinator asignado; jamás sale en API pública.
   rpcPeers?: string[];
+  // S47 stage-federation: cadena ORDENADA de stage-workers — el daemon arma
+  // PipelineExec (embeddings+lmhead locales, stages remotos por rango).
+  stages?: { endpoint: string; blocks: [number, number] }[];
 };
 export type ImageAssignMsg = {
   type: "image.assign";
@@ -116,8 +132,11 @@ export type JobFundedMsg = { type: "job.funded"; chainJobId: number; resultHash:
 // El consumidor del stream abortó (cliente se fue): libera el cómputo del
 // forge YA — sin esto el daemon terminaba el job en vacío quemando GPU.
 export type JobCancelMsg = { type: "job.cancel"; jobId: string };
+// S47: respuesta a stage.need — endpoint+blocks del reemplazo, o ausentes
+// (null honesto: no hay stage que cubra ese tramo → el coordinator falla).
+export type StageOfferMsg = { type: "stage.offer"; jobId: string; endpoint?: string; blocks?: [number, number] };
 
-export type GatewayMsg = JobAssignMsg | ImageAssignMsg | PingMsg | AuthOkMsg | AuthFailMsg | JobFundedMsg | JobCancelMsg;
+export type GatewayMsg = JobAssignMsg | ImageAssignMsg | PingMsg | AuthOkMsg | AuthFailMsg | JobFundedMsg | JobCancelMsg | StageOfferMsg;
 
 // ---------- codec ----------
 
@@ -138,11 +157,17 @@ const isEndpoint = (v: unknown): v is string =>
   isStr(v) && v.length <= 255 && /^\[[0-9a-fA-F:]+\]:\d{1,5}$|^[^\s:\[\]]{1,253}:\d{1,5}$/.test(v) &&
   Number(v.slice(v.lastIndexOf(":") + 1)) >= 1 && Number(v.slice(v.lastIndexOf(":") + 1)) <= 65535;
 const MAX_RPC_PEERS = 4; // un pipeline no es un enjambre — boundary count acotado
+const MAX_STAGES = 6; // cadena acotada: cada frontera suma RTT por token
+const MAX_BLOCKS = 512; // n_layer del transformer más grande conocido (~DeepSeek 61, Qwen3-235B 94)
+const isLayers = (v: unknown): v is [number, number] =>
+  Array.isArray(v) && v.length === 2 &&
+  Number.isInteger(v[0]) && Number.isInteger(v[1]) &&
+  (v[0] as number) >= 0 && (v[1] as number) > (v[0] as number) && (v[1] as number) <= MAX_BLOCKS;
 
 function instanceReport(v: unknown): InstanceReport | null {
   if (!isObj(v)) return null;
   if (!isId(v.instanceId) || !isId(v.model)) return null;
-  if (v.capability !== "text" && v.capability !== "image" && v.capability !== "rpc-worker") return null;
+  if (v.capability !== "text" && v.capability !== "image" && v.capability !== "rpc-worker" && v.capability !== "stage-worker") return null;
   if (!isBool(v.hot) || !inRange(v.inFlight, 0, 1024) || !isBool(v.saturated) || !inRange(v.loadTimeMs, 0, 600_000)) return null;
   const r: InstanceReport = {
     instanceId: v.instanceId,
@@ -177,6 +202,23 @@ function instanceReport(v: unknown): InstanceReport | null {
       if (!inRange(v.pool.minVramGb, 1, 2048)) return null;
       r.pool.minVramGb = v.pool.minVramGb;
     }
+  }
+  // stage-worker exige `stage` — sin rango/endpoint no es parkeable.
+  if (v.capability === "stage-worker") {
+    if (!isObj(v.stage) || !isLayers(v.stage.layers) || !isEndpoint(v.stage.endpoint)) return null;
+    r.stage = { layers: v.stage.layers, endpoint: v.stage.endpoint };
+    if (v.stage.vramGb !== undefined) {
+      if (!inRange(v.stage.vramGb, 0, 2048)) return null;
+      r.stage.vramGb = v.stage.vramGb;
+    }
+    if (v.stage.tps !== undefined) {
+      if (!inRange(v.stage.tps, 0, 10_000)) return null;
+      r.stage.tps = v.stage.tps;
+    }
+  }
+  if (v.pipeline !== undefined) {
+    if (!isObj(v.pipeline) || !Number.isInteger(v.pipeline.blocks) || (v.pipeline.blocks as number) < 2 || (v.pipeline.blocks as number) > MAX_BLOCKS) return null;
+    r.pipeline = { blocks: v.pipeline.blocks as number };
   }
   return r;
 }
@@ -234,6 +276,9 @@ export function decode(raw: string): ForgeMsg | null {
     case "pong":
       if (!isNum(m.t)) return null;
       return { type: "pong", t: m.t };
+    case "stage.need":
+      if (!isStr(m.jobId) || !isStr(m.dead) || !isLayers(m.blocks)) return null;
+      return { type: "stage.need", jobId: m.jobId, dead: m.dead, blocks: m.blocks };
     default:
       return null;
   }
@@ -252,6 +297,9 @@ export function decodeGateway(raw: string): GatewayMsg | null {
     case "job.assign":
       if (!isStr(m.jobId) || !isStr(m.instanceId) || !isStr(m.model) || !isStr(m.prompt)) return null;
       if (m.rpcPeers !== undefined && (!Array.isArray(m.rpcPeers) || m.rpcPeers.length > MAX_RPC_PEERS || !m.rpcPeers.every(isEndpoint))) return null;
+      if (m.stages !== undefined &&
+        (!Array.isArray(m.stages) || m.stages.length > MAX_STAGES ||
+         !m.stages.every((s) => isObj(s) && isEndpoint(s.endpoint) && isLayers(s.blocks)))) return null;
       return m as unknown as JobAssignMsg;
     case "image.assign":
       if (!isStr(m.jobId) || !isStr(m.instanceId) || !isStr(m.model) || !isStr(m.prompt)) return null;
@@ -272,6 +320,11 @@ export function decodeGateway(raw: string): GatewayMsg | null {
     case "job.cancel":
       if (!isStr(m.jobId)) return null;
       return { type: "job.cancel", jobId: m.jobId };
+    case "stage.offer":
+      if (!isStr(m.jobId)) return null;
+      if (m.endpoint !== undefined && !isEndpoint(m.endpoint)) return null;
+      if (m.blocks !== undefined && !isLayers(m.blocks)) return null;
+      return { type: "stage.offer", jobId: m.jobId, ...(isStr(m.endpoint) ? { endpoint: m.endpoint } : {}), ...(isLayers(m.blocks) ? { blocks: m.blocks } : {}) };
     default:
       return null;
   }

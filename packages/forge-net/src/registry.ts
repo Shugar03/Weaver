@@ -160,7 +160,9 @@ export class ForgeRegistry {
     const out: ForgeView[] = [];
     for (const s of this.sessions.values()) {
       for (const i of s.instances) {
-        if (i.capability === "rpc-worker") continue;
+        // Ni rpc-worker ni stage-worker son rutas: son recursos que el
+        // gateway parkea (spec 017/018) — fuera del scheduler y attestation.
+        if (i.capability === "rpc-worker" || i.capability === "stage-worker") continue;
         out.push({
           forgeId: i.instanceId,
           model: i.model,
@@ -199,6 +201,47 @@ export class ForgeRegistry {
           forgePubkey: s.pubkey,
           endpoint: i.rpc.endpoint,
           ...(i.rpc.vramGb !== undefined ? { vramGb: i.rpc.vramGb } : {}),
+          rttMs: s.rttMs ?? DEFAULT_REMOTE_RTT_MS,
+          live: i.hot && !i.saturated,
+        });
+      }
+    }
+    return out;
+  }
+
+  // S47 stage-federation: stage-workers vivos con rango de bloques + endpoint.
+  // Recursos del StagePool — nunca rutas. `live` = stage-server arriba y con
+  // lugar para otra sesión (KV disponible).
+  stageWorkers(): {
+    instanceId: string;
+    forgePubkey: string;
+    model: string;
+    endpoint: string;
+    layers: [number, number];
+    tps?: number;
+    rttMs: number;
+    live: boolean;
+  }[] {
+    const out: {
+      instanceId: string;
+      forgePubkey: string;
+      model: string;
+      endpoint: string;
+      layers: [number, number];
+      tps?: number;
+      rttMs: number;
+      live: boolean;
+    }[] = [];
+    for (const s of this.sessions.values()) {
+      for (const i of s.instances) {
+        if (i.capability !== "stage-worker" || !i.stage) continue;
+        out.push({
+          instanceId: i.instanceId,
+          forgePubkey: s.pubkey,
+          model: i.model,
+          endpoint: i.stage.endpoint,
+          layers: i.stage.layers,
+          ...(i.stage.tps !== undefined ? { tps: i.stage.tps } : {}),
           rttMs: s.rttMs ?? DEFAULT_REMOTE_RTT_MS,
           live: i.hot && !i.saturated,
         });

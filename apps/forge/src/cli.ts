@@ -23,6 +23,9 @@ import { ForgeDaemon, type DaemonInstance } from "./daemon.ts";
 import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg } from "./config.ts";
 import { connectLoop } from "./ws.ts";
 import { killAllRpcProcs, makePooledFactory, probeTcp, spawnRpcServer, type RpcProc } from "./rpcproc.ts";
+import { startStageServer, type StageServer } from "./stageserver.ts";
+import { simStageCompute, PipelineExec, simFront } from "./pipeline.ts";
+import { tcpStageDial } from "./stagetransport.ts";
 
 const CONFIG_PATH = join(homedir(), ".weaver", "forge.json");
 
@@ -79,7 +82,11 @@ async function detectOpenAI(base: string, apiKey?: string): Promise<InstanceCfg[
   }
 }
 
-function makeInstances(cfg: ForgeConfig, procs: Map<string, RpcProc>): DaemonInstance[] {
+function makeInstances(
+  cfg: ForgeConfig,
+  procs: Map<string, RpcProc>,
+  stageServers: Map<string, StageServer>,
+): DaemonInstance[] {
   return cfg.instances.map((c) => {
     // rpc-worker: sin exec — presta VRAM. Su salud ES el ggml-rpc-server que
     // up spawneó (o el alive:false honesto si el binario no estaba).
@@ -88,6 +95,23 @@ function makeInstances(cfg: ForgeConfig, procs: Map<string, RpcProc>): DaemonIns
       // live = proc vivo Y endpoint alcanzable (self-probe TCP — el socket
       // puede morir aunque el proceso respire).
       return { ...c, rpcProc: proc, rpcProbe: () => probeTcp(c.rpc!.endpoint) };
+    }
+    // stage-worker: sin exec — presta BLOQUES del modelo. Su salud ES el
+    // stage-server TCP spawneado en up + self-probe del endpoint.
+    if (c.capability === "stage-worker") {
+      const srv = stageServers.get(c.instanceId);
+      return {
+        ...c,
+        stageServer: {
+          get alive() {
+            return srv?.alive === true;
+          },
+          get sessions() {
+            return srv?.sessions() ?? 0;
+          },
+        },
+        stageProbe: () => probeTcp(c.stage!.endpoint),
+      };
     }
     return {
       ...c,
@@ -276,6 +300,42 @@ if (cmd === "init") {
       if (i.capability === "text") i.modelFile = modelFile;
     }
   }
+  // S47 (spec 018): --stage-worker id:k-n:host:port — instance que SOLO
+  // presta bloques del modelo vía stage-server TCP (up lo levanta). NO rutea
+  // jobs: es recurso del StagePool. --stage-model fija el modelo (compartido
+  // con el coordinator — el pool solo parkea mismo modelo).
+  //   ej: --stage-worker s1:0-40:10.0.0.5:50100 --stage-model qwen-235b
+  const stageModel = arg("--stage-model");
+  for (const w of args("--stage-worker")) {
+    const m = /^([^:]+):(\d+)-(\d+):(.+)$/.exec(w);
+    if (!m || !stageModel) {
+      console.error(`--stage-worker inválido: ${w} (formato id:k-n:host:port, requiere --stage-model)`);
+      process.exit(1);
+    }
+    instances.push({
+      instanceId: m[1],
+      model: stageModel,
+      capability: "stage-worker",
+      maxConcurrent: 1, // una sesión: el KV de dos jobs no comparte GPU
+      loadTimeMs: 0,
+      stage: { layers: [Number(m[2]), Number(m[3])], endpoint: m[4] },
+    });
+  }
+  // --pipeline BLOCKS: las instances text se anuncian como coordinator
+  // federado — "sirvo este modelo si me armás la cadena de stages". No hay
+  // modelo local completo: assign sin stages = fail honesto.
+  const pipelineBlocks = Number(arg("--pipeline"));
+  if (pipelineBlocks > 0) {
+    for (const i of instances) {
+      if (i.capability !== "text") continue;
+      i.pipeline = { blocks: Math.trunc(pipelineBlocks) };
+      if (i.maxConcurrent > 1) {
+        console.warn(`--pipeline: ${i.instanceId} maxConcurrent ${i.maxConcurrent}→1 (una cadena por job)`);
+        i.maxConcurrent = 1;
+      }
+    }
+    console.warn("--pipeline: substrate = stage-sim (activaciones reales por TCP, cómputo simulado — block-runner real es fase B)");
+  }
   const budgets = {
     ...(process.argv.includes("--idle-only") ? { idleOnly: true } : {}),
     ...(arg("--max-vram-gb") ? { maxVramGb: Number(arg("--max-vram-gb")) } : {}),
@@ -363,11 +423,50 @@ siguiente paso: weaver-forge up`);
       console.warn(`rpc-server ${c.instanceId} no spawneó — heartbeateo muerto:`, e);
     }
   }
-  const instances = makeInstances(cfg, procs);
+  // S47 worker: stage-server TCP por instance stage-worker — bindea el
+  // endpoint declarado ANTES de conectar (el primer heartbeat ya reporta
+  // alive real). Substrate sim por ahora — el wire es el de prod.
+  const stageServers = new Map<string, StageServer>();
+  for (const c of cfg.instances) {
+    if (c.capability !== "stage-worker" || !c.stage?.endpoint) continue;
+    const m = /^(.+):(\d+)$/.exec(c.stage.endpoint);
+    if (!m) {
+      console.warn(`stage-worker ${c.instanceId}: endpoint inválido ${c.stage.endpoint} — reporto muerto`);
+      continue;
+    }
+    try {
+      const srv = startStageServer({
+        host: m[1].replace(/^\[|\]$/g, ""),
+        port: Number(m[2]),
+        compute: simStageCompute(c.stage.layers, c.instanceId.replace(/\W/g, "")),
+      });
+      await srv.ready;
+      stageServers.set(c.instanceId, srv);
+      console.log(`stage-server ${c.instanceId} [${c.stage.layers}] → ${c.stage.endpoint} (substrate: sim)`);
+    } catch (e) {
+      console.warn(`stage-server ${c.instanceId} no bindeó — heartbeateo muerto:`, e);
+    }
+  }
+  const instances = makeInstances(cfg, procs, stageServers);
   // S46 coordinator: alguna instance pide workers → factory que spawnea
   // llama-server --rpc peers por peer-set (warm-keyed, ver rpcproc.ts).
   const pooledFactory = cfg.instances.some((i) => i.capability === "text" && i.pool?.needs)
     ? makePooledFactory({ llamaBin: arg("--llama-bin") ?? process.env.LLAMA_SERVER_BIN ?? "llama-server" })
+    : undefined;
+  // S47 coordinator: alguna instance declaró pipeline → PipelineExec con
+  // transport TCP real. Front = sim (fase B: embeddings+lmhead de verdad).
+  const pipelineFactory = cfg.instances.some((i) => i.pipeline)
+    ? (inst: DaemonInstance, stages: { endpoint: string; blocks: [number, number] }[], _signal?: AbortSignal, requestStage?: (dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number] }>) =>
+        Promise.resolve(
+          new PipelineExec({
+            forgeId: inst.instanceId,
+            model: inst.model,
+            stages,
+            dial: tcpStageDial,
+            front: simFront(),
+            ...(requestStage ? { requestStage } : {}),
+          }),
+        )
     : undefined;
   // Proof L0 por chain: ed25519 (stellar, sync) o personal_sign (evm, async).
   const sign: (hash: Buffer) => Buffer | Promise<Buffer> =
@@ -410,6 +509,7 @@ siguiente paso: weaver-forge up`);
         ...(cfg.agentId !== undefined ? { agentId: cfg.agentId } : {}),
         ...(contractId ? { claim: makeClaimer(cfg, contractId) } : {}),
         ...(pooledFactory ? { pooledFactory } : {}),
+        ...(pipelineFactory ? { pipelineFactory } : {}),
         // Allowlist operador de rpcPeers — el gateway propone, el forge
         // dispone: solo diala hosts que el operador declaró en init.
         ...(cfg.rpcAllow?.length
@@ -425,6 +525,7 @@ siguiente paso: weaver-forge up`);
   );
   process.on("SIGINT", () => {
     killAllRpcProcs(); // llama-server/ggml-rpc-server hijos mueren con el daemon
+    for (const s of stageServers.values()) s.close(); // stage-servers mueren también
     loop.cancel();
     process.exit(0);
   });
@@ -446,5 +547,8 @@ flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:
        --model-file PATH  GGUF local para el llama-server pooled
        --rpc-allow p1,p2  allowlist de hosts aceptados como rpcPeers (prefijo/exacto)
        --rpc-bin BIN      binario rpc-server (default ggml-rpc-server, env RPC_SERVER_BIN)
+       --stage-worker id:k-n:host:port  S47: instance que presta bloques k..n (stage-server TCP)
+       --stage-model M    modelo de los stage-worker (compartido con el coordinator)
+       --pipeline BLOCKS  S47: las instances text coordinan por stages (substrate sim)
        --llama-bin BIN    binario llama-server (default llama-server, env LLAMA_SERVER_BIN)`);
 }

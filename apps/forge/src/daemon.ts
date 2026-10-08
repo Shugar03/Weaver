@@ -16,7 +16,7 @@ import { ollamaVramUsedGb, osIdleMs } from "./budgets.ts";
 export type DaemonInstance = {
   instanceId: string;
   model: string;
-  capability: "text" | "image" | "rpc-worker";
+  capability: "text" | "image" | "rpc-worker" | "stage-worker";
   exec?: ForgeExec | ImageExec; // ausente en rpc-worker — presta VRAM, no sirve jobs
   maxConcurrent: number; // cap propio del operador → saturated honesto
   loadTimeMs: number; // carga COLD estimada (declarada, se refina con historia)
@@ -35,6 +35,16 @@ export type DaemonInstance = {
   pool?: { needs: number; minVramGb?: number };
   // GGUF local para el llama-server pooled (lo consume la factory de cli.ts).
   modelFile?: string;
+  // S47 stage-federation (spec 018):
+  // stage-worker: hospeda bloques [k,n) — nunca ve prompts, procesa hidden
+  // states en un stage-server TCP (lo spawnea cli.ts; acá solo va la salud).
+  stage?: { layers: [number, number]; endpoint: string; vramGb?: number; tps?: number };
+  stageServer?: { alive: boolean; sessions?: number };
+  stageProbe?: () => Promise<boolean>;
+  // coordinator federado: "sirvo este modelo si me armás la cadena" — el
+  // daemon NO tiene el modelo completo local; sin stages en el assign no
+  // puede servir (fail honesto, no finge un exec residente).
+  pipeline?: { blocks: number };
 };
 
 // S39: probes de OS/engine inyectables — los tests meten fakes, prod usa los
@@ -71,6 +81,26 @@ export type PooledFactory = {
   dispose?(): void;
 };
 
+// S47: coordinator federado — ante job.assign con stages, la factory arma el
+// PipelineExec (embeddings+lmhead locales, stages remotos por relay TCP —
+// spec 018 / Petals Algo 1). Inyectable → tests con fakes.
+// requestStage: el exec pide un reemplazo mid-job (stage.need → stage.offer);
+// el daemon lo cablea al canal gateway — ausente → sin heal (fail honesto).
+export type StageRequester = (
+  dead: string,
+  blocks: [number, number],
+) => Promise<{ endpoint?: string; blocks?: [number, number] }>;
+
+export type PipelineFactory = {
+  (
+    inst: DaemonInstance,
+    stages: { endpoint: string; blocks: [number, number] }[],
+    signal?: AbortSignal,
+    requestStage?: StageRequester,
+  ): Promise<ForgeExec>;
+  dispose?(): void;
+};
+
 // S46 hardening: allowlist operador-side de los peers que el daemon acepta
 // dialar. El assign viene del gateway — si está comprometido/buggeado no
 // queremos que un forge cualquiera abra conexiones RPC arbitrarias (el
@@ -90,9 +120,14 @@ export class ForgeDaemon {
   private readonly agentId?: number; // ERC-8004 (EVM) — viaja en el heartbeat
   private readonly probes: BudgetProbes;
   private readonly pooledFactory?: PooledFactory;
+  private readonly pipelineFactory?: PipelineFactory;
   private readonly allowRpcPeers?: PeerAllowlist;
+  private readonly allowStages?: PeerAllowlist;
   private readonly tok = new Map<string, { tok: number; ms: number }[]>();
   private readonly running = new Map<string, AbortController>(); // jobId → cancel
+  // stage.need en vuelo: jobId → resolver del offer. Uno por job (el heal
+  // del pipeline es secuencial); el timeout resuelve vacío = "sin reemplazo".
+  private readonly stageNeeds = new Map<string, (o: { endpoint?: string; blocks?: [number, number] }) => void>();
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private unMsg: (() => void) | null = null;
   private unClose: (() => void) | null = null;
@@ -107,7 +142,9 @@ export class ForgeDaemon {
     agentId?: number;
     probes?: Partial<BudgetProbes>;
     pooledFactory?: PooledFactory;
+    pipelineFactory?: PipelineFactory;
     allowRpcPeers?: PeerAllowlist;
+    allowStages?: PeerAllowlist;
   }) {
     this.channel = deps.channel;
     this.instances = new Map(deps.instances.map((i) => [i.instanceId, i]));
@@ -121,7 +158,9 @@ export class ForgeDaemon {
       vramUsedGb: deps.probes?.vramUsedGb ?? (() => ollamaVramUsedGb()),
     };
     this.pooledFactory = deps.pooledFactory;
+    this.pipelineFactory = deps.pipelineFactory;
     this.allowRpcPeers = deps.allowRpcPeers;
+    this.allowStages = deps.allowStages;
   }
 
   start(): void {
@@ -147,6 +186,11 @@ export class ForgeDaemon {
     // Los llama-server warm del pooledFactory mueren con el daemon — GBs de
     // VRAM liberados al parar, no solo al exit del proceso.
     this.pooledFactory?.dispose?.();
+    this.pipelineFactory?.dispose?.();
+    // stage.need pendientes: sin canal no llega el offer — resolver vacío
+    // para que el pipeline falle honesto en vez de colgar su await.
+    for (const r of this.stageNeeds.values()) r({});
+    this.stageNeeds.clear();
     // Suelta el socket: connectLoop.onClose resuelve, cancel() no deja el
     // daemon colgado con una conexión zombie.
     this.channel.close?.();
@@ -191,6 +235,45 @@ export class ForgeDaemon {
         });
         continue;
       }
+      // stage-worker: su salud ES el stage-server TCP (proc vivo + endpoint
+      // alcanzable — mismo criterio que rpc-worker). Jamás recibe job.assign
+      // con prompt; el gateway solo lo incluye en `stages` del coordinator.
+      // inFlight = sessions activas (KV ocupado) — parkeable solo si hay lugar.
+      if (i.capability === "stage-worker") {
+        const alive =
+          (i.stageServer?.alive === true) &&
+          (i.stageProbe ? await i.stageProbe().catch(() => false) : true);
+        const sessions = i.stageServer?.sessions ?? 0;
+        instances.push({
+          instanceId: i.instanceId,
+          model: i.model,
+          capability: "stage-worker",
+          hot: alive,
+          inFlight: sessions,
+          saturated: !alive || busyUser || sessions >= i.maxConcurrent,
+          loadTimeMs: 0,
+          ...(i.stage ? { stage: i.stage } : {}),
+        });
+        continue;
+      }
+      // pipeline coordinator: NO tiene exec local (el modelo entero no cabe —
+      // los stages llegan por assign del StagePool). Su "salud" no se mide
+      // contra un engine residente: vive si el daemon vive, y su capacidad
+      // real la decide el gateway al armar la cadena (null → failover).
+      // hot = listo para coordinar; saturated solo si el operador está busy.
+      if (i.pipeline) {
+        instances.push({
+          instanceId: i.instanceId,
+          model: i.model,
+          capability: i.capability,
+          hot: true,
+          inFlight: 0,
+          saturated: busyUser,
+          loadTimeMs: i.loadTimeMs,
+          pipeline: i.pipeline,
+        });
+        continue;
+      }
       // Liveness probe del engine local: si el proceso backend crasheó (OOM/ECONNREFUSED),
       // la instance no está viva ni hot, y se marca saturated para que el gateway no le asigne tráfico.
       const alive = i.exec ? ((await i.exec.probe?.().catch(() => false)) ?? true) : false;
@@ -216,6 +299,7 @@ export class ForgeDaemon {
         ...(ms > 0 ? { tokPerSec: (tok / ms) * 1000 } : {}),
         loadTimeMs: i.loadTimeMs,
         ...(i.pool ? { pool: i.pool } : {}),
+        ...(i.pipeline ? { pipeline: i.pipeline } : {}),
       });
     }
     this.channel.send({
@@ -243,6 +327,15 @@ export class ForgeDaemon {
       case "job.funded":
         this.onFunded(m);
         break;
+      case "stage.offer": {
+        // Respuesta al stage.need de un pipeline en vuelo — offer vacío =
+        // "no hay reemplazo" (el exec falla honesto, no espera de más).
+        this.stageNeeds.get(m.jobId)?.({
+          ...(m.endpoint ? { endpoint: m.endpoint } : {}),
+          ...(m.blocks ? { blocks: m.blocks } : {}),
+        });
+        break;
+      }
       default:
         break; // auth.ok/auth.fail los maneja ws.ts antes de crear el daemon
     }
@@ -269,6 +362,28 @@ export class ForgeDaemon {
 
   private fail(jobId: string, error: string, midStream: boolean, poolBlame = false): void {
     this.channel.send({ type: "job.fail", jobId, error, midStream, ...(poolBlame ? { poolBlame: true } : {}) });
+  }
+
+  // S47 heal: el pipeline pide un stage de reemplazo por endpoint muerto.
+  // stage.need → gateway; el offer llega por onMsg. Timeout 10s = "sin
+  // reemplazo" (el offer vacío y el timeout son indistinguibles — mismo
+  // outcome: fail honesto).
+  private requestStage(
+    jobId: string,
+    dead: string,
+    blocks: [number, number],
+  ): Promise<{ endpoint?: string; blocks?: [number, number] }> {
+    return new Promise((res) => {
+      const resolve = (o: { endpoint?: string; blocks?: [number, number] }) => {
+        if (this.stageNeeds.get(jobId) === resolve) this.stageNeeds.delete(jobId);
+        clearTimeout(t);
+        res(o);
+      };
+      const t = setTimeout(() => resolve({}), 10_000);
+      t.unref?.();
+      this.stageNeeds.set(jobId, resolve);
+      this.channel.send({ type: "stage.need", jobId, dead, blocks });
+    });
   }
 
   private async runJob(m: Extract<GatewayMsg, { type: "job.assign" }>): Promise<void> {
@@ -324,6 +439,43 @@ export class ForgeDaemon {
         this.running.delete(m.jobId);
         return this.fail(m.jobId, "job cancelado durante el spawn pooled", false);
       }
+    }
+    // S47: assign con stages → el exec lo arma pipelineFactory (cadena de
+    // stage-workers remotos, embeddings+lmhead locales). Misma defensa que
+    // rpcPeers: solo instances que declararon `pipeline` obedecen stages —
+    // un gateway buggy no puede hacer que un forge normal diale fronteras
+    // arbitrarias. Recíproco: una instance pipeline SIN stages no puede
+    // servir (no tiene el modelo entero local — fail honesto, no finge).
+    if (m.stages?.length) {
+      if (!i.pipeline) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: stages recibidos pero no soy pipeline`, false);
+      }
+      if (this.allowStages && !this.allowStages(m.stages.map((s) => s.endpoint))) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: stages fuera de la allowlist del operador`, false);
+      }
+      if (!this.pipelineFactory) {
+        return this.fail(m.jobId, `instance ${m.instanceId}: stages recibidos pero sin pipelineFactory`, false);
+      }
+      this.running.set(m.jobId, ac);
+      try {
+        exec = await this.pipelineFactory(i, m.stages, ac.signal, (dead, blocks) =>
+          this.requestStage(m.jobId, dead, blocks),
+        );
+      } catch (e) {
+        this.running.delete(m.jobId);
+        return this.fail(
+          m.jobId,
+          `pipeline spawn falló: ${e instanceof Error ? e.message : String(e)}`,
+          false,
+          !ac.signal.aborted, // poolBlame: stages culpables, no el coordinator
+        );
+      }
+      if (ac.signal.aborted) {
+        this.running.delete(m.jobId);
+        return this.fail(m.jobId, "job cancelado durante el spawn del pipeline", false);
+      }
+    } else if (i.pipeline) {
+      return this.fail(m.jobId, `instance ${m.instanceId}: pipeline sin stages — no puedo servir solo`, false);
     }
     if (!exec) return this.fail(m.jobId, `instance ${m.instanceId}: sin exec`, false);
     // Commitment input+output (proofhash.ts): el hash del prompt es sobre lo

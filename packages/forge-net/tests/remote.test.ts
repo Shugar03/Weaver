@@ -591,3 +591,62 @@ describe("S31 RemoteImageExec", () => {
     assert.equal((ch.sent[1] as { jobId: string }).jobId, "im1");
   });
 });
+
+describe("S47 RemoteForgeExec — stagePool", () => {
+  it("acquire → stages ordenados en el assign; release por jobId al terminar", async () => {
+    const ch = new FakeChannel();
+    const calls: [string, string, string][] = [];
+    let released = "";
+    const stagePool = {
+      acquire: async (id: string, pk: string, jobId: string) => {
+        calls.push([id, pk, jobId]);
+        return [
+          { endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number] },
+          { endpoint: "10.0.0.6:50100", blocks: [40, 80] as [number, number] },
+        ];
+      },
+      release: (id: string) => {
+        released = id;
+      },
+      penalize: () => {},
+    };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "c0",
+      model: "qwen-235b",
+      stagePool: stagePool as never,
+      forgePubkey: "PK_COORD",
+    });
+    const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
+    const it = ex.execute(req({ model: "qwen-235b" }));
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
+    }, 10);
+    await drain(it);
+    assert.deepEqual(calls, [["c0", "PK_COORD", "j1"]]);
+    const assign = ch.lastAssign() as { stages?: { endpoint: string; blocks: [number, number] }[] } | undefined;
+    assert.deepEqual(assign?.stages, [
+      { endpoint: "10.0.0.5:50100", blocks: [0, 40] },
+      { endpoint: "10.0.0.6:50100", blocks: [40, 80] },
+    ]);
+    assert.equal(released, "j1");
+    // Y nunca trajo rpcPeers — pools ortogonales.
+    assert.equal("rpcPeers" in (assign ?? {}), false);
+  });
+
+  it("stagePool sin cobertura → throw pre-assign (failover honesto)", async () => {
+    const ch = new FakeChannel();
+    const stagePool = { acquire: async () => null, release: () => {}, penalize: () => {} };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "c0",
+      model: "m",
+      stagePool: stagePool as never,
+      forgePubkey: "PK",
+    });
+    await assert.rejects(() => drain(ex.execute(req())), /stage-pool sin cobertura/);
+    assert.equal(ch.lastAssign(), undefined);
+  });
+});

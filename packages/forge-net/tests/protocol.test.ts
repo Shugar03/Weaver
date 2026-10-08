@@ -174,3 +174,92 @@ describe("S46 pool-forge: rpc-worker + rpcPeers (spec 017)", () => {
     assert.equal(decode(JSON.stringify({ type: "job.fail", jobId: "j", error: "x", midStream: false, poolBlame: "si" })), null);
   });
 });
+
+describe("S47 stage-federation: stage-worker + stages (spec 018)", () => {
+  const stageWorker = (over: Record<string, unknown> = {}) => ({
+    instanceId: "s0",
+    model: "qwen-235b",
+    capability: "stage-worker",
+    hot: true,
+    inFlight: 0,
+    saturated: false,
+    loadTimeMs: 0,
+    stage: { layers: [0, 40], endpoint: "10.0.0.5:50100", vramGb: 96, tps: 12.5 },
+    ...over,
+  });
+  const hb = (instances: unknown[]) =>
+    decode(JSON.stringify({ type: "heartbeat", instances }));
+
+  it("stage-worker válido roundtrip — layers + endpoint + tps viajan", () => {
+    const d = hb([stageWorker()]);
+    assert.notEqual(d, null);
+    const i = (d as { instances: InstanceReport[] }).instances[0];
+    assert.equal(i.capability, "stage-worker");
+    assert.deepEqual(i.stage, { layers: [0, 40], endpoint: "10.0.0.5:50100", vramGb: 96, tps: 12.5 });
+  });
+
+  it("stage-worker exige layers [k,n) válido + endpoint", () => {
+    assert.equal(hb([stageWorker({ stage: undefined })]), null);
+    assert.equal(hb([stageWorker({ stage: { layers: [40, 40], endpoint: "10.0.0.5:50100" } })]), null); // rango vacío
+    assert.equal(hb([stageWorker({ stage: { layers: [40, 20], endpoint: "10.0.0.5:50100" } })]), null); // invertido
+    assert.equal(hb([stageWorker({ stage: { layers: [-1, 40], endpoint: "10.0.0.5:50100" } })]), null);
+    assert.equal(hb([stageWorker({ stage: { layers: [0, 40], endpoint: "mal" } })]), null);
+    assert.equal(hb([stageWorker({ stage: { layers: [0.5, 40], endpoint: "10.0.0.5:50100" } })]), null);
+  });
+
+  it("stage.tps/vramGb fuera de rango → null", () => {
+    assert.equal(hb([stageWorker({ stage: { layers: [0, 40], endpoint: "10.0.0.5:50100", tps: -1 } })]), null);
+    assert.equal(hb([stageWorker({ stage: { layers: [0, 40], endpoint: "10.0.0.5:50100", vramGb: 4096 } })]), null);
+  });
+
+  it("coordinator declara pipeline.blocks — 'sirvo este modelo si me armás la cadena'", () => {
+    const d = hb([{ instanceId: "i0", model: "qwen-235b", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 5000, pipeline: { blocks: 80 } }]);
+    const i = (d as { instances: InstanceReport[] }).instances[0];
+    assert.deepEqual(i.pipeline, { blocks: 80 });
+    // fuera de rango → null (2..512 bloques — no enjambre infinito ni 1 capa)
+    assert.equal(hb([{ instanceId: "i0", model: "m", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 1, pipeline: { blocks: 1 } }]), null);
+    assert.equal(hb([{ instanceId: "i0", model: "m", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 1, pipeline: { blocks: 9999 } }]), null);
+    assert.equal(hb([{ instanceId: "i0", model: "m", capability: "text", hot: true, inFlight: 0, saturated: false, loadTimeMs: 1, pipeline: {} }]), null);
+  });
+
+  it("job.assign.stages decodes — cadena ordenada con endpoints y rangos", () => {
+    const assign = {
+      type: "job.assign",
+      jobId: "j",
+      instanceId: "i",
+      model: "qwen-235b",
+      prompt: "p",
+      stages: [
+        { endpoint: "10.0.0.5:50100", blocks: [0, 40] },
+        { endpoint: "10.0.0.6:50100", blocks: [40, 80] },
+      ],
+    };
+    const d = decodeGateway(JSON.stringify(assign));
+    assert.deepEqual((d as { stages?: unknown[] }).stages, assign.stages);
+  });
+
+  it("job.assign.stages inválidos → null (endpoint malo, >6 stages, rango malo)", () => {
+    const base = { type: "job.assign", jobId: "j", instanceId: "i", model: "m", prompt: "p" };
+    assert.equal(decodeGateway(JSON.stringify({ ...base, stages: [{ endpoint: "mal", blocks: [0, 40] }] })), null);
+    assert.equal(decodeGateway(JSON.stringify({ ...base, stages: Array.from({ length: 7 }, (_, i) => ({ endpoint: `h${i}:1`, blocks: [i, i + 1] })) })), null);
+    assert.equal(decodeGateway(JSON.stringify({ ...base, stages: [{ endpoint: "h:1", blocks: [40, 20] }] })), null);
+    assert.equal(decodeGateway(JSON.stringify({ ...base, stages: "noarray" })), null);
+  });
+
+  it("stage.need (coord→gw): reemplazo mid-job con el tramo muerto", () => {
+    const d = decode(JSON.stringify({ type: "stage.need", jobId: "j1", dead: "10.0.0.6:50100", blocks: [40, 80] }));
+    assert.deepEqual(d, { type: "stage.need", jobId: "j1", dead: "10.0.0.6:50100", blocks: [40, 80] });
+    assert.equal(decode(JSON.stringify({ type: "stage.need", jobId: "j1", blocks: [40, 80] })), null); // dead requerido
+    assert.equal(decode(JSON.stringify({ type: "stage.need", jobId: "j1", dead: "x", blocks: [80, 40] })), null);
+    assert.equal(decode(JSON.stringify({ type: "stage.need", jobId: "j1", dead: "x", blocks: [0, 999] })), null);
+  });
+
+  it("stage.offer (gw→coord): endpoint de reemplazo o null honesto", () => {
+    const ok = decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "10.0.0.7:50100", blocks: [40, 80] }));
+    assert.deepEqual(ok, { type: "stage.offer", jobId: "j1", endpoint: "10.0.0.7:50100", blocks: [40, 80] });
+    const none = decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1" }));
+    assert.deepEqual(none, { type: "stage.offer", jobId: "j1" }); // sin endpoint = no hay reemplazo
+    assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "mal" })), null);
+    assert.equal(decodeGateway(JSON.stringify({ type: "stage.offer", jobId: "j1", endpoint: "h:1", blocks: [5, 5] })), null);
+  });
+});

@@ -22,5 +22,19 @@ export { InMemoryForgeStore, PostgresForgeStore, type ForgeIdentity, type ForgeS
 export { RemoteForgeExec, RemoteImageExec, type DaemonChannel, type ForgeChannel } from "./remote.ts";
 export { ForgeSession, type VerifyFn } from "./session.ts";
 export { ForgePool, type PoolWorker, type PoolDeps } from "./pool.ts";
+export { StagePool, type StageWorker, type StageAssign, type StagePoolDeps } from "./stagepool.ts";
+export {
+  decodeCoord,
+  decodeStage,
+  encode as encodeStage,
+  type CoordMsg,
+  type StageMsg,
+  type StageOpenMsg,
+  type StageStepMsg,
+  type StageCloseMsg,
+  type StageAckMsg,
+  type StageOutMsg,
+  type StageFailMsg,
+} from "./stageproto.ts";
 export { NonceStore } from "./nonce.ts";
 export { imageDims } from "./image.ts";

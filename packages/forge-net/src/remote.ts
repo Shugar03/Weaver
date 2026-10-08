@@ -19,6 +19,7 @@ import type {
 } from "@weaver/forge-exec";
 import type { ForgeMsg, GatewayMsg } from "./protocol.ts";
 import type { ForgePool } from "./pool.ts";
+import type { StagePool } from "./stagepool.ts";
 
 // Canal abstracto — testeable con un fake duplex, sin socket real.
 // ws-server (gateway) y client (daemon) lo implementan sobre su transporte.
@@ -67,6 +68,7 @@ export class RemoteForgeExec implements ForgeExec {
   private readonly pooledFirstTokenMs: number;
   private readonly isResident?: () => boolean;
   private readonly pool?: ForgePool;
+  private readonly stagePool?: StagePool;
   private readonly forgePubkey: string;
 
   constructor(opts: {
@@ -82,6 +84,7 @@ export class RemoteForgeExec implements ForgeExec {
     pooledFirstTokenMs?: number;
     resident?: () => boolean;
     pool?: ForgePool;
+    stagePool?: StagePool;
     forgePubkey?: string;
   }) {
     this.channel = opts.channel;
@@ -92,6 +95,7 @@ export class RemoteForgeExec implements ForgeExec {
     this.pooledFirstTokenMs = opts.pooledFirstTokenMs ?? 300_000;
     this.isResident = opts.resident;
     this.pool = opts.pool;
+    this.stagePool = opts.stagePool;
     this.forgePubkey = opts.forgePubkey ?? "";
   }
 
@@ -226,10 +230,16 @@ export class RemoteForgeExec implements ForgeExec {
     // creado cuando el acquire termine, y el release debe viajar CON esa
     // promesa o los workers quedan busy para siempre (leak real).
     const acquireP = this.pool ? this.pool.acquire(this.forgeId, this.forgePubkey, jobId) : null;
+    // S47 stage-federation: si la instance declaró pipeline, adquiere la
+    // cadena de stage-workers (misma disciplina: reserva pre-probe, null =
+    // cobertura insuficiente → failover honesto).
+    const stageP = this.stagePool ? this.stagePool.acquire(this.forgeId, this.forgePubkey, jobId) : null;
     let blamedPeers = false;
     try {
       const peers = acquireP ? await acquireP : [];
       if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers elegibles`);
+      const stages = stageP ? await stageP : [];
+      if (stages === null) throw new Error(`forge ${this.forgeId}: stage-pool sin cobertura de bloques`);
       // El consumidor murió DURANTE el acquire (abort/close mid-probe): no
       // despachar el assign — el daemon spawnearía un llama-server del peso
       // del modelo para servirle tokens a nadie. El loan ya creado lo
@@ -238,7 +248,7 @@ export class RemoteForgeExec implements ForgeExec {
       // Cold start pooled: el daemon spawnea llama-server --rpc al recibir el
       // assign — el primer token incluye el boot completo del cluster.
       const firstTokenMs =
-        peers.length > 0 ? Math.max(this.firstTokenTimeoutMs, this.pooledFirstTokenMs) : this.firstTokenTimeoutMs;
+        peers.length > 0 || stages.length > 0 ? Math.max(this.firstTokenTimeoutMs, this.pooledFirstTokenMs) : this.firstTokenTimeoutMs;
       this.channel.send({
         type: "job.assign",
         jobId,
@@ -250,6 +260,7 @@ export class RemoteForgeExec implements ForgeExec {
         ...(req.tools ? { tools: req.tools } : {}),
         ...(req.resume ? { resume: req.resume } : {}),
         ...(peers.length ? { rpcPeers: peers } : {}),
+        ...(stages.length ? { stages } : {}),
       });
       await withTimeout(ack, this.ackTimeoutMs, `forge ${this.forgeId}: assign sin ack`);
       let first = true;
@@ -292,6 +303,14 @@ export class RemoteForgeExec implements ForgeExec {
           .then(() => {
             if (blamedPeers) this.pool?.penalize(jobId);
             this.pool?.release(jobId);
+          })
+          .catch(() => {});
+      }
+      if (stageP) {
+        void stageP
+          .then(() => {
+            if (blamedPeers) this.stagePool?.penalize(jobId);
+            this.stagePool?.release(jobId);
           })
           .catch(() => {});
       }

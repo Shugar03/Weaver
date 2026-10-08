@@ -10,6 +10,7 @@ import {
   ForgeSession,
   RemoteForgeExec,
   RemoteImageExec,
+  StagePool,
   type ForgeRegistry,
   type NonceStore,
   type VerifyFn,
@@ -74,6 +75,8 @@ export function attachForgeWS(
     // Probe TCP a los endpoints rpc-worker (default real). Tests e2e inyectan
     // uno — sus endpoints son IPs fake que nunca contestarían un SYN.
     poolProbe?: (endpoint: string) => Promise<boolean>;
+    // Idem para stage-workers (S47) — el e2e los corre sobre TCP real.
+    stageProbe?: (endpoint: string) => Promise<boolean>;
     // Throttle del retry de attestation para coordinators pooled (default
     // 30s). Los e2e lo bajan — sino un test tardaría medio minuto.
     attestRetryMs?: number;
@@ -93,6 +96,13 @@ export function attachForgeWS(
     reportOf: (i) => deps.registry.reportOf(i),
     workers: () => deps.registry.workers(),
     ...(deps.poolProbe ? { probe: deps.poolProbe } : {}),
+  });
+  // S47 stage-federation: cadena de stage-workers para coordinators
+  // federados — mismo contrato de loans/probes/strikes que ForgePool.
+  const stagePool = new StagePool({
+    reportOf: (i) => deps.registry.reportOf(i),
+    stageWorkers: () => deps.registry.stageWorkers(),
+    ...(deps.stageProbe ? { probe: deps.stageProbe } : {}),
   });
   // Reintento de attestation para coordinators pooled: el primer attest
   // puede fallar por "pool insuficiente" — condición TRANSIENTE (los workers
@@ -146,6 +156,22 @@ export function attachForgeWS(
       },
     });
     sockets.set(session, ws);
+    // S47 heal: el coordinator pide un stage de reemplazo mid-job. El pool
+    // responde por ESTA sesión — un stage.need de otra forge no toca loans
+    // ajenos (replace solo mira el loan de ese jobId).
+    session.onMessage((m) => {
+      if (m.type !== "stage.need") return;
+      void stagePool
+        .replace(m.jobId, m.dead, m.blocks)
+        .then((r) =>
+          session.send({
+            type: "stage.offer",
+            jobId: m.jobId,
+            ...(r ? { endpoint: r.endpoint, blocks: r.blocks } : {}),
+          }),
+        )
+        .catch(() => session.send({ type: "stage.offer", jobId: m.jobId }));
+    });
     ws.on("message", (data) => {
       void session.onRaw(data.toString()).then(() => syncExecs(session));
     });
@@ -180,6 +206,7 @@ export function attachForgeWS(
               model: v.model,
               resident: () => deps.registry.reportOf(v.forgeId)?.hot ?? false,
               pool,
+              stagePool,
               forgePubkey: pk,
             }),
           );
@@ -187,15 +214,15 @@ export function attachForgeWS(
           instanceOwner.set(v.forgeId, session);
           attestText(ex, v);
           lastAttest.set(v.forgeId, Date.now());
-        } else if (
-          !v.attested &&
-          Date.now() - (lastAttest.get(v.forgeId) ?? 0) > ATTEST_RETRY_MS &&
-          deps.registry.reportOf(v.forgeId)?.pool !== undefined
-        ) {
-          // Solo pooled reintenta: "sin workers" es transient. Una instance
-          // normal que no pudo servir 4 tokens está rota, no ocupada.
-          lastAttest.set(v.forgeId, Date.now());
-          attestText(remoteExecs.get(v.forgeId)!, v);
+        } else if (!v.attested && Date.now() - (lastAttest.get(v.forgeId) ?? 0) > ATTEST_RETRY_MS) {
+          const rep = deps.registry.reportOf(v.forgeId);
+          if (rep?.pool !== undefined || rep?.pipeline !== undefined) {
+            // Solo pooled/pipeline reintenta: "sin workers/stages" es
+            // transient. Una instance normal que no pudo servir 4 tokens
+            // está rota, no ocupada.
+            lastAttest.set(v.forgeId, Date.now());
+            attestText(remoteExecs.get(v.forgeId)!, v);
+          }
         }
       }
     }
@@ -260,6 +287,7 @@ export function attachForgeWS(
       // Coordinator muerto → sus workers prestados vuelven al pool (los
       // workers muertos se curan solos por evicción perezosa en acquire).
       pool.releaseForge(session.pubkey);
+      stagePool.releaseForge(session.pubkey);
     }
     sockets.delete(session);
     for (const [id, owner] of instanceOwner) {

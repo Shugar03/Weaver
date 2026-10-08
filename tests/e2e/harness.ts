@@ -9,7 +9,20 @@ import { RoutedExec } from "@weaver/forge-exec";
 import { dualVerify, stellarKeypair } from "@weaver/settlement";
 import type { ExecRequest, ForgeExec, ImageExec } from "@weaver/forge-exec";
 import type { ForgeView } from "@weaver/scheduler";
-import { ForgeDaemon, connect, type DaemonInstance, type ForgeConfig } from "@weaver/forge";
+import {
+  ForgeDaemon,
+  connect,
+  PipelineExec,
+  probeTcp,
+  simFront,
+  simStageCompute,
+  startStageServer,
+  tcpStageDial,
+  type DaemonInstance,
+  type ForgeConfig,
+  type PipelineFactory,
+  type StageServer,
+} from "@weaver/forge";
 
 export type Stack = {
   url: string;
@@ -86,6 +99,7 @@ async function spawnDaemon(
   instances: DaemonInstance[],
   kp: Kp,
   pooledFactory?: ConstructorParameters<typeof ForgeDaemon>[0]["pooledFactory"],
+  pipelineFactory?: PipelineFactory,
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   const channel = await connect({
     gateway: stack.url, chain: "stellar", pubkey: kp.pubkey, secret: kp.secret, instances: [],
@@ -100,6 +114,7 @@ async function spawnDaemon(
     heartbeatMs: 550,
     probes: { idleMs: async () => null, vramUsedGb: async () => null },
     ...(pooledFactory ? { pooledFactory } : {}),
+    ...(pipelineFactory ? { pipelineFactory } : {}),
   });
   d.start();
   return { daemon: d, kp };
@@ -168,6 +183,99 @@ export function upPooledDaemon(
     // e2e: el exec pooled ES el engine scripteado — prod sería un adapter al
     // llama-server spawneado con --rpc peers.
     (_inst, peers) => Promise.resolve(onPeers ? onPeers(peers) : engine),
+  );
+}
+
+// S47 stage-federation: daemon que presta BLOQUES del modelo — un
+// stage-server TCP REAL (loopback, no fake) corriendo simStageCompute.
+// El transport es el de prod (tcpStageDial lo diala); solo el cómputo es sim.
+export async function upStageDaemon(
+  stack: Stack,
+  instanceId: string,
+  layers: [number, number],
+  model = "qwen3.5:4b",
+  kp: Kp = stellarKeypair(),
+  opts: { stepDelayMs?: number } = {},
+): Promise<{
+  daemon: ForgeDaemon;
+  kp: Kp;
+  server: StageServer;
+  endpoint: string;
+  compute: ReturnType<typeof simStageCompute>;
+}> {
+  const inner = simStageCompute(layers, instanceId.replace(/\W/g, ""));
+  const compute = inner as ReturnType<typeof simStageCompute>;
+  if (opts.stepDelayMs) {
+    // stepDelayMs: pasos más lentos → la ventana mid-job existe para matarlo
+    // (un job de 6 tokens sin delay termina antes de poder romper nada).
+    const orig = inner.step;
+    const delay = opts.stepDelayMs;
+    compute.step = ((s: Parameters<typeof inner.step>[0]) => sleep(delay).then(() => orig(s))) as unknown as typeof compute.step;
+  }
+  const server = startStageServer({ host: "127.0.0.1", port: 0, compute });
+  await server.ready;
+  const endpoint = `127.0.0.1:${server.port}`;
+  const { daemon, kp: k } = await spawnDaemon(
+    stack,
+    [
+      {
+        instanceId,
+        model,
+        capability: "stage-worker",
+        stage: { layers, endpoint },
+        stageServer: {
+          get alive() {
+            return server.alive;
+          },
+          get sessions() {
+            return server.sessions();
+          },
+        },
+        stageProbe: () => probeTcp(endpoint),
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    kp,
+  );
+  return { daemon, kp: k, server, endpoint, compute };
+}
+
+// Coordinator federado: declara pipeline.blocks y resuelve el exec con un
+// PipelineExec REAL — tcpStageDial contra los endpoints del assign, simFront
+// local, requestStage cableado por el daemon (stage.need → stage.offer).
+export function upPipelineDaemon(
+  stack: Stack,
+  instanceId: string,
+  blocks: number,
+  model = "qwen3.5:4b",
+  kp: Kp = stellarKeypair(),
+): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
+  return spawnDaemon(
+    stack,
+    [
+      {
+        instanceId,
+        model,
+        capability: "text",
+        pipeline: { blocks },
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    kp,
+    undefined,
+    (inst, stages, _signal, requestStage) =>
+      Promise.resolve(
+        new PipelineExec({
+          forgeId: inst.instanceId,
+          model: inst.model,
+          stages,
+          dial: tcpStageDial,
+          front: simFront(),
+          ...(requestStage ? { requestStage } : {}),
+        }),
+      ),
   );
 }
 
@@ -240,11 +348,11 @@ export function noisyPng(w = 64, h = 64): string {
   return png.toString("base64");
 }
 
-export function chatRequest(url: string): Promise<Response> {
+export function chatRequest(url: string, prompt = "hola"): Promise<Response> {
   return fetch(`${url}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "qwen3.5:4b", messages: [{ role: "user", content: "hola" }], stream: true }),
+    body: JSON.stringify({ model: "qwen3.5:4b", messages: [{ role: "user", content: prompt }], stream: true }),
   });
 }
 

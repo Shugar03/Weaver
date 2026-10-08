@@ -276,6 +276,124 @@ test("S46 rpc-worker no recibe job.assign → job.fail honesto", async () => {
   d.stop();
 });
 
+test("S47 stage-worker: heartbeat lo anuncia con layers+endpoint; server muerto → saturated", async () => {
+  const ch = new FakeChannel();
+  const srv = { alive: true, sessions: 0 };
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [
+      {
+        instanceId: "s0",
+        model: "qwen-235b",
+        capability: "stage-worker",
+        stage: { layers: [0, 40], endpoint: "10.0.0.5:50100", vramGb: 96, tps: 12.5 },
+        stageServer: srv,
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    sign,
+    heartbeatMs: 10,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 30));
+  const w = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "s0")!;
+  assert.equal(w.capability, "stage-worker");
+  assert.deepEqual(w.stage, { layers: [0, 40], endpoint: "10.0.0.5:50100", vramGb: 96, tps: 12.5 });
+  assert.equal(w.inFlight, 0); // sessions activas viaja como inFlight
+  srv.sessions = 1;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("heartbeat")!.instances[0].inFlight, 1);
+  srv.alive = false;
+  await new Promise((r) => setTimeout(r, 30));
+  const w2 = ch.last("heartbeat")!.instances.find((i) => i.instanceId === "s0")!;
+  assert.equal(w2.hot, false);
+  assert.equal(w2.saturated, true);
+  d.stop();
+});
+
+test("S47 stage-worker no recibe job.assign con prompt → job.fail honesto", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [
+      {
+        instanceId: "s0",
+        model: "qwen-235b",
+        capability: "stage-worker",
+        stage: { layers: [0, 40], endpoint: "10.0.0.5:50100" },
+        stageServer: { alive: true, sessions: 0 },
+        maxConcurrent: 1,
+        loadTimeMs: 0,
+      },
+    ],
+    sign,
+    heartbeatMs: 60000,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "jS", instanceId: "s0", model: "qwen-235b", prompt: "p" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(ch.last("job.fail")!.jobId, "jS");
+  d.stop();
+});
+
+test("S47 pipeline coordinator: heartbeat declara blocks; stages a no-pipeline → fail", async () => {
+  const ch = new FakeChannel();
+  const exec = new FakeForgeExec({ forgeId: "c0", model: "qwen-235b" });
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(exec, { pipeline: { blocks: 80 } })],
+    sign,
+    heartbeatMs: 10,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(ch.last("heartbeat")!.instances[0].pipeline, { blocks: 80 });
+  d.stop();
+
+  const ch2 = new FakeChannel();
+  const d2 = new ForgeDaemon({
+    channel: ch2,
+    instances: [inst(new FakeForgeExec({ forgeId: "c1", model: "qwen3:4b" }))], // sin pipeline
+    sign,
+    heartbeatMs: 60000,
+  });
+  d2.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch2.inject({
+    type: "job.assign",
+    jobId: "j1",
+    instanceId: "c1",
+    model: "qwen3:4b",
+    prompt: "p",
+    stages: [{ endpoint: "10.0.0.5:50100", blocks: [0, 40] }],
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  const f = ch2.last("job.fail")!;
+  assert.match(f.error, /no soy pipeline/);
+  d2.stop();
+});
+
+test("S47 pipeline: instance declarada sin stages en el assign → fail honesto (no hay modelo local completo)", async () => {
+  const ch = new FakeChannel();
+  const exec = new FakeForgeExec({ forgeId: "c0", model: "qwen-235b" });
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(exec, { pipeline: { blocks: 80 } })],
+    sign,
+    heartbeatMs: 60000,
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "job.assign", jobId: "j2", instanceId: "c0", model: "qwen-235b", prompt: "p" }); // sin stages
+  await new Promise((r) => setTimeout(r, 30));
+  const f = ch.last("job.fail")!;
+  assert.equal(f.jobId, "j2");
+  assert.match(f.error, /pipeline sin stages/);
+  d.stop();
+});
+
 test("S46 pooled: instance con pool.needs viaja en heartbeat; rpcPeers → pooledFactory", async () => {
   const ch = new FakeChannel();
   const resident = new FakeForgeExec({ forgeId: "c0", model: "qwen-70b" });
@@ -679,4 +797,68 @@ test("S42: job.funded sin claimer configurado → no crashea, solo loguea", asyn
   ch.inject({ type: "job.funded", chainJobId: 7, resultHash: "aa".repeat(32) });
   await new Promise((r) => setImmediate(r));
   d.stop(); // sin throw = ok
+});
+
+test("S47 heal: requestStage del exec → stage.need al gateway → stage.offer resuelve", async () => {
+  const ch = new FakeChannel();
+  // Exec que pide un reemplazo ni bien arranca — el test observa el need y
+  // responde el offer por el mismo canal (como lo haría el gateway real).
+  const exec: ForgeExec = {
+    forgeId: "c0",
+    model: "qwen-235b",
+    async *execute(req) {
+      const offer = await captured!("10.0.0.5:50100", [0, 40]);
+      yield { token: `rep:${offer?.endpoint ?? "none"}`, done: false };
+      yield { token: "", done: true };
+    },
+  };
+  let captured: ((dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number] }>) | undefined;
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(exec, { pipeline: { blocks: 80 } })],
+    sign,
+    heartbeatMs: 60000,
+    pipelineFactory: (_i, _stages, _signal, requestStage) => {
+      captured = requestStage;
+      return Promise.resolve(exec);
+    },
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({
+    type: "job.assign",
+    jobId: "jH",
+    instanceId: "c0",
+    model: "qwen-235b",
+    prompt: "p",
+    stages: [{ endpoint: "10.0.0.5:50100", blocks: [0, 40] }],
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  // El daemon emitió stage.need al gateway con el tramo del muerto.
+  const need = ch.last("stage.need")!;
+  assert.equal(need.jobId, "jH");
+  assert.equal(need.dead, "10.0.0.5:50100");
+  assert.deepEqual(need.blocks, [0, 40]);
+  // El gateway responde con un reemplazo → el exec lo recibe.
+  ch.inject({ type: "stage.offer", jobId: "jH", endpoint: "10.0.0.9:50100", blocks: [0, 40] });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.match(ch.last("job.chunk")!.token, /rep:10\.0\.0\.9:50100/);
+  assert.ok(ch.last("job.done"));
+  d.stop();
+});
+
+test("S47 heal: stage.offer sin need pendiente → ignorado (no throw)", async () => {
+  const ch = new FakeChannel();
+  const d = new ForgeDaemon({
+    channel: ch,
+    instances: [inst(new FakeForgeExec({ forgeId: "c0" }), { pipeline: { blocks: 80 } })],
+    sign,
+    heartbeatMs: 60000,
+    pipelineFactory: () => Promise.resolve(new FakeForgeExec({ forgeId: "c0" })),
+  });
+  d.start();
+  await new Promise((r) => setTimeout(r, 10));
+  ch.inject({ type: "stage.offer", jobId: "inexistente", endpoint: "10.0.0.9:1", blocks: [0, 8] });
+  await new Promise((r) => setTimeout(r, 20));
+  d.stop(); // sin crash = ok
 });

@@ -1,8 +1,9 @@
 # ADR 0010 — Cómputo compartido: cluster-forge hoy, pipeline inter-forge mañana
 
 Fecha: 2026-10-08 · Estado: aceptado (nivel 1 implementado; nivel 2 verificado;
-**nivel 2.5 — pool entre operadores — implementado** en spec 017; nivel 3
-stage-federation especificado, no implementado)
+**nivel 2.5 — pool entre operadores — implementado** en spec 017; **nivel 3
+stage-federation implementado** en spec 018 — protocolo+orquestación verificados
+por wire-e2e; substrate = stage-sim, pesos reales = fase C)
 
 ## Contexto
 
@@ -119,12 +120,38 @@ implementado el camino es: pool LAN/privado real hoy (coordinación Weaver +
 transporte llama.cpp RPC) → stage-federation WAN como fase B (boundary
 activations, proofs por stage, payout split, túnel autenticado).
 
+**Actualización 2026-10-13**: el nivel 3 quedó especificado end-to-end en
+`docs/specs/018-stage-federation.md` a partir de
+`docs/research/stage-federation.md` (deep research II — Petals §3.2-3.5
+Algoritmos 1-3 como protocolo base, TOPLOC para verificación trustless,
+PRIME stack para latencia WAN). Diseño adoptado: coordinator-orquestado
+(embeddings+logits+caches de replay en el coordinator — modelo "cliente" de
+Petals), pipeline por bloques contiguos con MoE co-localizado, KV server-side
+por sesión, relay-vía-coordinator en MVP (directo+checksum en fase B), firma
+hash por stage, gateway como "DHT" (registry existente), StagePool heredando
+la maquinaria de leases del pool 017.
+
+**Actualización 2026-10-14**: el nivel 3 corre end-to-end sobre wire real —
+fases A1-A4 del spec 018 implementadas: codec estricto (`stage`/`pipeline`/
+`stages` + canal forge↔forge `stage.open/step/close/ack/out/fail`), StagePool
+con chain builder de cobertura [0..n) + `replace()` mid-job, daemon
+stage-worker (TCP JSON-lines, sesiones con KV, rechaza prompts), PipelineExec
+con Petals Algo 1-3 (relay, dual attention cache, heal: stage.need →
+stage.offer → replay de activaciones cacheadas). Los 4 escenarios BDD pasan
+sobre sockets reales: cadena feliz, muerte mid-job con replay, muerte sin
+reemplazo → fail honesto, sin cobertura → forge-failed. Substrate =
+stage-sim (el wire es prod; el cómputo por bloque es simulado — pesos reales
+quedan en fase C: `llama.cpp --stage` o adapter prima.cpp).
+
 ## Consecuencias
 
 - El catálogo puede listar modelos grosos HOY si un forge con el hardware los
   sirve — el mercado ya lo soporta.
 - "Shared compute" en el pitch = pool-forge implementado (nivel 2.5, LAN) +
-  ADR (nivel 3). Claim preciso: "independent forges pool VRAM — Weaver
-  supplies coordination, identity and attribution; activations ride
-  llama.cpp RPC". No esconder: es LAN/privado hasta que haya túnel auth
-  (fase B), y el proof/payout ancla en el coordinator.
+  stage-federation implementado (nivel 3, substrate sim). Claim preciso:
+  "blocks of a model run on forges owned by different parties — Weaver
+  orchestrates the chain and survives mid-job stage death via
+  cached-activation replay". No esconder: el cómputo por bloque es simulado
+  hasta fase C, la privacidad se degrada a "representaciones internas"
+  (activaciones parcialmente invertibles), y proof/payout ancla en el
+  coordinator (split por stage = fase B).
