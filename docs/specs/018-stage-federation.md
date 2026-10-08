@@ -1,12 +1,15 @@
 # Spec 018 — stage-federation: pipeline por bloques entre forges independientes (WAN)
 
-Estado: **implementado — fases A1-A4 verificadas por wire-e2e** · Origen: ADR-0010
+Estado: **implementado — fases A1-A4 + substrate real (C parcial) verificados por wire-e2e** · Origen: ADR-0010
 nivel 3 + `docs/research/stage-federation.md` (Petals §3.2-3.5, TOPLOC,
-VeriLLM, PRIME stack, prima.cpp). Substrate = stage-sim (fase C = pesos reales).
+VeriLLM, PRIME stack, prima.cpp). Substrate: `stage_runner.py` con pesos
+HF reales (paridad bit-exacta probada); `stage-sim` queda para tests
+rápidos del wire.
 
-Claim honesto del MVP: **"un job se reparte por bloques contiguos entre
-forges de operadores distintos — Weaver orquesta la cadena, tolera caídas
-con replay de activaciones, y cada stage firma su tramo"**. Transporte
+Claim honesto: **"un job de un modelo REAL se reparte por bloques contiguos
+entre procesos/forges de operadores distintos — Weaver orquesta la cadena,
+tolera caídas con replay de activaciones, y cada stage firma su tramo"**.
+Transporte
 relay-vía-coordinator (los stages solo hablan con quien les dio trabajo —
 sin problema NAT para el middle-hop). Velocidad WAN: física RTT×profundidad
 ⇒ útil para modelos que ningún forge solo corre; no para chat snappy.
@@ -190,7 +193,7 @@ Implementación completa de las fases A1-A4 con desviaciones documentadas:
 | CLI `--stage-worker` `--stage-model` `--pipeline` | `forge/cli.ts` | ✅ warn "substrate: sim" |
 | Firma por stage (stageSigs en done + verif gateway) | `stageproto` chain + `pipeline.ts` + `stagepool.chainOf` + `remote.verifyStageSigs` | ✅ ed25519 real en e2e; inválida → strike+drop, ajena → ignorada |
 | `weaver_proof.stageSigs` visible al cliente | `gateway/index.ts` receipt | ✅ solo entradas verificadas |
-| Substrate pesos reales (llama.cpp --stage / prima.cpp) | — | ⏳ fase C — sim valida wire, no modelo |
+| Substrate pesos reales | `tools/stage_runner.py` (HF slice k..n + KV sesión) + `--role edge` + `httpFront` + `--stage-ext` | ✅ Qwen2.5-0.5B partido 0-12/12-24 en 3 procesos → tokens idénticos al monolítico (paridad Δ=0 en `tools/parity_check.py`), stageSigs ed25519 reales |
 
 Desviaciones vs el diseño original:
 
@@ -215,6 +218,15 @@ Desviaciones vs el diseño original:
   El muerto no firma — el reemplazo firma SU sesión (loan actualizado).
   Una firma por stage por job: no hay N firmas por token (MVP honesto —
   ata el historial de activaciones completo, no cada step por separado).
+- **Substrate real = `tools/stage_runner.py`** (fase C parcial): HF slice
+  `layers[k:n]` + `rotary_emb` + `DynamicCache` por sesión — paridad
+  bit-exacta vs monolítico (`tools/parity_check.py`: Δ=0 prefill y decode
+  greedy idéntico). Edge-runner (`--role edge`) sirve embed+norm+lm_head+
+  tokenizer por HTTP stateless; `httpFront` lo consume (PipelineFront
+  ahora async). El stage firma con ed25519 derivado del seed Stellar del
+  daemon (`--sign-seed S...`) — una sola identidad por proceso. Lo que
+  falta de C: runner nativo llama.cpp/GGUF (CUDA/Metal real), cuantización
+  de activaciones (hoy f16 b64), y forward vía MPS/CUDA (hoy CPU fp32).
 
 Bugs reales que solo salieron en implementación:
 
@@ -233,4 +245,5 @@ Bugs reales que solo salieron en implementación:
 - `it.return()` no interrumpe un `await` en vuelo — el release del loan
   viaja sobre la promesa del acquire, no sobre un flag post-await (S46).
 
-Regresión: forge-net 117 · forge 57 · gateway 209 · e2e 14 — todo verde.
+Regresión: forge-net 117 · forge 57 · gateway 209 · e2e 15 (14 sim + 1
+pesos reales Qwen2.5-0.5B split 0-12/12-24) — todo verde.

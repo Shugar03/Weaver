@@ -8,5 +8,5 @@ export { connect, connectLoop } from "./ws.ts";
 // cómputo es inyectable (simStageCompute para wire; block-runner = fase B).
 export { tcpStageDial, createStageSocket, type StageTransport, type StageCompute } from "./stagetransport.ts";
 export { startStageServer, type StageServer } from "./stageserver.ts";
-export { PipelineExec, simFront, simStageCompute, type PipelineFront } from "./pipeline.ts";
+export { PipelineExec, httpFront, simFront, simStageCompute, type PipelineFront } from "./pipeline.ts";
 export { probeTcp } from "./rpcproc.ts";

@@ -24,7 +24,7 @@ import { initConfig, loadConfig, saveConfig, type ForgeConfig, type InstanceCfg 
 import { connectLoop } from "./ws.ts";
 import { killAllRpcProcs, makePooledFactory, probeTcp, spawnRpcServer, type RpcProc } from "./rpcproc.ts";
 import { startStageServer, type StageServer } from "./stageserver.ts";
-import { simStageCompute, PipelineExec, simFront } from "./pipeline.ts";
+import { simStageCompute, PipelineExec, simFront, httpFront } from "./pipeline.ts";
 import { tcpStageDial } from "./stagetransport.ts";
 
 const CONFIG_PATH = join(homedir(), ".weaver", "forge.json");
@@ -97,17 +97,18 @@ function makeInstances(
       return { ...c, rpcProc: proc, rpcProbe: () => probeTcp(c.rpc!.endpoint) };
     }
     // stage-worker: sin exec — presta BLOQUES del modelo. Su salud ES el
-    // stage-server TCP spawneado en up + self-probe del endpoint.
+    // stage-server TCP (local spawneado en up, o externo con --stage-ext:
+    // ahí el alive lo decide el probe — un runner python no tiene handle).
     if (c.capability === "stage-worker") {
       const srv = stageServers.get(c.instanceId);
       return {
         ...c,
         stageServer: {
           get alive() {
-            return srv?.alive === true;
+            return srv ? srv.alive === true : true; // sin server local → probe decide
           },
           get sessions() {
-            return srv?.sessions() ?? 0;
+            return srv?.sessions() ?? 0; // externo: no medible → conservador en pool
           },
         },
         stageProbe: () => probeTcp(c.stage!.endpoint),
@@ -334,7 +335,12 @@ if (cmd === "init") {
         i.maxConcurrent = 1;
       }
     }
-    console.warn("--pipeline: substrate = stage-sim (activaciones reales por TCP, cómputo simulado — block-runner real es fase B)");
+    const edge = arg("--edge");
+    console.warn(
+      edge
+        ? `--pipeline: substrate REAL — edge ${edge}, stages por stageproto TCP (pesos HF en stage_runner.py)`
+        : "--pipeline: substrate = stage-sim (activaciones reales por TCP, cómputo simulado — block-runner real es fase B)",
+    );
   }
   const budgets = {
     ...(process.argv.includes("--idle-only") ? { idleOnly: true } : {}),
@@ -432,10 +438,12 @@ siguiente paso: weaver-forge up`);
       : ((hash) => Buffer.from(Keypair.fromSecret(cfg.secret).sign(hash)));
   // S47 worker: stage-server TCP por instance stage-worker — bindea el
   // endpoint declarado ANTES de conectar (el primer heartbeat ya reporta
-  // alive real). Substrate sim por ahora — el wire es el de prod.
+  // alive real). --stage-ext: los endpoints los sirve un proceso EXTERNO
+  // (tools/stage_runner.py con pesos reales) — el daemon solo heartbeat+probe.
+  const stageExt = process.argv.includes("--stage-ext");
   const stageServers = new Map<string, StageServer>();
   for (const c of cfg.instances) {
-    if (c.capability !== "stage-worker" || !c.stage?.endpoint) continue;
+    if (c.capability !== "stage-worker" || !c.stage?.endpoint || stageExt) continue;
     const m = /^(.+):(\d+)$/.exec(c.stage.endpoint);
     if (!m) {
       console.warn(`stage-worker ${c.instanceId}: endpoint inválido ${c.stage.endpoint} — reporto muerto`);
@@ -461,7 +469,10 @@ siguiente paso: weaver-forge up`);
     ? makePooledFactory({ llamaBin: arg("--llama-bin") ?? process.env.LLAMA_SERVER_BIN ?? "llama-server" })
     : undefined;
   // S47 coordinator: alguna instance declaró pipeline → PipelineExec con
-  // transport TCP real. Front = sim (fase B: embeddings+lmhead de verdad).
+  // transport TCP real. --edge URL = front real (embed+head de un checkpoint
+  // HF via tools/stage_runner.py --role edge); sin edge = sim (substrate
+  // simulado — el wire es prod, el cómputo es juguete).
+  const edgeUrl = arg("--edge");
   const pipelineFactory = cfg.instances.some((i) => i.pipeline)
     ? (inst: DaemonInstance, stages: { endpoint: string; blocks: [number, number] }[], _signal?: AbortSignal, requestStage?: (dead: string, blocks: [number, number]) => Promise<{ endpoint?: string; blocks?: [number, number] }>) =>
         Promise.resolve(
@@ -470,7 +481,7 @@ siguiente paso: weaver-forge up`);
             model: inst.model,
             stages,
             dial: tcpStageDial,
-            front: simFront(),
+            front: edgeUrl ? httpFront(edgeUrl) : simFront(),
             ...(requestStage ? { requestStage } : {}),
           }),
         )
@@ -550,7 +561,9 @@ flags: --config PATH --gateway URL --contract ID --rpc URL --instance id:model[:
        --rpc-allow p1,p2  allowlist de hosts aceptados como rpcPeers (prefijo/exacto)
        --rpc-bin BIN      binario rpc-server (default ggml-rpc-server, env RPC_SERVER_BIN)
        --stage-worker id:k-n:host:port  S47: instance que presta bloques k..n (stage-server TCP)
+       --stage-ext        los endpoints stage-worker los sirve un runner externo (pesos reales)
        --stage-model M    modelo de los stage-worker (compartido con el coordinator)
        --pipeline BLOCKS  S47: las instances text coordinan por stages (substrate sim)
+       --edge URL         front real del pipeline (embed+head vía stage_runner.py --role edge)
        --llama-bin BIN    binario llama-server (default llama-server, env LLAMA_SERVER_BIN)`);
 }

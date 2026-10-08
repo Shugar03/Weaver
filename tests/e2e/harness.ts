@@ -21,8 +21,10 @@ import {
   type DaemonInstance,
   type ForgeConfig,
   type PipelineFactory,
+  type PipelineFront,
   type StageServer,
 } from "@weaver/forge";
+import { spawn, type ChildProcess } from "node:child_process";
 
 export type Stack = {
   url: string;
@@ -244,14 +246,16 @@ export async function upStageDaemon(
 }
 
 // Coordinator federado: declara pipeline.blocks y resuelve el exec con un
-// PipelineExec REAL — tcpStageDial contra los endpoints del assign, simFront
-// local, requestStage cableado por el daemon (stage.need → stage.offer).
+// PipelineExec REAL — tcpStageDial contra los endpoints del assign, front
+// inyectable (simFront por default; httpFront contra un edge-runner real en
+// fase C), requestStage cableado por el daemon (stage.need → stage.offer).
 export function upPipelineDaemon(
   stack: Stack,
   instanceId: string,
   blocks: number,
   model = "qwen3.5:4b",
   kp: Kp = stellarKeypair(),
+  front?: PipelineFront,
 ): Promise<{ daemon: ForgeDaemon; kp: Kp }> {
   return spawnDaemon(
     stack,
@@ -274,11 +278,72 @@ export function upPipelineDaemon(
           model: inst.model,
           stages,
           dial: tcpStageDial,
-          front: simFront(),
+          front: front ?? simFront(),
           ...(requestStage ? { requestStage } : {}),
         }),
       ),
   );
+}
+
+// Fase C: stage-worker REAL — el stage-server es el proceso python
+// (tools/stage_runner.py, pesos HF + KV por sesión); el daemon solo
+// heartbeat + probe (--stage-ext equivalente). Firma: el runner deriva
+// ed25519 del seed Stellar del kp → forgePubkey idéntico → verif real.
+export function upPyStageDaemon(
+  stack: Stack,
+  instanceId: string,
+  layers: [number, number],
+  model: string,
+  kp: Kp = stellarKeypair(),
+): Promise<{ daemon: ForgeDaemon; kp: Kp; endpoint: string; proc: ChildProcess }> {
+  return (async () => {
+    const port = 52000 + Math.floor(Math.random() * 5000);
+    const endpoint = `127.0.0.1:${port}`;
+    const proc = spawn("python3", [
+      "tools/stage_runner.py", "--role", "stage", "--model", model,
+      "--blocks", String(layers[0]), String(layers[1]),
+      "--port", String(port), "--tag", instanceId.replace(/\W/g, ""),
+      "--sign-seed", kp.secret,
+    ], { stdio: ["ignore", "pipe", "inherit"] });
+    const ready = new Promise<void>((res, rej) => {
+      const to = setTimeout(() => rej(new Error(`stage_runner ${instanceId} no levantó en 180s`)), 180_000);
+      proc.stdout!.on("data", (d: Buffer) => {
+        if (d.toString().includes("listo")) { clearTimeout(to); res(); }
+      });
+    });
+    await ready;
+    const { daemon, kp: k } = await spawnDaemon(
+      stack,
+      [{
+        instanceId, model, capability: "stage-worker",
+        stage: { layers, endpoint },
+        stageServer: { alive: true, sessions: 0 }, // externo — el probe decide
+        stageProbe: () => probeTcp(endpoint),
+        maxConcurrent: 1, loadTimeMs: 0,
+      }],
+      kp,
+    );
+    return { daemon, kp: k, endpoint, proc };
+  })();
+}
+
+// Edge-runner real (embed + norm + lm_head + tokenizer del checkpoint) —
+// la mitad local del coordinator en fase C. Devuelve la URL del servicio.
+export function upEdge(model: string): Promise<{ url: string; proc: ChildProcess }> {
+  return (async () => {
+    const port = 53000 + Math.floor(Math.random() * 5000);
+    const proc = spawn("python3", [
+      "tools/stage_runner.py", "--role", "edge", "--model", model, "--port", String(port),
+    ], { stdio: ["ignore", "pipe", "inherit"] });
+    const ready = new Promise<void>((res, rej) => {
+      const to = setTimeout(() => rej(new Error("edge no levantó en 180s")), 180_000);
+      proc.stdout!.on("data", (d: Buffer) => {
+        if (d.toString().includes("edge listo")) { clearTimeout(to); res(); }
+      });
+    });
+    await ready;
+    return { url: `http://127.0.0.1:${port}`, proc };
+  })();
 }
 
 // Los jobs attest-* los dispara el gateway al registrar la instance —

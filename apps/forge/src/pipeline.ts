@@ -17,11 +17,39 @@ import type { StageDial, StageTransport } from "./stagetransport.ts";
 export type Hidden = { shape: [number, number]; payload: string }; // payload b64
 
 // La mitad local del modelo (inyectable): embed del prompt y logits+sample+embed
-// del siguiente token. Prod: llama.cpp head/tail; stage-sim: modelo juguete.
+// del siguiente token. Async — en prod el front es un edge-runner local
+// (tools/stage_runner.py --role edge: embed_tokens + norm + lm_head + tokenizer
+// del checkpoint real); stage-sim: modelo juguete.
 export type PipelineFront = {
-  embed(jobId: string, prompt: string): Hidden;
-  next(hidden: Hidden): { token: string; done: false; embed: Hidden } | { done: true };
+  embed(jobId: string, prompt: string): Promise<Hidden>;
+  next(hidden: Hidden): Promise<{ token: string; done: false; embed: Hidden } | { done: true }>;
 };
+
+// Edge-runner real por HTTP (el "cliente" de Petals — la única pieza que ve
+// plaintext: tokeniza, embed, samplea greedy. Stateless: el estado autoregresivo
+// vive en los KV server-side de cada stage, el front solo re-embeds el token).
+export function httpFront(url: string): PipelineFront {
+  const post = async (path: string, body: object) => {
+    const r = await fetch(`${url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`edge ${path}: HTTP ${r.status}`);
+    return r.json() as Promise<Record<string, unknown>>;
+  };
+  return {
+    embed: async (_jobId, prompt) => {
+      const r = await post("/embed", { prompt });
+      return { shape: r.shape as [number, number], payload: r.payload as string };
+    },
+    next: async (hidden) => {
+      const r = await post("/next", { shape: hidden.shape, payload: hidden.payload });
+      if (r.done) return { done: true };
+      return { token: r.token as string, done: false, embed: { shape: (r.embed as { shape: [number, number] }).shape, payload: (r.embed as { payload: string }).payload } };
+    },
+  };
+}
 
 // stage.need → stage.offer: el coordinator pide reemplazo al gateway por
 // endpoint muerto + tramo a cubrir. null en la respuesta = no hay — fail.
@@ -115,7 +143,7 @@ export class PipelineExec implements ForgeExec {
         st.chain = stageChainInit(st.sessionId, st.blocks);
         opened.add(st.sessionId);
       }
-      let cur = this.front.embed(jobId, req.prompt);
+      let cur = await this.front.embed(jobId, req.prompt);
       let genTokens = 0;
       const t0 = Date.now();
       const limit = req.options?.maxTokens ?? this.maxTokens;
@@ -124,7 +152,7 @@ export class PipelineExec implements ForgeExec {
         for (let i = 0; i < chain.length; i++) {
           cur = await this.step(chain, i, cur, sent, seq, jobId, req, opened);
         }
-        const r = this.front.next(cur);
+        const r = await this.front.next(cur);
         if (r.done) break;
         genTokens++;
         yield { token: r.token, done: false };
@@ -230,11 +258,11 @@ export class PipelineExec implements ForgeExec {
 // así un stage que no corre deja rastro visible (o rompe el parse → detectable).
 export function simFront(): PipelineFront {
   return {
-    embed: (_jobId, prompt) => ({
+    embed: async (_jobId, prompt) => ({
       shape: [1, prompt.length] as [number, number],
       payload: Buffer.from(prompt.split(" ").join("|")).toString("base64"),
     }),
-    next(hidden) {
+    async next(hidden) {
       const raw = Buffer.from(hidden.payload, "base64").toString("utf8");
       const cleaned = raw.replace(/:s\d+/g, ""); // los stages marcan; front limpia
       const q = cleaned.split("|").filter(Boolean);

@@ -149,21 +149,26 @@ en e2e). Firma inválida → strike al worker + entrada descartada; endpoint
 ajeno → ignorado; el muerto no firma y el reemplazo firma su propia sesión.
 Ata el historial de activaciones completo de cada tramo — equivalente al
 `sig_i` de este ADR con una sola firma por stage por job (no N por token).
-Substrate = stage-sim (el wire es prod; el cómputo por bloque es simulado —
-pesos reales quedan en fase C: `llama.cpp --stage` o adapter prima.cpp).
+Substrate real ya corre: `tools/stage_runner.py` corta un checkpoint HF en
+tramos contiguos (capas + KV por sesión, ed25519 desde el seed Stellar del
+daemon) y el edge-runner sirve embed/head/tokenizer — e2e con
+Qwen2.5-0.5B partido 0-12/12-24 en 3 procesos produce tokens idénticos al
+monolítico (paridad bit-exacta en `tools/parity_check.py`). Limitación
+honesta: substrate Python CPU fp32 — falta runner nativo GGUF con
+CUDA/Metal y cuantización de activaciones para producción.
 
 ## Consecuencias
 
 - El catálogo puede listar modelos grosos HOY si un forge con el hardware los
   sirve — el mercado ya lo soporta.
 - "Shared compute" en el pitch = pool-forge implementado (nivel 2.5, LAN) +
-  stage-federation implementado (nivel 3, substrate sim). Claim preciso:
-  "blocks of a model run on forges owned by different parties — Weaver
-  orchestrates the chain, survives mid-job stage death via
-  cached-activation replay, and each stage signs its span (verified
-  `stageSigs` in `weaver_proof`)". No esconder: el cómputo por bloque es
-  simulado hasta fase C, la privacidad se degrada a "representaciones
-  internas" (activaciones parcialmente invertibles), y la firma ata el
-  historial del tramo — no prueba que los PESOS sean los declarados
-  (eso requiere TOPLOC/replay-audit, fase B) ni paga al stage (payout
-  split = fase B).
+  stage-federation implementado con pesos REALES (nivel 3, runner HF).
+  Claim preciso: "blocks of a real model run on forges owned by different
+  parties — Weaver orchestrates the chain, survives mid-job stage death
+  via cached-activation replay, and each stage signs its span (verified
+  `stageSigs` in `weaver_proof`)". No esconder: el runner es Python CPU
+  fp32 (no GGUF/CUDA), la privacidad se degrada a "representaciones
+  internas" (activaciones parcialmente invertibles), la firma ata el
+  historial del tramo — no prueba que los PESOS sean los declarados (eso
+  requiere TOPLOC/replay-audit, fase B) ni paga al stage (payout split =
+  fase B).
