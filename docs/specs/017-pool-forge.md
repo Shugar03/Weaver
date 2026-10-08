@@ -115,8 +115,36 @@ actualizar ADR-0010 (nivel 3 MVP implementado), writeup §6.2+, deck status.
 ## Fuera de scope (fase B+)
 
 Boundary-activation WAN pipeline (prima.cpp), activation-replay failover,
-payout splitting on-chain, `acceptPooled` opt-in por request, attestation
+payout splitting on-chain, attestation
 por stage encadenada, túnel seguro para rpc-server WAN.
+
+`acceptPooled` → **implementado como `allowPooled` (B4)** — ver abajo.
+
+## B4 consent — as-built
+
+Las activaciones intermedias de un pipeline pooled son parcialmente
+invertibles (un stage ve hidden states, no tokens). El consent es del
+**usuario final**, por request — fail-closed por default:
+
+- `POST /v1/chat/completions` acepta `allowPooled: true` (booleano
+  estricto — otro tipo → 400). Ausente/false = sin consent.
+- **Routing**: `order()` en serve.ts excluye instancias pooled (report
+  con `pool.needs` o `pipeline`) del candidate set cuando el request no
+  opteó. Todas pooled → "sin execs" honesto, no failover sordo.
+- **Gate en profundidad**: `RemoteForgeExec` recibe `pooled?: () =>
+  boolean` (consulta el report VIGENTE por job — la declaración puede
+  cambiar entre heartbeats). Instance pooled + `!req.allowPooled` →
+  throw ANTES de suscribir listeners o reservar workers: ni un byte del
+  prompt sale del gateway. Cubre callers fuera del router (tests,
+  composition roots alternos).
+- **Attest del gateway**: el job de attestation lleva
+  `allowPooled: true` — es el probe del operador con prompt propio, no
+  dato de usuario. Sin esto una instance pooled jamás attestaría.
+- **Receipt**: `weaver_proof.pooled: true` cuando el job usó rpcPeers
+  y/o stages — transparencia post-hoc verificable, no solo consent a
+  priori.
+- e2e (`remote-stage.test.ts` B4): request sin flag → error honesto con
+  CERO sesiones stage abiertas; con flag → completa + `pooled:true`.
 
 ## As-built (S46) — qué quedó implementado
 

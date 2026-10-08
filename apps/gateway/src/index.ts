@@ -973,6 +973,7 @@ export function createApp(deps: Deps) {
       think?: boolean;
       num_ctx?: number;
       tools?: unknown[];
+      allowPooled?: boolean;
     }>(c);
     if (!body) return c.json(badJson, 400);
     const rawMessages = Array.isArray(body.messages) ? body.messages : [];
@@ -1008,7 +1009,8 @@ export function createApp(deps: Deps) {
       (body.max_tokens !== undefined && !intIn(body.max_tokens, 1, 32_768)) ||
       (body.temperature !== undefined && !finIn(body.temperature, 0, 2)) ||
       (body.top_p !== undefined && !finIn(body.top_p, 0, 1)) ||
-      (body.think !== undefined && typeof body.think !== "boolean")
+      (body.think !== undefined && typeof body.think !== "boolean") ||
+      (body.allowPooled !== undefined && typeof body.allowPooled !== "boolean")
     ) {
       return c.json({ error: "opción de generación inválida", code: "bad_request" }, 400);
     }
@@ -1100,6 +1102,9 @@ export function createApp(deps: Deps) {
               // contra el pubkey del stage asignado (remote.ts). El chip puede
               // mostrar "N stages verificados" sin confiar en nadie.
               ...(proof.stageSigs?.length ? { stageSigs: proof.stageSigs } : {}),
+              // B4: el job tocó capacidad prestada (rpcPeers/stages) — el
+              // cliente lo ve declarado, no lo infiere.
+              ...(proof.pooled ? { pooled: true } : {}),
             },
           }
         : {};
@@ -1236,6 +1241,7 @@ export function createApp(deps: Deps) {
           options,
           tools,
           signal: ac.signal,
+          allowPooled: body.allowPooled === true,
           onForge: (fid) => {
             servedForgeId = fid;
             deps.breaker?.ok(fid);
@@ -1330,6 +1336,7 @@ export function createApp(deps: Deps) {
             options,
             tools,
             signal: ac.signal,
+            allowPooled: body.allowPooled === true,
             onForge: (fid) => {
               servedForgeId = fid;
               deps.breaker?.ok(fid); // sirvió: resetea sus fallos consecutivos

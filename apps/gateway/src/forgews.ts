@@ -238,6 +238,13 @@ export function attachForgeWS(
               stagePool,
               forgePubkey: pk,
               verify: deps.verify, // A4: stageSigs chequeadas contra el loan
+              // B4: la instance declaró capacidad pooled en su ÚLTIMO
+              // report (pool.needs / pipeline) → solo sirve requests con
+              // opt-in del cliente. Consulta por job, no snapshot.
+              pooled: () => {
+                const rep = deps.registry.reportOf(v.forgeId);
+                return rep?.pool !== undefined || rep?.pipeline !== undefined;
+              },
             }),
           );
           remoteExecs.set(v.forgeId, ex);
@@ -271,6 +278,9 @@ export function attachForgeWS(
           model: v.model,
           prompt: "Reply with exactly: ok",
           options: { maxTokens: 4, temperature: 0 },
+          // B4: el attest es el probe del OPERADOR — prompt propio, sin
+          // datos de usuario → el consent lo ejerce el gateway mismo.
+          allowPooled: true,
           onProof: (p) => {
             box.p = p;
           },

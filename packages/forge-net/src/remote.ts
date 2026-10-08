@@ -74,6 +74,10 @@ export class RemoteForgeExec implements ForgeExec {
   private readonly stagePool?: StagePool;
   private readonly forgePubkey: string;
   private readonly verifyFn?: VerifyFn;
+  // B4 (spec 017): la instance declaró capacidad pooled (pool.needs /
+  // pipeline en su report). El gate se consulta por job — la declaración
+  // puede cambiar entre heartbeats y el consent es por request.
+  private readonly isPooled?: () => boolean;
 
   constructor(opts: {
     channel: ForgeChannel;
@@ -94,6 +98,7 @@ export class RemoteForgeExec implements ForgeExec {
     // Sin verify las stageSigs se descartan — evidencia sin chequear no se
     // reenvía como si fuera verificada.
     verify?: VerifyFn;
+    pooled?: () => boolean;
   }) {
     this.channel = opts.channel;
     this.forgeId = opts.instanceId;
@@ -106,6 +111,7 @@ export class RemoteForgeExec implements ForgeExec {
     this.stagePool = opts.stagePool;
     this.forgePubkey = opts.forgePubkey ?? "";
     this.verifyFn = opts.verify;
+    this.isPooled = opts.pooled;
   }
 
   probe(): Promise<boolean> {
@@ -125,6 +131,7 @@ export class RemoteForgeExec implements ForgeExec {
     servedChunks: number,
     queue: (StreamChunk | { err: Error })[],
     wakeUp: () => void,
+    pooled: boolean,
   ): Promise<void> {
     const hasContent = servedChunks > 0 || Boolean(m.toolCalls && m.toolCalls.length > 0);
     if (!hasContent) {
@@ -167,6 +174,9 @@ export class RemoteForgeExec implements ForgeExec {
       signature: sigBytes,
       ...(m.promptHash ? { promptHash: Buffer.from(m.promptHash, "hex"), outputHash: servedOut } : {}),
       ...(stageSigs ? { stageSigs } : {}),
+      // B4: el receipt declara si el cómputo tocó capacidad prestada —
+      // transparencia post-hoc, no solo consent a priori.
+      ...(pooled ? { pooled: true } : {}),
     });
     queue.push({
       token: "",
@@ -234,6 +244,13 @@ export class RemoteForgeExec implements ForgeExec {
   }
 
   async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+    // B4 consent gate — ANTES de suscribir listeners ni reservar workers:
+    // una instance pooled (sus activaciones intermedias viajan por forges
+    // ajenos) jamás sirve un request sin opt-in explícito. El throw es
+    // pre-token → el FailoverExec prueba el próximo candidato.
+    if (this.isPooled?.() && req.allowPooled !== true) {
+      throw new Error(`forge ${this.forgeId}: capacidad pooled sin consent del cliente`);
+    }
     const jobId = req.jobId;
     const queue: (StreamChunk | { err: Error })[] = [];
     let wake: (() => void) | null = null;
@@ -279,7 +296,7 @@ export class RemoteForgeExec implements ForgeExec {
           completed = true;
           // Async: la verificación de stageSigs puede ser async (verify EVM).
           // `completed` ya quedó — un job.fail posterior se ignora.
-          void this.finishDone(m, req, served, servedChunks, queue, wakeUp).catch(fail);
+          void this.finishDone(m, req, served, servedChunks, queue, wakeUp, usedPooled).catch(fail);
           break;
         }
         case "job.fail":
@@ -315,11 +332,13 @@ export class RemoteForgeExec implements ForgeExec {
     // cobertura insuficiente → failover honesto).
     const stageP = this.stagePool ? this.stagePool.acquire(this.forgeId, this.forgePubkey, jobId) : null;
     let blamedPeers = false;
+    let usedPooled = false;
     try {
       const peers = acquireP ? await acquireP : [];
       if (peers === null) throw new Error(`forge ${this.forgeId}: pool sin workers elegibles`);
       const stages = stageP ? await stageP : [];
       if (stages === null) throw new Error(`forge ${this.forgeId}: stage-pool sin cobertura de bloques`);
+      usedPooled = peers.length > 0 || stages.length > 0;
       // El consumidor murió DURANTE el acquire (abort/close mid-probe): no
       // despachar el assign — el daemon spawnearía un llama-server del peso
       // del modelo para servirle tokens a nadie. El loan ya creado lo

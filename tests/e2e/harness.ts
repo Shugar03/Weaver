@@ -25,6 +25,11 @@ import {
   type StageServer,
 } from "@weaver/forge";
 import { spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// Absoluto: los tests corren desde cualquier CWD — "tools/…" relativo
+// rompía cuando el runner se invocaba fuera de la raíz del repo.
+const RUNNER_PY = fileURLToPath(new URL("../../tools/stage_runner.py", import.meta.url));
 
 export type Stack = {
   url: string;
@@ -48,7 +53,16 @@ export function startStack(): Promise<Stack> {
     forges: async () =>
       registry.views().filter((v: ForgeView) => (v.capability ?? "text") === "text" && v.attested !== false),
     execs: liveExecs,
-    order: (_req: ExecRequest, views: ForgeView[]) => [...views].sort((a, b) => a.forgeId.localeCompare(b.forgeId)),
+    order: (req: ExecRequest, views: ForgeView[]) =>
+      // B4: mismo filtro que serve.ts — sin opt-in, las instancias pooled
+      // (pool/pipeline en su report) no son candidatas.
+      views
+        .filter((v) => {
+          if (req.allowPooled === true) return true;
+          const rep = registry.reportOf(v.forgeId);
+          return rep?.pool === undefined && rep?.pipeline === undefined;
+        })
+        .sort((a, b) => a.forgeId.localeCompare(b.forgeId)),
   });
   const app = createApp({
     forges: async () => registry.views(),
@@ -322,7 +336,7 @@ export function upPyStageDaemon(
     // null explícito = modo sin-auth (tests de compat).
     const secret = stageSecret === null ? undefined : (stageSecret ?? "e2e-stage-secret");
     const proc = spawn("python3", [
-      "tools/stage_runner.py", "--role", "stage", "--model", model,
+      RUNNER_PY, "--role", "stage", "--model", model,
       "--blocks", String(layers[0]), String(layers[1]),
       "--port", String(port), "--tag", instanceId.replace(/\W/g, ""),
       "--sign-seed", kp.secret,
@@ -361,7 +375,7 @@ export function upEdge(model: string): Promise<{ url: string; proc: ChildProcess
   return (async () => {
     const port = 53000 + Math.floor(Math.random() * 5000);
     const proc = spawn("python3", [
-      "tools/stage_runner.py", "--role", "edge", "--model", model, "--port", String(port),
+      RUNNER_PY, "--role", "edge", "--model", model, "--port", String(port),
     ], { stdio: ["ignore", "pipe", "inherit"] });
     const ready = new Promise<void>((res, rej) => {
       const to = setTimeout(() => rej(new Error("edge no levantó en 180s")), 180_000);
@@ -443,11 +457,16 @@ export function noisyPng(w = 64, h = 64): string {
   return png.toString("base64");
 }
 
-export function chatRequest(url: string, prompt = "hola"): Promise<Response> {
+export function chatRequest(url: string, prompt = "hola", opts: { allowPooled?: boolean } = {}): Promise<Response> {
   return fetch(`${url}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "qwen3.5:4b", messages: [{ role: "user", content: prompt }], stream: true }),
+    body: JSON.stringify({
+      model: "qwen3.5:4b",
+      messages: [{ role: "user", content: prompt }],
+      stream: true,
+      ...(opts.allowPooled ? { allowPooled: true } : {}),
+    }),
   });
 }
 

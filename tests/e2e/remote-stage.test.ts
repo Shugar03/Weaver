@@ -48,7 +48,7 @@ describe("S47 stage-federation wire e2e", () => {
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1, 12_000); // attest = job real por la cadena
 
-    const res = await chatRequest(stack.url, "a b c");
+    const res = await chatRequest(stack.url, "a b c", { allowPooled: true });
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.match(body, /\[DONE\]/);
@@ -82,7 +82,7 @@ describe("S47 stage-federation wire e2e", () => {
     await untilAttested(stack.registry, 1, 15_000);
 
     // Job largo: 8 tokens × 2 stages × 30ms ≈ 500ms de ventana.
-    const res = await chatRequest(stack.url, "a b c d e f g h");
+    const res = await chatRequest(stack.url, "a b c d e f g h", { allowPooled: true });
     assert.equal(res.status, 200);
     // Espero el primer token por el wire — la cadena está corriendo.
     let acc = await readUntil(res, "", '"a ', 15_000);
@@ -125,7 +125,7 @@ describe("S47 stage-federation wire e2e", () => {
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1, 15_000);
 
-    const res = await chatRequest(stack.url, "a b c d e f g h");
+    const res = await chatRequest(stack.url, "a b c d e f g h", { allowPooled: true });
     assert.equal(res.status, 200);
     let acc = await readUntil(res, "", '"a ', 15_000);
     s1.server.close(); // s1 muere mid-job — K-1=0 → el coordinator replaya
@@ -166,7 +166,7 @@ describe("S47 stage-federation wire e2e", () => {
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1, 15_000);
 
-    const res = await chatRequest(stack.url, "a b c d e f g h");
+    const res = await chatRequest(stack.url, "a b c d e f g h", { allowPooled: true });
     assert.equal(res.status, 200);
     const acc = await readUntil(res, "", '"a ', 15_000);
     s1.server.close(); // muere y NO hay spare del tramo [0,40)
@@ -182,10 +182,39 @@ describe("S47 stage-federation wire e2e", () => {
     const c = await upPipelineDaemon(stack, "c0", 80);
     daemons.push(c.daemon);
     await sleep(600); // attest falló al menos una vez (acquire → null)
-    const res = await chatRequest(stack.url, "a b");
+    const res = await chatRequest(stack.url, "a b", { allowPooled: true });
     const body = await res.text();
     assert.match(body, /forge-failed|error/i);
     assert.doesNotMatch(body, /\[DONE\]/);
+  });
+
+  it("B4 consent: sin allowPooled el coordinator pooled no es candidato; con opt-in sirve y declara pooled", async () => {
+    const stack = await startStack();
+    stacks.push(stack);
+    const s1 = await upStageDaemon(stack, "s1", [0, 40]);
+    const s2 = await upStageDaemon(stack, "s2", [40, 80]);
+    daemons.push(s1.daemon, s2.daemon);
+    servers.push(s1.server, s2.server);
+    await untilStageWorkers(stack, 2);
+    const c = await upPipelineDaemon(stack, "c0", 80);
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 12_000);
+
+    // Sin opt-in: la ÚNICA instancia es pooled → sin execs → error honesto.
+    // El request jamás toca la cadena — no quedan sesiones abiertas.
+    const res = await chatRequest(stack.url, "a b c");
+    const denied = await res.text();
+    assert.match(denied, /forge-failed|error/i);
+    assert.doesNotMatch(denied, /\[DONE\]/);
+    assert.equal(s1.compute.sessions(), 0);
+    assert.equal(s2.compute.sessions(), 0);
+
+    // Con opt-in explícito: corre por la cadena y el receipt declara pooled.
+    const res2 = await chatRequest(stack.url, "a b c", { allowPooled: true });
+    assert.equal(res2.status, 200);
+    const body = await res2.text();
+    assert.match(body, /\[DONE\]/);
+    assert.match(body, /"pooled":true/);
   });
 
   it("B1 auth: con secrets, el job completa via capabilities minteadas; un cliente TCP sin token es rechazado", async () => {
@@ -213,7 +242,7 @@ describe("S47 stage-federation wire e2e", () => {
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1, 15_000); // attest ya usa capabilities reales
 
-    const res = await chatRequest(stack.url, "a b c");
+    const res = await chatRequest(stack.url, "a b c", { allowPooled: true });
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.match(body, /\[DONE\]/);

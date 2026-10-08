@@ -651,6 +651,72 @@ describe("S47 RemoteForgeExec — stagePool", () => {
     assert.equal(ch.lastAssign(), undefined);
   });
 
+  it("B4: pooled sin allowPooled → throw pre-acquire, cero contacto con la instance", async () => {
+    const ch = new FakeChannel();
+    let acquired = false;
+    const stagePool = {
+      acquire: async () => {
+        acquired = true;
+        return [{ endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number] }];
+      },
+      release: () => {},
+      penalize: () => {},
+    };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "c0",
+      model: "m",
+      stagePool: stagePool as never,
+      pooled: () => true,
+    });
+    // Sin flag y con flag false: igual — el opt-in tiene que ser explícito.
+    await assert.rejects(() => drain(ex.execute(req())), /pooled sin consent/);
+    await assert.rejects(() => drain(ex.execute(req({ allowPooled: false }))), /pooled sin consent/);
+    assert.equal(acquired, false); // jamás reservó workers sin consent
+    assert.equal(ch.lastAssign(), undefined); // jamás despachó el assign
+  });
+
+  it("B4: pooled + allowPooled:true → acquire corre y el proof declara pooled:true", async () => {
+    const ch = new FakeChannel();
+    const stagePool = {
+      acquire: async () => [{ endpoint: "10.0.0.5:50100", blocks: [0, 40] as [number, number] }],
+      release: () => {},
+      penalize: () => {},
+    };
+    const ex = new RemoteForgeExec({
+      channel: ch,
+      instanceId: "c0",
+      model: "m",
+      stagePool: stagePool as never,
+      pooled: () => true,
+    });
+    const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
+    const box: { p?: { pooled?: boolean } } = {};
+    const it = ex.execute(req({ allowPooled: true, onProof: (p) => (box.p = p) }));
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
+    }, 10);
+    await drain(it);
+    assert.equal(box.p?.pooled, true);
+  });
+
+  it("B4: instance no-pooled + allowPooled ausente → corre normal (pooled ausente del proof)", async () => {
+    const ch = new FakeChannel();
+    const ex = new RemoteForgeExec({ channel: ch, instanceId: "gpu0", model: "m", pooled: () => false });
+    const realHash = createHash("sha256").update("ok", "utf8").digest("hex");
+    const box: { p?: { pooled?: boolean } } = {};
+    const it = ex.execute(req({ onProof: (p) => (box.p = p) }));
+    setTimeout(() => {
+      ch.emit({ type: "job.ack", jobId: "j1" });
+      ch.emit({ type: "job.chunk", jobId: "j1", token: "ok" });
+      ch.emit({ type: "job.done", jobId: "j1", resultHash: realHash, signature: "bb".repeat(65) });
+    }, 10);
+    await drain(it);
+    assert.equal(box.p?.pooled, undefined);
+  });
+
   it("A4: stageSigs verificadas contra el loan — firmas malas/endpoints ajenos → fuera", async () => {
     const ch = new FakeChannel();
     const strikes: string[] = [];

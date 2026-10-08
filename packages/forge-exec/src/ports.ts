@@ -65,6 +65,9 @@ export type Proof = {
   // stageSigs verificadas (S47): quién firmó cada tramo — base del payout
   // split por stage (fase B). Ausente = job no federado o sin firmas válidas.
   stageSigs?: StageSig[];
+  // B4: el job usó capacidad prestada (rpcPeers y/o stages de otros
+  // operadores). Ausente/false = el cómputo corrió entero en el forge dueño.
+  pooled?: boolean;
 };
 // onForge: quién emitió el primer token. onProof: recibo firmado al completar.
 // Ambos por request — sin estado compartido entre requests concurrentes.
@@ -82,6 +85,11 @@ export type ExecRequest = {
   // visible y murió. El adapter continúa DESDE ese texto — el proof ata
   // solo el sufijo que ESTE forge generó + el prefijo en el promptHash.
   resume?: { prefix: string };
+  // B4 consent (spec 017): true = el usuario opt-in a capacidad pooled
+  // (rpc-workers / stage-workers de otros operadores ven activaciones
+  // intermedias, parcialmente invertibles). Ausente/false = instancias
+  // pooled quedan fuera del routing — fail-closed, jamás opt-out.
+  allowPooled?: boolean;
   onForge?: (forgeId: string) => void;
   // S27: un forge intentó y falló (pre-token o mid-stream). Alimenta el
   // circuit breaker del gateway — telemetría por request no ve intentos

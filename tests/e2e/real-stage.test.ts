@@ -53,6 +53,7 @@ describe("S47-C stage-federation con pesos reales (Qwen2.5-0.5B)", () => {
         messages: [{ role: "user", content: "The capital of France is" }],
         stream: true,
         max_tokens: 12,
+        allowPooled: true, // B4: el coordinator declaró pipeline → opt-in requerido
       }),
     });
     assert.equal(res.status, 200);

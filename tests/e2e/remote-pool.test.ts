@@ -48,7 +48,7 @@ describe("S46 pool-forge wire e2e", () => {
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1); // attest pasó CON worker prestado
 
-    const res = await chatRequest(stack.url);
+    const res = await chatRequest(stack.url, "hola", { allowPooled: true });
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.match(body, /\[DONE\]/);
@@ -73,7 +73,7 @@ describe("S46 pool-forge wire e2e", () => {
     while (stack.registry.workers().length > 0 && Date.now() - t0 < 4000) await sleep(50);
     assert.equal(stack.registry.workers().length, 0);
 
-    const res = await chatRequest(stack.url);
+    const res = await chatRequest(stack.url, "hola", { allowPooled: true });
     // SSE flushea 200 al abrir — el fallo del pool viaja en-stream como
     // frame {"error":"forge-failed"}: honesto, no cuelga ni inventa output.
     const body = await res.text();
@@ -89,14 +89,14 @@ describe("S46 pool-forge wire e2e", () => {
     daemons.push(c.daemon);
     await sleep(900); // el attest falló al menos una vez
     assert.equal(stack.registry.views().filter((v) => v.attested).length, 0); // sin attested todavía
-    const res = await chatRequest(stack.url);
+    const res = await chatRequest(stack.url, "hola", { allowPooled: true });
     assert.match(await res.text(), /forge-failed|error/); // unroutable ahora, no colgado
 
     // El worker conecta DESPUÉS — el retry (400ms en e2e) lo levanta.
     const w = await upRpcDaemon(stack, "w3", "10.99.0.8:50052", { alive: true });
     daemons.push(w.daemon);
     await untilAttested(stack.registry, 1, 10_000); // self-heal real por el wire
-    const res2 = await chatRequest(stack.url);
+    const res2 = await chatRequest(stack.url, "hola", { allowPooled: true });
     assert.equal(res2.status, 200);
     assert.match(await res2.text(), /\[DONE\]/);
   });
@@ -111,18 +111,18 @@ describe("S46 pool-forge wire e2e", () => {
     const c = await upPooledDaemon(stack, "c2", new FakeForgeExec({ forgeId: "c2", model: "qwen3.5:4b" }), 1);
     daemons.push(c.daemon);
     await untilAttested(stack.registry, 1);
-    assert.equal((await chatRequest(stack.url)).status, 200);
+    assert.equal((await chatRequest(stack.url, "hola", { allowPooled: true })).status, 200);
 
     proc.alive = false; // rpc-server cae pero el daemon sigue heartbeateando
     const t0 = Date.now();
     while (stack.registry.workers().some((x) => x.live) && Date.now() - t0 < 4000) await sleep(50);
-    const res = await chatRequest(stack.url);
+    const res = await chatRequest(stack.url, "hola", { allowPooled: true });
     assert.match(await res.text(), /forge-failed|error/); // live:false → no elegible
 
     proc.alive = true; // vuelve el rpc-server
     const t1 = Date.now();
     while (!stack.registry.workers().some((x) => x.live) && Date.now() - t1 < 4000) await sleep(50);
-    const res2 = await chatRequest(stack.url);
+    const res2 = await chatRequest(stack.url, "hola", { allowPooled: true });
     assert.equal(res2.status, 200); // y el pool sirve de nuevo
     assert.match(await res2.text(), /\[DONE\]/);
   });

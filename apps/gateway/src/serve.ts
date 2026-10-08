@@ -500,16 +500,27 @@ const exec = new RoutedExec<ForgeView>({
     (await forges()).filter((f) => (f.capability ?? "text") === "text" && f.attested !== false),
   execs: liveExecs,
   order: (req: ExecRequest, views: ForgeView[]) => {
+    // B4 (spec 017): sin opt-in del cliente, instancias pooled (declaran
+    // pool.needs/pipeline en su report) quedan FUERA del candidato set —
+    // las activaciones intermedias son parcialmente invertibles y viajar
+    // por forges ajenos es una decisión del usuario, no del router.
+    const eligible =
+      req.allowPooled === true
+        ? views
+        : views.filter((v) => {
+            const rep = registry.reportOf(v.forgeId);
+            return rep?.pool === undefined && rep?.pipeline === undefined;
+          });
     // S28: max_tokens del request = tamaño del job → el ETR pondera el decode
     // esperado (tok/s medido), no solo el primer token.
     const job = { id: req.jobId, model: req.model, estOutTokens: req.options?.maxTokens };
-    const etrs = new Map(views.map((v) => [v.forgeId, etrMs(v, job)]));
+    const etrs = new Map(eligible.map((v) => [v.forgeId, etrMs(v, job)]));
     jobEtrs.set(req.jobId, etrs);
     // Job huérfano (nunca llegó el telRecord): la entrada moriría — TTL 10min.
     setTimeout(() => jobEtrs.delete(req.jobId), 600_000).unref?.();
     // spec 013: el dispatch ordena por ETR EFECTIVO (rep ERC-8004 ponderada)
     // — la misma política que usa EtrScheduler.select para la decisión.
-    return [...views].sort(
+    return [...eligible].sort(
       (a, b) => effectiveEtr(a, job, REP_WEIGHT) - effectiveEtr(b, job, REP_WEIGHT),
     );
   },
