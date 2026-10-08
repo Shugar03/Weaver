@@ -4,11 +4,12 @@ import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { DEAD_QUEUE_MS, EtrScheduler } from "@weaver/scheduler";
-import { imageDims } from "@weaver/forge-net";
+import { imageDims, stageSigPreimage, stageSigPreimageV2 } from "@weaver/forge-net";
 import type { ForgeView } from "@weaver/scheduler";
 import type { ExecStats, ForgeExec, ImageExec, Proof } from "@weaver/forge-exec";
 import type { PaymentRequirements, PaymentVerifier } from "@weaver/settlement";
-import type { SettleReceipt } from "@weaver/settlement";
+import type { SettleReceipt, StagePayout } from "@weaver/settlement";
+import { computeStageSplit } from "@weaver/settlement";
 import {
   DelegationEngine,
   buildWeaverAgentDelegation,
@@ -81,7 +82,18 @@ type Deps = {
   telemetry?: Telemetry;
   node?: NodeInfo;
   apiKeys?: ApiKeys;
-  settlement?: { settleJob(resultHash: Buffer, forgeSig: Buffer, worker?: string, stats?: { genTokens?: number }): Promise<SettleReceipt> }; // S17b+S22/23: ausente = sin liquidación (dev)
+  settlement?: {
+    settleJob(resultHash: Buffer, forgeSig: Buffer, worker?: string, stats?: { genTokens?: number }): Promise<SettleReceipt>;
+    // B6: payout split por stage — cada stage verificado cobra su escrow con
+    // su propia stageSig como prueba. Ausente = settle single al coordinator.
+    settleJobSplit?(
+      resultHash: Buffer,
+      coordSig: Buffer,
+      coordWorker: string | undefined,
+      stats: { genTokens?: number } | undefined,
+      stages: StagePayout[],
+    ): Promise<SettleReceipt>;
+  }; // S17b+S22/23: ausente = sin liquidación (dev)
   // S34: payout per-forge — resuelve la pubkey registrada del forge que sirvió
   // (registry remoto). Embedded → undefined → settlement usa su worker default.
   forgePubkeyOf?: (forgeId: string) => string | undefined;
@@ -161,17 +173,21 @@ export function createApp(deps: Deps) {
   // se paga al forge que lo sirvió (la key sola suprimía pagos legítimos).
   const settleCache = new Map<string, Promise<SettleReceipt>>();
   const settleOnce = (
-    s: { settleJob(h: Buffer, sig: Buffer, worker?: string, stats?: { genTokens?: number }): Promise<SettleReceipt> },
+    s: NonNullable<Deps["settlement"]>,
     key: string,
     hash: Buffer,
     sig: Buffer,
     worker?: string,
     stats?: { genTokens?: number },
+    stages?: StagePayout[],
   ) => {
     const cacheKey = `${key}:${hash.toString("hex")}`;
     const hit = settleCache.get(cacheKey);
     if (hit) return hit;
-    const p = s.settleJob(hash, sig, worker, stats);
+    const p =
+      stages?.length && s.settleJobSplit
+        ? s.settleJobSplit(hash, sig, worker, stats, stages)
+        : s.settleJob(hash, sig, worker, stats);
     p.catch(() => settleCache.delete(cacheKey));
     settleCache.set(cacheKey, p);
     if (settleCache.size > 10_000) {
@@ -1102,6 +1118,20 @@ export function createApp(deps: Deps) {
               // contra el pubkey del stage asignado (remote.ts). El chip puede
               // mostrar "N stages verificados" sin confiar en nadie.
               ...(proof.stageSigs?.length ? { stageSigs: proof.stageSigs } : {}),
+              // B6: reparto declarado en bps — solo tramos con stageSig
+              // verificada participan; el coord absorbe el resto (embed +
+              // lm_head + orquestación + remainder de redondeo).
+              ...(proof.stageSigs?.length
+                ? {
+                    payoutSplit: (() => {
+                      const { coord, stageAmounts } = computeStageSplit(10_000, proof.stageSigs!);
+                      return {
+                        coordBps: coord,
+                        stages: proof.stageSigs!.map((s, i) => ({ worker: s.forgePubkey, bps: stageAmounts[i] })),
+                      };
+                    })(),
+                  }
+                : {}),
               // B4: el job tocó capacidad prestada (rpcPeers/stages) — el
               // cliente lo ve declarado, no lo infiere.
               ...(proof.pooled ? { pooled: true } : {}),
@@ -1208,9 +1238,27 @@ export function createApp(deps: Deps) {
           return;
         }
         try {
+          // B6: beneficiarios = stages con stageSig verificada. Su prueba de
+          // cobro on-chain es la propia firma: result_hash de su escrow es el
+          // preimage v2 sha256(jobId:sid:in:out) — 32 bytes exactos. Sig sin
+          // pubkey resuelta o sin preimage computable → no cobra.
+          const stagePayouts: StagePayout[] | undefined = servedProof.stageSigs?.length
+            ? servedProof.stageSigs.flatMap((s) => {
+                if (!s.forgePubkey) return [];
+                const ph =
+                  s.inChain && s.outChain
+                    ? stageSigPreimageV2(id, s.sessionId, s.inChain, s.outChain)
+                    : s.chain
+                      ? stageSigPreimage(id, s.sessionId, s.chain)
+                      : null;
+                return ph ? [{ worker: s.forgePubkey, blocks: s.blocks, proofHash: ph, sig: Buffer.from(s.sig, "hex") }] : [];
+              })
+            : undefined;
           const r = idemKey
-            ? await settleOnce(settlement, idemKey, servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined)
-            : await settlement.settleJob(servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined);
+            ? await settleOnce(settlement, idemKey, servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined, stagePayouts)
+            : stagePayouts?.length && settlement.settleJobSplit
+              ? await settlement.settleJobSplit(servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined, stagePayouts)
+              : await settlement.settleJob(servedProof.resultHash, servedProof.signature, worker, lastStats ?? undefined);
           await rec({
             ...base,
             settle: { payerTx, fundTx: r.fundTx, releaseTx: r.releaseTx, status: payerOk ? "settled" : "failed" },

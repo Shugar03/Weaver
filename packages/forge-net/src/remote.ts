@@ -218,7 +218,7 @@ export class RemoteForgeExec implements ForgeExec {
       const ok = await Promise.resolve(
         this.verifyFn(e.forgePubkey, pre, Buffer.from(s.sig, "hex")),
       ).catch(() => false);
-      if (ok) out.push(s);
+      if (ok) out.push({ ...s, forgePubkey: e.forgePubkey });
       else this.stagePool.strikeWorker(jobId, s.endpoint);
     }
     // Cross-check de frontera (B2): ordenadas por tramo, outChain_K debe

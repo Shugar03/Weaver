@@ -15,6 +15,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { SerialQueue } from "./queue.ts";
 import type { PendingSettle, SettleJournal } from "./journal.ts";
+import { computeStageSplit } from "./split.ts";
 
 // S44 (I3): sweep de escrows pending — re-liquida lo que quedó funded
 // (crash entre fund y release). El proof sigue válido; si la tx revierte
@@ -87,6 +88,23 @@ export type EscrowConfig = {
 };
 
 export type SettleReceipt = { jobId: number; fundTx: string; releaseTx: string };
+
+// B6: un escrow por beneficiario — cada stage cobra con SU propia stageSig
+// como prueba (release verifica ed25519 sobre un BytesN<32> cualquiera; el
+// preimage v2 sha256(jobId:sid:in:out) son exactamente 32 bytes). `error`
+// declara el escrow que no se completó — jamás se silencia plata.
+export type SplitSettleReceipt = SettleReceipt & {
+  splits: { worker: string; amount?: number; jobId?: number; fundTx?: string; releaseTx?: string; error?: string }[];
+};
+
+// Beneficiario stage ya verificado por el gateway: proofHash es el preimage
+// firmado (32 bytes), sig la stageSig (64 bytes). blocks pondera el share.
+export type StagePayout = {
+  worker: string;
+  blocks: [number, number];
+  proofHash: Buffer;
+  sig: Buffer;
+};
 
 // S45 (ADR-0006, I5): pago ∝ trabajo medido. genTokens viene del frame done
 // del engine — medido, no declarado. Techo PAYOUT_MAX siempre.
@@ -162,6 +180,50 @@ export class EscrowSettlement {
     workerAddr?: string,
     stats?: { genTokens?: number },
   ): Promise<SettleReceipt> {
+    const payout = payoutFor(stats, { base: this.cfg.payout, perToken: this.cfg.perToken ?? 0 });
+    return this.settleAmount(resultHash, forgeSig, workerAddr ?? this.cfg.worker, payout);
+  }
+
+  // B6: un escrow por beneficiario verificado. El coordinator cobra su share
+  // con la prueba normal (resultHash+forgeSig); cada stage cobra la suya con
+  // su stageSig sobre su proofHash — el contrato verifica la firma contra la
+  // pubkey que ESE worker registró. Cada escrow es independiente: un stage
+  // sin register_forge (ForgeNotFound en fund) o un release que revierte no
+  // aborta los demás pagos — queda declarado en splits[].error.
+  async settleJobSplit(
+    resultHash: Buffer,
+    coordSig: Buffer,
+    coordWorker: string | undefined,
+    stats: { genTokens?: number } | undefined,
+    stages: StagePayout[],
+  ): Promise<SplitSettleReceipt> {
+    const payout = payoutFor(stats, { base: this.cfg.payout, perToken: this.cfg.perToken ?? 0 });
+    const { coord, stageAmounts } = computeStageSplit(payout, stages);
+    const coordR = await this.settleAmount(resultHash, coordSig, coordWorker ?? this.cfg.worker, coord);
+    const splits: SplitSettleReceipt["splits"] = [];
+    for (const [i, s] of stages.entries()) {
+      const amount = stageAmounts[i];
+      if (amount <= 0) {
+        splits.push({ worker: s.worker, amount: 0 });
+        continue;
+      }
+      try {
+        const r = await this.settleAmount(s.proofHash, s.sig, s.worker, amount);
+        splits.push({ worker: s.worker, amount, ...r });
+      } catch (e) {
+        console.warn(`split settle falló (stage ${s.worker}, ${amount} stroops):`, e);
+        splits.push({ worker: s.worker, amount, error: String(e) });
+      }
+    }
+    return { ...coordR, splits };
+  }
+
+  private async settleAmount(
+    resultHash: Buffer,
+    forgeSig: Buffer,
+    worker: string,
+    payout: number,
+  ): Promise<SettleReceipt> {
     if (resultHash.length !== 32) {
       throw new Error(`result_hash debe ser 32 bytes, vino ${resultHash.length}`);
     }
@@ -169,8 +231,6 @@ export class EscrowSettlement {
       throw new Error(`forge_sig debe ser 64 bytes, vino ${forgeSig.length}`);
     }
     const { contractId, operator } = this.cfg;
-    const worker = workerAddr ?? this.cfg.worker;
-    const payout = payoutFor(stats, { base: this.cfg.payout, perToken: this.cfg.perToken ?? 0 });
     const funded = await this.submitter.invoke(contractId, "fund_job", [
       new Address(operator).toScVal(),
       nativeToScVal(payout, { type: "i128" }),

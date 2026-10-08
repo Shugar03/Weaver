@@ -149,8 +149,25 @@ Campos extra ignorados.
   que probe). Los replacements reciben capability fresca. `--stage-secret`/
   `WEAVER_STAGE_SECRET`; stage-worker sin secret loguea warning y nunca es
   prestado (fail closed).
+- **B6 — payout split por stage** (✅ implementado, sin redeploy): el escrow
+  Soroban `release(caller, job_id, result_hash: BytesN<32>, forge_sig)`
+  verifica ed25519 sobre CUALQUIER 32 bytes contra la pubkey que el worker
+  registró — y el preimage v2 `sha256(jobId:sid:inChain:outChain)` son
+  exactamente 32 bytes. Cada stage cobra SU PROPIO escrow probando con su
+  propia stageSig: `settleJobSplit` fondea N+1 escrows (coordinator +
+  un stage-entry por stageSig verificada) y libera cada uno con la firma del
+  beneficiario. `computeStageSplit(total, stages)` reparte: coordinator
+  `COORD_BPS=20%` (embed+lm_head+orquestación+riesgo) + 80% ∝ bloques
+  cubiertos, remainder→coord. Regla: sin stageSig verificada no hay cobro —
+  tramo muerto/reemplazado cobra el REEMPLAZO que firmó, no el que falló.
+  Escrow por beneficiario aislado: un stage sin `register_forge`
+  (ForgeNotFound en fund) no aborta los demás — queda declarado en
+  `splits[].error`. El receipt `weaver_proof.payoutSplit` declara el reparto
+  en bps (transparencia aun sin settlement configurado). Solo vía Stellar:
+  las stageSigs son ed25519 y el ecrecover del escrow EVM no las verifica —
+  coordinator EVM → fallback al single-settle (declarado, no inventado).
 - Pendiente: dynamic blockwise quant de hidden states, NAT traversal o
-  relay-pool, payout-split on-chain por stage, rotación/escopado fino de
+  relay-pool, rotación/escopado fino de
   `stageSecret` (hoy es un shared secret por daemon — un coordinator
   malicioso con token puede hablar ese tramo; la firma A4 sigue atando el
   historial).
@@ -336,6 +353,6 @@ Bugs reales que solo salieron en implementación:
   no cubre `ck.seq` completa (replay parcial daría falso positivo) → skip
   honesto; weights divergentes se diagnostican aparte del cómputo.
 
-Regresión: forge-net 135 · forge 72 · gateway 209 · e2e 20 (incl. cascada
-e2e con boundary check y B5 audit; 1 pesos reales Qwen2.5-0.5B split
-0-12/12-24 con B1 auth) — todo verde.
+Regresión: settlement 115 · forge-net 135 · forge 72 · gateway 212 · e2e 21
+(incl. cascada e2e, B5 audit, B6 split e2e con proofHash recomputado;
+1 pesos reales Qwen2.5-0.5B split 0-12/12-24 con B1 auth) — todo verde.

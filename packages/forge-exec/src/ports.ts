@@ -49,6 +49,10 @@ export type StageSig = {
   // certifica que la frontera cruzó intacta (checksum async, Petals §3.2).
   inChain?: string;
   outChain?: string;
+  // B6: pubkey del forge dueño del tramo — la completa el gateway al
+  // verificar contra el loan (endpoint→signer). Es el beneficiario del
+  // payout split: sin sig verificada no hay cobro por ese tramo.
+  forgePubkey?: string;
 };
 // Proof L0 (S23): recibo del forge — firma del commitment que ata
 // prompt+output (ver proofhash.ts). El contrato lo verifica en release:

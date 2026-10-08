@@ -4,10 +4,20 @@
 // La vía no configurada → error explícito: el job se sirvió pero no se pagó
 // — visible, jamás un cast a Address que revienta dentro de viem.
 import { isEvmAddr } from "./verify.ts";
-import type { SettleReceipt } from "./escrow.ts";
+import type { SettleReceipt, SplitSettleReceipt, StagePayout } from "./escrow.ts";
 
 export interface SettleVia {
   settleJob(resultHash: Buffer, forgeSig: Buffer, worker?: string, stats?: { genTokens?: number }): Promise<SettleReceipt>;
+  // B6: split por stage — solo vías cuya prueba de firma verifica las
+  // stageSigs ed25519 on-chain lo implementan (Stellar sí; el ecrecover EVM
+  // no verifica ed25519 → el coordinator EVM cobra entero, declarado).
+  settleJobSplit?(
+    resultHash: Buffer,
+    coordSig: Buffer,
+    coordWorker: string | undefined,
+    stats: { genTokens?: number } | undefined,
+    stages: StagePayout[],
+  ): Promise<SplitSettleReceipt>;
 }
 
 export class SettleDispatcher implements SettleVia {
@@ -25,6 +35,26 @@ export class SettleDispatcher implements SettleVia {
   async settleJob(resultHash: Buffer, forgeSig: Buffer, worker?: string, stats?: { genTokens?: number }) {
     const via = this.viaFor(worker); // sync-throw → rechazo (misma superficie async)
     return via.settleJob(resultHash, forgeSig, worker, stats);
+  }
+
+  // B6: rutea el split por la vía del coordinator. Si esa vía no implementa
+  // multi-escrow (EVM), cae al single-settle honesto — el coordinator cobra
+  // el total y los stages quedan declarados en el receipt sin pago on-chain.
+  async settleJobSplit(
+    resultHash: Buffer,
+    coordSig: Buffer,
+    worker: string | undefined,
+    stats: { genTokens?: number } | undefined,
+    stages: StagePayout[],
+  ): Promise<SplitSettleReceipt> {
+    const via = this.viaFor(worker);
+    if (!via.settleJobSplit) {
+      console.warn(`split settle: la vía de ${worker} no soporta multi-escrow — settle single al coordinator`);
+      const r = await via.settleJob(resultHash, coordSig, worker, stats);
+      // Sin monto: la vía nunca computó el split — declarar shares sería mentira.
+      return { ...r, splits: stages.map((s) => ({ worker: s.worker, error: "vía sin multi-escrow" })) };
+    }
+    return via.settleJobSplit(resultHash, coordSig, worker, stats, stages);
   }
 
   private viaFor(worker: string | undefined): SettleVia {

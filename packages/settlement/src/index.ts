@@ -1,7 +1,8 @@
 // Module Settlement — única superficie pública.
 export { JOB_PRICE_USDC } from "./ports.ts";
 export { EscrowSettlement, RpcSubmitter, stellarSigner, stellarVerify, stellarPubkey, stellarKeypair, payoutFor, registerForge, sweepPendingSettles } from "./escrow.ts";
-export type { ChainSubmitter, EscrowConfig, SettleReceipt } from "./escrow.ts";
+export type { ChainSubmitter, EscrowConfig, SettleReceipt, SplitSettleReceipt, StagePayout } from "./escrow.ts";
+export { computeStageSplit, COORD_BPS } from "./split.ts";
 export { InMemorySettleJournal, PostgresSettleJournal, InMemoryIntentJournal, PostgresIntentJournal, PostgresScanCursor } from "./journal.ts";
 export type { PendingSettle, SettleJournal, SettleIntent, IntentJournal } from "./journal.ts";
 export { stellarPay } from "./pay.ts";

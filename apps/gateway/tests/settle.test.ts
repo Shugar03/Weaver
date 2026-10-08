@@ -3,8 +3,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/index.ts";
-import { FakeForgeExec } from "@weaver/forge-exec";
-import { FakeVerifier } from "@weaver/settlement";
+import { FakeForgeExec, type ExecRequest, type ForgeExec, type StreamChunk } from "@weaver/forge-exec";
+import { FakeVerifier, stellarKeypair, type StagePayout } from "@weaver/settlement";
+import { stageSigPreimageV2 } from "@weaver/forge-net";
 import { InMemoryTelemetry } from "@weaver/telemetry";
 import type { Sample } from "@weaver/telemetry";
 
@@ -205,5 +206,148 @@ describe("S23 x402 settle post-serve", () => {
       releaseTx: "rel-x",
       status: "settled",
     });
+  });
+});
+
+// B6 — payout split por stage: el gateway convierte las stageSigs verificadas
+// (con forgePubkey resuelta por verifyStageSigs) en StagePayout[] — cada stage
+// cobra su escrow probando con SU firma sobre el preimage v2. El receipt
+// declara el reparto en bps; sin settleJobSplit cae al single-settle.
+describe("B6 payout split", () => {
+  const kpS1 = stellarKeypair();
+  const kpS2 = stellarKeypair();
+  const kpCoord = stellarKeypair();
+  const inChain = "aa".repeat(32);
+  const outChain = "bb".repeat(32);
+
+  // Exec fake federado: emite proof con stageSigs ya verificadas (así las
+  // deja remote.ts post-verifyStageSigs — forgePubkey resuelta).
+  const federatedExec = (sigs: unknown[]): ForgeExec => ({
+    forgeId: "fake-forge",
+    model: "qwen3:4b",
+    async *execute(req: ExecRequest): AsyncIterable<StreamChunk> {
+      yield { token: "ok", done: false };
+      req.onProof?.({
+        forgeId: "fake-forge",
+        resultHash: Buffer.alloc(32, 1),
+        signature: Buffer.alloc(64, 2),
+        stageSigs: sigs as never,
+      });
+      yield { token: "", done: true, stats: { genTokens: 2 } };
+    },
+  });
+
+  const verifiedSigs = () => [
+    {
+      endpoint: "tcp://a", blocks: [0, 40] as [number, number], sessionId: "j:s0",
+      inChain, outChain, sig: "11".repeat(64), forgePubkey: kpS1.pubkey,
+    },
+    {
+      endpoint: "tcp://b", blocks: [40, 80] as [number, number], sessionId: "j:s1",
+      inChain: outChain, outChain: "cc".repeat(32), sig: "22".repeat(64), forgePubkey: kpS2.pubkey,
+    },
+  ];
+
+  it("stageSigs verificadas → settleJobSplit con proofHash recomputado + payoutSplit en receipt", async () => {
+    const telemetry = new InMemoryTelemetry();
+    const captured: { stages?: StagePayout[]; worker?: string } = {};
+    const settlement = {
+      async settleJob() {
+        return { jobId: 1, fundTx: "f", releaseTx: "r" };
+      },
+      async settleJobSplit(_h: Buffer, _s: Buffer, worker: string | undefined, _stats: unknown, stages: StagePayout[]) {
+        captured.stages = stages;
+        captured.worker = worker;
+        return { jobId: 9, fundTx: "f9", releaseTx: "r9", splits: [] };
+      },
+    };
+    const app = createApp({
+      forges,
+      exec: federatedExec(verifiedSigs()),
+      telemetry,
+      settlement: settlement as never,
+      forgePubkeyOf: () => kpCoord.pubkey,
+    });
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+    const json = (await res.json()) as { id: string; weaver_proof?: { payoutSplit?: { coordBps: number; stages: { worker?: string; bps: number }[] } } };
+    // Receipt declara el reparto: 80% del pool a los 2 stages iguales.
+    assert.equal(json.weaver_proof?.payoutSplit?.coordBps, 2000);
+    assert.deepEqual(
+      json.weaver_proof?.payoutSplit?.stages.map((s) => s.bps),
+      [4000, 4000],
+    );
+    assert.deepEqual(
+      json.weaver_proof?.payoutSplit?.stages.map((s) => s.worker),
+      [kpS1.pubkey, kpS2.pubkey],
+    );
+    // Settle fire-and-forget — poll hasta que el fake lo capturó.
+    const deadline = Date.now() + 3000;
+    while (!captured.stages && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(captured.worker, kpCoord.pubkey);
+    assert.equal(captured.stages?.length, 2);
+    // La prueba de cobro del stage = su preimage v2 firmado — 32 bytes.
+    assert.deepEqual(
+      captured.stages?.[0].proofHash,
+      stageSigPreimageV2(json.id, "j:s0", inChain, outChain),
+    );
+    assert.equal(captured.stages?.[0].worker, kpS1.pubkey);
+    assert.equal(captured.stages?.[0].sig.toString("hex"), "11".repeat(64));
+    assert.deepEqual(captured.stages?.[1].blocks, [40, 80]);
+  });
+
+  it("sin settleJobSplit → cae a settleJob single (coordinator cobra entero)", async () => {
+    const telemetry = new InMemoryTelemetry();
+    let singleCalls = 0;
+    const settlement = {
+      async settleJob() {
+        singleCalls++;
+        return { jobId: 1, fundTx: "f", releaseTx: "r" };
+      },
+    };
+    const app = createApp({
+      forges,
+      exec: federatedExec(verifiedSigs()),
+      telemetry,
+      settlement: settlement as never,
+      forgePubkeyOf: () => kpCoord.pubkey,
+    });
+    await app.request("/v1/chat/completions", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+    const deadline = Date.now() + 3000;
+    while (!singleCalls && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(singleCalls, 1);
+  });
+
+  it("stageSig sin forgePubkey → excluida del split, el resto cobra", async () => {
+    const telemetry = new InMemoryTelemetry();
+    const captured: { stages?: StagePayout[] } = {};
+    const settlement = {
+      async settleJob() {
+        return { jobId: 1, fundTx: "f", releaseTx: "r" };
+      },
+      async settleJobSplit(_h: Buffer, _s: Buffer, _w: unknown, _st: unknown, stages: StagePayout[]) {
+        captured.stages = stages;
+        return { jobId: 9, fundTx: "f9", releaseTx: "r9", splits: [] };
+      },
+    };
+    const sigs = verifiedSigs();
+    delete (sigs[1] as { forgePubkey?: string }).forgePubkey; // no verificada
+    const app = createApp({
+      forges,
+      exec: federatedExec(sigs),
+      telemetry,
+      settlement: settlement as never,
+      forgePubkeyOf: () => kpCoord.pubkey,
+    });
+    await app.request("/v1/chat/completions", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    });
+    const deadline = Date.now() + 3000;
+    while (!captured.stages && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(captured.stages?.length, 1); // solo el verificado cobra
+    assert.equal(captured.stages?.[0].worker, kpS1.pubkey);
   });
 });

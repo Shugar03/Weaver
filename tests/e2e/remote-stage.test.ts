@@ -16,6 +16,8 @@ import {
 } from "./harness.ts";
 import type { ForgeDaemon, StageServer } from "@weaver/forge";
 import { tcpStageDial } from "@weaver/forge";
+import { stageSigPreimageV2 } from "@weaver/forge-net";
+import type { StagePayout } from "@weaver/settlement";
 
 const stacks: Stack[] = [];
 const daemons: ForgeDaemon[] = [];
@@ -194,9 +196,11 @@ describe("S47 stage-federation wire e2e", () => {
     assert.ok(sigLine, "receipt sin stageSigs — el boundary check debió pasar tras la cascada");
     const sigs = JSON.parse(sigLine.slice(5)).weaver_proof.stageSigs;
     assert.deepEqual(sigs.map((s: { endpoint: string }) => s.endpoint).sort(), [s1.endpoint, sp2.endpoint, sp3.endpoint].sort());
-    const byStart = new Map(sigs.map((s: { blocks: number[] }) => [s.blocks[0], s]));
-    assert.equal(byStart.get(0).outChain, byStart.get(32).inChain, "frontera s1→sp2 rota");
-    assert.equal(byStart.get(32).outChain, byStart.get(64).inChain, "frontera sp2→sp3 rota");
+    const byStart = new Map<number, { blocks: number[]; inChain?: string; outChain?: string }>(
+      sigs.map((s: { blocks: number[] }) => [s.blocks[0], s]),
+    );
+    assert.equal(byStart.get(0)?.outChain, byStart.get(32)?.inChain, "frontera s1→sp2 rota");
+    assert.equal(byStart.get(32)?.outChain, byStart.get(64)?.inChain, "frontera sp2→sp3 rota");
   });
 
   it("stage muere sin spare → stage.offer vacío → job falla honesto mid-stream", async () => {
@@ -327,5 +331,58 @@ describe("S47 stage-federation wire e2e", () => {
     // Y siguió la atribución normal: ambos stages firmaron su tramo.
     const sigs = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof.stageSigs;
     assert.equal(sigs.length, 2, `sigs recibidas: ${JSON.stringify(sigs)}`);
+  });
+
+  it("B6 payout split: cada stage verificado llega al settleJobSplit con SU proofHash firmado", async () => {
+    // Settlement fake que captura — el split real va on-chain, acá probamos
+    // que el gateway arma los beneficiarios correctos desde las sigs reales.
+    const captured: { stages?: StagePayout[]; worker?: string } = {};
+    const stack = await startStack({
+      settlement: {
+        async settleJob() {
+          return { jobId: 1, fundTx: "f", releaseTx: "r" };
+        },
+        async settleJobSplit(_h: Buffer, _s: Buffer, worker: string | undefined, _stats: unknown, stages: StagePayout[]) {
+          captured.worker = worker;
+          captured.stages = stages;
+          return { jobId: 7, fundTx: "f7", releaseTx: "r7", splits: [] };
+        },
+      },
+    });
+    stacks.push(stack);
+    const s1 = await upStageDaemon(stack, "s1", [0, 40]);
+    const s2 = await upStageDaemon(stack, "s2", [40, 80]);
+    daemons.push(s1.daemon, s2.daemon);
+    servers.push(s1.server, s2.server);
+    await untilStageWorkers(stack, 2);
+    const c = await upPipelineDaemon(stack, "c0", 80);
+    daemons.push(c.daemon);
+    await untilAttested(stack.registry, 1, 15_000);
+
+    const res = await chatRequest(stack.url, "a b c", { allowPooled: true });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /\[DONE\]/);
+    const proof = JSON.parse(body.split("\n").filter((l) => l.includes('"stageSigs"')).at(-1)!.slice(5)).weaver_proof;
+    // Receipt declara el reparto en bps — coord 20%, stages 40/40.
+    assert.equal(proof.payoutSplit.coordBps, 2000);
+    assert.deepEqual(proof.payoutSplit.stages.map((s: { bps: number }) => s.bps), [4000, 4000]);
+    // El settle capturado: cada stage con su pubkey real del daemon y el
+    // proofHash = preimage v2 recomputado del receipt (jobId:sessionId:chains).
+    const deadline = Date.now() + 5000;
+    while (!captured.stages && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(captured.stages?.length, 2, `splits capturados: ${JSON.stringify(captured.stages)}`);
+    assert.equal(captured.worker, c.kp.pubkey); // el coordinator cobra en su pubkey
+    const byBlocks = [...proof.stageSigs].sort((a: { blocks: number[] }, b: { blocks: number[] }) => a.blocks[0] - b.blocks[0]);
+    for (const [i, st] of captured.stages!.entries()) {
+      const sigEntry = byBlocks[i];
+      assert.equal(st.worker, sigEntry.forgePubkey);
+      assert.equal(st.blocks[0], sigEntry.blocks[0]);
+      assert.equal(
+        st.proofHash.toString("hex"),
+        stageSigPreimageV2(proof.jobId, sigEntry.sessionId, sigEntry.inChain, sigEntry.outChain).toString("hex"),
+      );
+      assert.equal(st.sig.toString("hex"), sigEntry.sig);
+    }
   });
 });

@@ -3,7 +3,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { nativeToScVal, scValToNative } from "@stellar/stellar-sdk";
-import { EscrowSettlement, isTerminalReleaseError, payoutFor, stellarVerify, sweepPendingSettles, type ChainSubmitter } from "../src/escrow.ts";
+import { EscrowSettlement, isTerminalReleaseError, payoutFor, stellarKeypair, stellarVerify, sweepPendingSettles, type ChainSubmitter, type StagePayout } from "../src/escrow.ts";
+import { computeStageSplit, COORD_BPS } from "../src/split.ts";
 import { InMemorySettleJournal } from "../src/journal.ts";
 import type { xdr } from "@stellar/stellar-sdk";
 
@@ -133,6 +134,169 @@ describe("S17b escrow", () => {
     };
     const s = new EscrowSettlement(failing, { contractId: CONTRACT, operator: OPERATOR, worker: WORKER, payout: 100000 });
     await assert.rejects(() => s.settleJob(HASH, SIG), /rpc caído/);
+  });
+});
+
+// B6 — computeStageSplit: regla pura del reparto. Solo entran stages cuya
+// stageSig ya verificó — la proporción es por bloques cubiertos y el
+// remainder de redondeo lo absorbe el coordinator.
+describe("B6 computeStageSplit", () => {
+  it("stages reparten (10000-coordBps) ∝ bloques; coord absorbe el resto", () => {
+    // 2 tramos iguales de 40 bloques sobre total 100000, coordBps=2000.
+    const { coord, stageAmounts } = computeStageSplit(100_000, [
+      { blocks: [0, 40] },
+      { blocks: [40, 80] },
+    ]);
+    assert.equal(stageAmounts[0], 40_000);
+    assert.equal(stageAmounts[1], 40_000);
+    assert.equal(coord, 20_000); // base + remainder (0 acá)
+  });
+
+  it("pondera por bloques — tramo doble cobra doble", () => {
+    const { coord, stageAmounts } = computeStageSplit(90_000, [
+      { blocks: [0, 20] },
+      { blocks: [20, 60] }, // el doble de ancho
+    ]);
+    assert.equal(stageAmounts[0], 24_000); // 72000 × 20/60
+    assert.equal(stageAmounts[1], 48_000); // 72000 × 40/60
+    assert.equal(coord, 18_000);
+  });
+
+  it("remainder de redondeo → coordinator (nunca se pierde ni inventa)", () => {
+    // 3 stages de 1 bloque sobre total 100 → pool 80 → floor(80/3)=26×3=78.
+    const { coord, stageAmounts } = computeStageSplit(100, [
+      { blocks: [0, 1] },
+      { blocks: [1, 2] },
+      { blocks: [2, 3] },
+    ]);
+    assert.deepEqual(stageAmounts, [26, 26, 26]);
+    assert.equal(coord, 22); // 20 (coord share) + 2 (remainder)
+  });
+
+  it("sin stages verificados → todo al coordinator", () => {
+    assert.deepEqual(computeStageSplit(50_000, []), { coord: 50_000, stageAmounts: [] });
+  });
+
+  it("tramo degenerado (blocks invertidos) aporta 0 de peso", () => {
+    const { coord, stageAmounts } = computeStageSplit(100_000, [
+      { blocks: [10, 10] },
+      { blocks: [10, 50] },
+    ]);
+    assert.equal(stageAmounts[0], 0);
+    assert.equal(stageAmounts[1], 80_000);
+    assert.equal(coord, 20_000);
+  });
+});
+
+// B6 — settleJobSplit: un escrow por beneficiario. El stage cobra con SU
+// stageSig sobre SU proofHash — release verifica ed25519 contra la pubkey
+// que el worker registró on-chain. Escrow aislado: un stage que revierte no
+// aborta los demás pagos.
+describe("B6 settleJobSplit", () => {
+  // Pubkeys válidas (strkey) — Address().toScVal() rechaza las inválidas.
+  const S1 = stellarKeypair().pubkey;
+  const S2 = stellarKeypair().pubkey;
+  const stage1: StagePayout = {
+    worker: S1,
+    blocks: [0, 40],
+    proofHash: Buffer.alloc(32, 11),
+    sig: Buffer.alloc(64, 12),
+  };
+  const stage2: StagePayout = {
+    worker: S2,
+    blocks: [40, 80],
+    proofHash: Buffer.alloc(32, 21),
+    sig: Buffer.alloc(64, 22),
+  };
+
+  it("fund+release por beneficiario: stage cobra con SU proofHash y SU sig", async () => {
+    const calls: { fn: string; args?: xdr.ScVal[] }[] = [];
+    let nextJob = 100;
+    const sub: ChainSubmitter = {
+      async invoke(_c, fn, args) {
+        calls.push({ fn, args });
+        if (fn === "fund_job") return { txHash: "f", retval: nativeToScVal(nextJob++, { type: "u64" }) };
+        return { txHash: "r" };
+      },
+    };
+    const s = new EscrowSettlement(sub, { contractId: CONTRACT, operator: OPERATOR, worker: WORKER, payout: 100_000 });
+    const r = await s.settleJobSplit(HASH, SIG, WORKER, undefined, [stage1, stage2]);
+    // 3 escrows: coord + 2 stages.
+    assert.deepEqual(calls.map((c) => c.fn), ["fund_job", "release", "fund_job", "release", "fund_job", "release"]);
+    assert.equal(r.splits.length, 2);
+    // Coord escrow: amount = 20% de 100000.
+    assert.equal(scValToNative(calls[0].args?.[1] as xdr.ScVal), 20_000n);
+    assert.equal(scValToNative(calls[0].args?.[2] as xdr.ScVal), WORKER);
+    // Release del coord usa resultHash+forgeSig (prueba normal).
+    assert.deepEqual(scValToNative(calls[1].args?.[2] as xdr.ScVal), new Uint8Array(HASH));
+    // Stage escrows: worker ligado = pubkey del stage, amount ∝ bloques.
+    assert.equal(scValToNative(calls[2].args?.[2] as xdr.ScVal), S1);
+    assert.equal(scValToNative(calls[2].args?.[1] as xdr.ScVal), 40_000n);
+    assert.equal(scValToNative(calls[4].args?.[2] as xdr.ScVal), S2);
+    // Release del stage: result_hash = SU proofHash, sig = SU stageSig.
+    assert.deepEqual(scValToNative(calls[3].args?.[2] as xdr.ScVal), new Uint8Array(stage1.proofHash));
+    assert.deepEqual(scValToNative(calls[3].args?.[3] as xdr.ScVal), new Uint8Array(stage1.sig));
+    assert.deepEqual(scValToNative(calls[5].args?.[2] as xdr.ScVal), new Uint8Array(stage2.proofHash));
+  });
+
+  it("un stage sin registrar (fund revierte) no aborta los demás — error declarado", async () => {
+    const calls: { fn: string }[] = [];
+    let nextJob = 200;
+    const sub: ChainSubmitter = {
+      async invoke(_c, fn, args) {
+        calls.push({ fn });
+        if (fn === "fund_job") {
+          const worker = scValToNative(args?.[2] as xdr.ScVal) as string;
+          if (worker === S1) throw new Error("HostError: ForgeNotFound");
+          return { txHash: "f", retval: nativeToScVal(nextJob++, { type: "u64" }) };
+        }
+        return { txHash: "r" };
+      },
+    };
+    const s = new EscrowSettlement(sub, { contractId: CONTRACT, operator: OPERATOR, worker: WORKER, payout: 100_000 });
+    const r = await s.settleJobSplit(HASH, SIG, WORKER, undefined, [stage1, stage2]);
+    assert.match(r.splits[0].error ?? "", /ForgeNotFound/);
+    assert.equal(r.splits[1].releaseTx, "r"); // el segundo stage cobró igual
+    assert.equal(calls.filter((c) => c.fn === "release").length, 2); // coord + s2
+  });
+
+  it("stats escalan el total: perToken entra al pool del split", async () => {
+    const calls: { fn: string; args?: xdr.ScVal[] }[] = [];
+    let nextJob = 300;
+    const sub: ChainSubmitter = {
+      async invoke(_c, fn, args) {
+        calls.push({ fn, args });
+        if (fn === "fund_job") return { txHash: "f", retval: nativeToScVal(nextJob++, { type: "u64" }) };
+        return { txHash: "r" };
+      },
+    };
+    const s = new EscrowSettlement(sub, {
+      contractId: CONTRACT, operator: OPERATOR, worker: WORKER, payout: 100_000, perToken: 1000,
+    });
+    await s.settleJobSplit(HASH, SIG, WORKER, { genTokens: 100 }, [stage1]);
+    // total = 100000 + 100×1000 = 200000 → stage pool 160000.
+    assert.equal(scValToNative(calls[2].args?.[1] as xdr.ScVal), 160_000n);
+  });
+
+  it("coord share es exacto: total - Σstages, remainder incluido", async () => {
+    const calls: { fn: string; args?: xdr.ScVal[] }[] = [];
+    let nextJob = 400;
+    const sub: ChainSubmitter = {
+      async invoke(_c, fn, args) {
+        calls.push({ fn, args });
+        if (fn === "fund_job") return { txHash: "f", retval: nativeToScVal(nextJob++, { type: "u64" }) };
+        return { txHash: "r" };
+      },
+    };
+    const s = new EscrowSettlement(sub, { contractId: CONTRACT, operator: OPERATOR, worker: WORKER, payout: 100 });
+    const three: StagePayout[] = [0, 1, 2].map((i) => ({
+      worker: S1, blocks: [i, i + 1] as [number, number],
+      proofHash: Buffer.alloc(32, 30 + i), sig: Buffer.alloc(64, 40 + i),
+    }));
+    const r = await s.settleJobSplit(HASH, SIG, WORKER, undefined, three);
+    const stageTotal = r.splits.reduce((a, x) => a + (x.amount ?? 0), 0);
+    assert.equal(scValToNative(calls[0].args?.[1] as xdr.ScVal), BigInt(100 - stageTotal));
+    assert.equal(stageTotal, 78); // floor(80/3)×3 — remainder 2 al coord
   });
 });
 

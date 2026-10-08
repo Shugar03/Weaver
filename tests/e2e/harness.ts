@@ -39,7 +39,11 @@ export type Stack = {
 };
 
 // Orden por instanceId — determinístico, no depende de ping/ETR medido.
-export function startStack(): Promise<Stack> {
+// B6: `opts.settlement` inyecta la vía de liquidación (fake en e2e — captura
+// las llamadas para verificar el split sin tocar chain).
+export function startStack(opts?: {
+  settlement?: NonNullable<Parameters<typeof createApp>[0]["settlement"]>;
+}): Promise<Stack> {
   const registry = new ForgeRegistry();
   const nonces = new NonceStore();
   const box: { fws?: ForgeWS } = {};
@@ -72,6 +76,7 @@ export function startStack(): Promise<Stack> {
     forgePubkeyOf: (id) => registry.pubkeyOf(id),
     challenges: nonces,
     verifyProof: dualVerify,
+    ...(opts?.settlement ? { settlement: opts.settlement } : {}),
   });
   const server = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
   const fws = attachForgeWS(server as never, {
