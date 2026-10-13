@@ -292,7 +292,7 @@
 <body>
 
 <div id="progress"><div></div></div>
-<div id="counter"><b>01</b> / 13</div>
+<div id="counter"><b>01</b> / 15</div>
 <div id="hint">← → · SPACE · CLICK</div>
 <div id="dots"></div>
 <canvas id="mesh"></canvas>
@@ -536,7 +536,104 @@
   </div>
 </section>
 
-<!-- ═══════════ 09 · PILLARS ═══════════ -->
+<!-- ═══════════ 09 · FEDERATION ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="meshwrap">
+      <div>
+        <div class="kicker st">federated execution</div>
+        <h2 class="st">One model,<br><span class="dim">served by</span> <span class="lm">strangers.</span></h2>
+        <p class="sub st">A forge too small for the whole model serves a <b style="color:var(--ink)">contiguous
+        range of transformer blocks</b>. The coordinator keeps embed&nbsp;+&nbsp;lm_head local,
+        streams hidden states stage-to-stage over TCP — and each stage signs the activation
+        chain it produced. The client opts in: <b style="color:var(--ink)">pooled consent</b>.</p>
+        <div class="chips st">
+          <span class="chip lm">stageSigs — ed25519 per stage</span>
+          <span class="chip">boundary chains: out_K ≡ in_K+1</span>
+          <span class="chip">TOPLOC ckpts → audit-by-replay</span>
+          <span class="chip">B1 capability tokens — no token, no KV</span>
+        </div>
+      </div>
+      <svg class="mesh st" viewBox="0 0 560 395" fill="none">
+        <text x="60" y="26" font-family="VT323" font-size="13" fill="#565650" letter-spacing="2">ONE MODEL · 24 TRANSFORMER BLOCKS</text>
+        <g>
+          <rect x="60"  y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="80"  y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="100" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="120" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="140" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="160" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="180" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="200" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="220" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="240" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="260" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="280" y="38" width="17" height="16" rx="2" stroke="#d0ff00" stroke-opacity=".8" fill="rgba(208,255,0,.10)"/>
+          <rect x="300" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="320" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="340" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="360" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="380" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="400" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="420" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="440" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="460" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="480" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="500" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+          <rect x="520" y="38" width="17" height="16" rx="2" stroke="#3a3a3a" fill="rgba(232,232,224,.05)"/>
+        </g>
+        <text x="160" y="72" font-family="VT323" font-size="12" fill="#565650" text-anchor="middle">[0,12)</text>
+        <text x="420" y="72" font-family="VT323" font-size="12" fill="#565650" text-anchor="middle">[12,24)</text>
+        <rect x="60" y="110" width="195" height="96" rx="12" stroke="#d0ff00" stroke-opacity=".55" fill="#0a0a08"/>
+        <text x="78" y="136" font-family="VT323" font-size="15" fill="#d0ff00" letter-spacing="1">FORGE A — su GPU</text>
+        <text x="78" y="156" font-family="VT323" font-size="12" fill="#8a8a8a">blocks [0,12) · KV local</text>
+        <g stroke="#2a2a2a" fill="rgba(208,255,0,.14)">
+          <rect x="78"  y="168" width="11" height="10" rx="1"/><rect x="92"  y="168" width="11" height="10" rx="1"/>
+          <rect x="106" y="168" width="11" height="10" rx="1"/><rect x="120" y="168" width="11" height="10" rx="1"/>
+          <rect x="134" y="168" width="11" height="10" rx="1"/><rect x="148" y="168" width="11" height="10" rx="1"/>
+          <rect x="162" y="168" width="11" height="10" rx="1"/><rect x="176" y="168" width="11" height="10" rx="1"/>
+          <rect x="190" y="168" width="11" height="10" rx="1"/><rect x="204" y="168" width="11" height="10" rx="1"/>
+          <rect x="218" y="168" width="11" height="10" rx="1"/><rect x="232" y="168" width="11" height="10" rx="1"/>
+        </g>
+        <text x="78" y="198" font-family="VT323" font-size="12" fill="#d0ff00">ed25519 sig ✓ →</text>
+        <rect x="335" y="110" width="195" height="96" rx="12" stroke="#565650" fill="#0a0a08"/>
+        <text x="353" y="136" font-family="VT323" font-size="15" fill="#8a8a8a" letter-spacing="1">FORGE B — otra GPU</text>
+        <text x="353" y="156" font-family="VT323" font-size="12" fill="#8a8a8a">blocks [12,24) · KV local</text>
+        <g stroke="#2a2a2a" fill="rgba(232,232,224,.08)">
+          <rect x="353" y="168" width="11" height="10" rx="1"/><rect x="367" y="168" width="11" height="10" rx="1"/>
+          <rect x="381" y="168" width="11" height="10" rx="1"/><rect x="395" y="168" width="11" height="10" rx="1"/>
+          <rect x="409" y="168" width="11" height="10" rx="1"/><rect x="423" y="168" width="11" height="10" rx="1"/>
+          <rect x="437" y="168" width="11" height="10" rx="1"/><rect x="451" y="168" width="11" height="10" rx="1"/>
+          <rect x="465" y="168" width="11" height="10" rx="1"/><rect x="479" y="168" width="11" height="10" rx="1"/>
+          <rect x="493" y="168" width="11" height="10" rx="1"/><rect x="507" y="168" width="11" height="10" rx="1"/>
+        </g>
+        <text x="353" y="198" font-family="VT323" font-size="12" fill="#d0ff00">ed25519 sig ✓ →</text>
+        <path d="M255 158 H322" stroke="#d0ff00" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M322 153 l10 5 -10 5 z" fill="#d0ff00"/>
+        <text x="292" y="146" text-anchor="middle" font-family="VT323" font-size="11" fill="#565650">hidden · TCP</text>
+        <rect x="100" y="232" width="195" height="54" rx="10" stroke="#565650" stroke-dasharray="4 4" fill="none"/>
+        <text x="116" y="253" font-family="VT323" font-size="13" fill="#8a8a8a" letter-spacing="1">FORGE C · SPARE [0,12)</text>
+        <text x="116" y="271" font-family="VT323" font-size="11" fill="#565650">absorbs KV · signs the rest</text>
+        <path d="M200 232 V212" stroke="#565650" stroke-width="1.5" stroke-dasharray="3 5" class="flowline"/>
+        <path d="M200 208 l-5 8 h10 z" fill="#565650"/>
+        <text x="210" y="224" font-family="VT323" font-size="11" fill="#565650">kill → heal</text>
+        <path d="M75 326 V212" stroke="#d0ff00" stroke-opacity=".5" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M75 206 l-5 8 h10 z" fill="#d0ff00" fill-opacity=".7"/>
+        <text x="84" y="310" font-family="VT323" font-size="11" fill="#565650">open + step</text>
+        <path d="M495 212 V326" stroke="#8a8a8a" stroke-width="1.5" stroke-dasharray="4 6" class="flowline"/>
+        <path d="M495 330 l-5 -8 h10 z" fill="#8a8a8a"/>
+        <text x="425" y="310" font-family="VT323" font-size="11" fill="#565650">out + stageSig</text>
+        <rect x="60" y="326" width="470" height="56" rx="12" stroke="#2a2a2a" fill="#0a0a08"/>
+        <rect x="76" y="342" width="26" height="26" rx="6" stroke="#d0ff00" fill="none"/>
+        <text x="89" y="361" text-anchor="middle" font-family="VT323" font-size="16" fill="#d0ff00">W</text>
+        <text x="114" y="352" font-family="VT323" font-size="15" fill="#e8e8e0" letter-spacing="1">COORDINATOR</text>
+        <text x="114" y="372" font-family="VT323" font-size="12" fill="#8a8a8a">embed + lm_head local · capability auth · audit-by-replay · settles</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 10 · PILLARS ═══════════ -->
 <section class="slide">
   <div class="slide-inner">
     <div class="kicker st">how trust works</div>
@@ -558,10 +655,55 @@
         <p><code>WeaverEscrow</code> on Monad: <code>fundJob</code> binds payment to the worker, <code>release</code> demands on-chain <code>ecrecover</code> of the proof. 24h self-claim window — the forge gets paid even if the operator vanishes. <code>giveFeedback</code> ERC-8004 posts {jobId, fundTx, releaseTx} after every settle.</p>
       </div></div>
     </div>
+    <div class="chips st" style="margin-top:3.6vh">
+      <span class="chip lm">federated: stageSigs ed25519 · boundary chains out_K ≡ in_K+1</span>
+      <span class="chip">TOPLOC ckpts → audit-by-replay on a spare</span>
+      <span class="chip">B1 capability tokens — no token, no session</span>
+    </div>
   </div>
 </section>
 
-<!-- ═══════════ 10 · FORGE ECONOMICS ═══════════ -->
+<!-- ═══════════ 11 · PER-STAGE PAYOUT ═══════════ -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="kicker st">the payout</div>
+    <h2 class="st">Every stage bills<br><span class="lm">with its own signature.</span></h2>
+    <div class="split" style="margin-top:3vh">
+      <div>
+        <p class="sub st" style="margin-top:0">One job price, N+1 beneficiaries. The coordinator takes a
+        fixed orchestration share; each stage's tranche is proportional to the blocks it
+        <b style="color:var(--ink)">verifiably</b> computed. The rule is absolute:
+        <b style="color:var(--ink)">no valid stageSig, no payment.</b></p>
+        <ul class="demolist st" style="margin-top:2.5vh">
+          <li>one ed25519 sig = one claimable escrow — the preimage is exactly 32 bytes</li>
+          <li>boundary-linked — out_K must equal the next stage's in_K</li>
+          <li>killed mid-stream → no sig → 0 bps; the spare signs and bills instead</li>
+          <li>the client sees the split — <code style="font-family:VT323;color:var(--lima)">payoutSplit</code> in the receipt</li>
+        </ul>
+        <div class="chips st" style="margin-top:3vh">
+          <span class="chip">on-chain per-stage release: Stellar escrow (ed25519) — wired + e2e</span>
+          <span class="chip">on Monad today: coordinator escrow + receipt-attested split</span>
+        </div>
+      </div>
+      <div class="term st"><div>
+        <div class="bar"><i></i><i></i><i></i></div>
+        <pre><span class="c3"># receipt.weaver_proof.payoutSplit — job real, kill mid-stream</span>
+{
+  <span class="c2">"coordBps"</span>: <span class="c1">2000</span>,        <span class="c3">← 20% — edge + routing risk</span>
+  <span class="c2">"stages"</span>: [
+    { <span class="c2">"worker"</span>: <span class="c1">"GABN7CWL…"</span>,  <span class="c3">← [0,12) el SPARE — firmó post-heal</span>
+      <span class="c2">"bps"</span>: <span class="c1">4000</span> },
+    { <span class="c2">"worker"</span>: <span class="c1">"GCHLD2KI…"</span>,  <span class="c3">← [12,24) intacto</span>
+      <span class="c2">"bps"</span>: <span class="c1">4000</span> }
+  ]
+}
+<span class="c3"># s1 (GCPSW3ZY…) murió mid-stream — sin sig válida → 0 bps</span></pre>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 12 · FORGE ECONOMICS ═══════════ -->
 <section class="slide">
   <div class="glow" style="width:50vw;height:50vw;background:rgba(208,255,0,.04);top:-18vw;left:-14vw"></div>
   <div class="slide-inner">
@@ -602,7 +744,7 @@
   <div class="src"><b>model:</b> 8B-class Q4 on llama.cpp · forge nets ≈$0.50/MTok · $0.16/kWh US residential · tok/s ≈ memory-bandwidth-adjusted · prices: eBay sold medians + MSRP/street, Oct-2026 · utilization is the variable — demand routed by ETR</div>
 </section>
 
-<!-- ═══════════ 11 · PRODUCT ═══════════ -->
+<!-- ═══════════ 13 · PRODUCT ═══════════ -->
 <section class="slide">
   <div class="slide-inner">
     <div class="kicker st">the product</div>
@@ -628,34 +770,37 @@
   </div>
 </section>
 
-<!-- ═══════════ 12 · STATUS ═══════════ -->
+<!-- ═══════════ 14 · STATUS ═══════════ -->
 <section class="slide">
   <div class="slide-inner">
     <div class="kicker st">status</div>
     <h2 class="st">Not a slide.<br><span class="dim">It's running.</span></h2>
     <div class="today">
-      <div class="cell st"><div><div class="v">405+</div><div class="k">green tests — packages, gateway, Foundry contracts, wire-e2e, browser army</div></div></div>
+      <div class="cell st"><div><div class="v">550+</div><div class="k">green tests — packages, gateway, Foundry contracts, wire-e2e, browser army</div></div></div>
       <div class="cell st"><div><div class="v">pool</div><div class="k">independent forges lend VRAM — gateway-brokered pairing, llama.cpp RPC inside (ADR-0010)</div></div></div>
       <div class="cell st"><div><div class="v">2</div><div class="k">contracts verified on MonadVision — WeaverEscrow + WeaverCredits (Sourcify)</div></div></div>
       <div class="cell st"><div><div class="v">2 legs</div><div class="k">one job: facilitator settle + escrow release, both on-chain, zero custody</div></div></div>
       <div class="cell st"><div><div class="v">8004</div><div class="k">agentId 1991 self-registered; giveFeedback posts evidence after every release</div></div></div>
-      <div class="cell st"><div><div class="v">kill</div><div class="k">mid-stream forge death → failover resumes; the proof binds the delivered prefix</div></div></div>
+      <div class="cell st"><div><div class="v">kill</div><div class="k">mid-stream stage death → spare absorbs KV history and signs the rest — proof binds every hop</div></div></div>
       <div class="cell st"><div><div class="v">abort</div><div class="k">client cancels → job.cancel down the wire → daemon kills the engine — text &amp; image</div></div></div>
       <div class="cell st"><div><div class="v">0</div><div class="k">prompts stored — they live in RAM and die with the request (ZDR)</div></div></div>
+      <div class="cell st"><div><div class="v">2×12</div><div class="k">one model: 24 transformer blocks split across two stranger GPUs + spare — real HF weights, TCP</div></div></div>
+      <div class="cell st"><div><div class="v">ed25519</div><div class="k">every stage signs its activation chain — boundary-linked: out_K must equal the next in_K</div></div></div>
+      <div class="cell st"><div><div class="v">40·40·20</div><div class="k">payoutSplit in the receipt — stages ∝ blocks verified, coordinator fixed; a dead stage bills 0</div></div></div>
       <div class="cell st"><div><div class="k" style="color:var(--lima);font-family:VT323;font-size:clamp(18px,1.8vw,26px)">testnet</div><div class="k">every payment auditable by anyone on MonadVision</div></div></div>
     </div>
   </div>
 </section>
 
-<!-- ═══════════ 13 · DEMO ═══════════ -->
+<!-- ═══════════ 15 · DEMO ═══════════ -->
 <section class="slide">
   <div class="glow" style="width:55vw;height:55vw;background:rgba(208,255,0,.06);top:-15vw;right:-10vw"></div>
   <div class="slide-inner center">
     <div class="kicker st">and now</div>
     <h2 class="st" style="max-width:none">Everything you saw<br><span class="lm">runs.</span></h2>
     <ul class="demolist st" style="display:inline-flex;text-align:left">
-      <li>real job → remote forge → token stream, TTFT measured live</li>
-      <li>kill a forge mid-request → failover + resumed prefix, still proven</li>
+      <li>one model split across two stranger GPUs — pooled consent, boundary-verified stream</li>
+      <li>kill a stage mid-request → spare absorbs KV history, signs the rest, takes the payout</li>
       <li>escrow: fund → proof → release on MonadVision + ERC-8004 feedback</li>
       <li>measured debit in /v1/me · reputation weighting the next route</li>
     </ul>
